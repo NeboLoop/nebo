@@ -206,6 +206,7 @@ impl Verify {
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
+            Work::clean_up_reviewers(&v.id);
             ended.push(v.id.clone());
         }
         ended
@@ -615,6 +616,8 @@ impl VerifyCheck {
         let _ =
             self.store()
                 .set_verification_state(&v.id, &state_of(v, state, &reason), Self::now());
+        // Its reviewers are done: their copies and shared build folder go.
+        Work::clean_up_reviewers(&v.id);
     }
 
     /// One work's next step.
@@ -896,8 +899,8 @@ impl VerifyCheck {
 
         // The reviewers: fresh, one per lens, all at once, each reading the
         // round's copy of exactly what was snapshotted (a throwaway export
-        // of `head`) and its patch, with a build folder of its own, all with
-        // the working copies (`Work::copies`): nothing a reviewer runs can
+        // of `head`) and its patch, sharing the verification's one build
+        // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
         // change the builder's copy, the one that lands.
         let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
             Ok(scratch) => scratch,

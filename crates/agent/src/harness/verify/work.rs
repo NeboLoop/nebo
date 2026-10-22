@@ -90,7 +90,8 @@ impl Work {
 
     /// Where a verification keeps what its reviewers work in, with the
     /// working copies (`config::copies_dir`): each round's read-only copy of
-    /// the change and its patch, and each reviewer's own build folder.
+    /// the change and its patch, and the one build folder its reviewers
+    /// share (`review::build_dir`).
     /// `<copies>/verify/<id>`.
     pub fn copies(id: &str) -> Result<PathBuf, String> {
         config::copies_dir().map(|root| root.join("verify").join(id)).map_err(|e| e.to_string())
@@ -114,13 +115,27 @@ impl Work {
     /// Remove the verification's own files and its reviewers'. The copy
     /// itself is the landing's to remove.
     pub fn clean_up(&self) {
-        for dir in std::iter::once(Self::home(&self.id)).chain(Self::copies(&self.id).ok()) {
-            if let Err(e) = std::fs::remove_dir_all(&dir)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!(path = %dir.display(), error = %e, "verification files not removed");
-            }
+        remove_files(&Self::home(&self.id));
+        Self::clean_up_reviewers(&self.id);
+    }
+
+    /// Remove what the verification's reviewers work in ([`Work::copies`]):
+    /// the rounds' copies and the build folder they share. Done the moment
+    /// the verification ends, whatever its verdict, so a build's gigabytes
+    /// never wait for the sweep; one checked again builds anew.
+    pub fn clean_up_reviewers(id: &str) {
+        if let Ok(dir) = Self::copies(id) {
+            remove_files(&dir);
         }
+    }
+}
+
+/// Remove a verification's folder `dir`, a failure logged.
+fn remove_files(dir: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(dir)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %dir.display(), error = %e, "verification files not removed");
     }
 }
 
@@ -814,7 +829,25 @@ mod tests {
         assert_eq!(mapped("/work/sitemap", "/work/site", "/c"), None);
     }
 
-    fn rt() -> tokio::runtime::Runtime {
+    /// The build folder a verification's reviewers share goes when it ends,
+    /// with their copies; its own files (the shadow) stay for the landing.
+    #[test]
+    fn an_ended_verification_leaves_no_build_behind() {
+        crate::test_home::with_home(|_| {
+            let scratch = Work::copies("v-ended").unwrap();
+            let build = crate::harness::verify::review::build_dir(&scratch);
+            std::fs::create_dir_all(build.join("debug/deps")).unwrap();
+            std::fs::create_dir_all(scratch.join("round-1/project")).unwrap();
+            std::fs::create_dir_all(Work::home("v-ended")).unwrap();
+            Work::clean_up_reviewers("v-ended");
+            assert!(!scratch.exists(), "{}", scratch.display());
+            assert!(Work::home("v-ended").is_dir());
+            // Ended again (nothing left): nothing to do.
+            Work::clean_up_reviewers("v-ended");
+        })
+    }
+
+    fn rt()-> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -42,7 +42,7 @@ pub struct RoundInput<'a> {
     /// changed.
     pub work_dir: &'a Path,
     /// The verification's folder with the working copies (`Work::copies`),
-    /// where each reviewer's own build folder is ([`build_dir`]).
+    /// where the build folder its reviewers share is ([`build_dir`]).
     pub scratch: &'a Path,
     /// The round's check results.
     pub checks: &'a [CheckRun],
@@ -86,10 +86,14 @@ pub fn patch_file(round_dir: &Path) -> PathBuf {
     round_dir.join("change.patch")
 }
 
-/// A reviewer's own build folder, kept across the verification's rounds:
-/// what its builds write, never into the copy it reads.
-pub fn build_dir(scratch: &Path, lens: Lens) -> PathBuf {
-    scratch.join(format!("build-{}", lens.as_str()))
+/// The build folder every reviewer of the verification shares, kept across
+/// its rounds and removed with its folder: what their builds write, never
+/// into the copy they read. One folder, so a verification builds the
+/// project once, not once per lens: cargo locks its build folder, so the
+/// lenses' builds in it take turns; a build that writes into the project
+/// itself runs on a lens's own copy inside it ([`brief`]).
+pub fn build_dir(scratch: &Path) -> PathBuf {
+    scratch.join("build")
 }
 
 /// The node a reviewer's session is named by.
@@ -116,7 +120,7 @@ pub async fn run_round(
             tools: None,
             fence: vec![
                 input.work_dir.to_string_lossy().into_owned(),
-                build_dir(input.scratch, lens).to_string_lossy().into_owned(),
+                build_dir(input.scratch).to_string_lossy().into_owned(),
             ],
             shown: true,
         };
@@ -217,17 +221,19 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
         ));
     }
     out.push_str(&format!("## The request\n{}\n\n", input.spec.trim()));
-    let build = build_dir(input.scratch, lens);
+    let build = build_dir(input.scratch);
     out.push_str(&format!(
         "## Where the code is\nThe project, with the change applied, is at {}. Read anything in it, and change \
-         nothing in it: it is read-only. Your own build folder is {}: everything you build or run writes there \
-         (for cargo, CARGO_TARGET_DIR={}). A build or test that writes into the project itself (most JavaScript \
-         builds do) runs on your own copy: copy the project into your build folder and run it there. The \
-         project's own checks already ran on this exact change; their results are below. You may make read-only \
-         checks of live state. No commits, no installs into the project, no messages to anyone.\n\n",
+         nothing in it: it is read-only. The build folder is {}, shared with the other reviewers of this change: \
+         everything you build or run writes there (for cargo, CARGO_TARGET_DIR={}; cargo waits its turn when \
+         another reviewer is building). A build or test that writes into the project itself (most JavaScript \
+         builds do) runs on a copy of your own: copy the project into {} and run it there. The project's own \
+         checks already ran on this exact change; their results are below. You may make read-only checks of live \
+         state. No commits, no installs into the project, no messages to anyone.\n\n",
         input.work_dir.display(),
         build.display(),
-        build.display()
+        build.display(),
+        build.join(lens.as_str()).display()
     ));
     if input.delta {
         out.push_str(&format!("## The whole change\n{}\n\n", quoted(input.whole_stat)));
@@ -376,8 +382,11 @@ mod tests {
         assert!(b.contains("Show the invoice total."));
         assert!(b.contains("+let t = a + b;"));
         assert!(b.contains("Rust tests (cargo test): FAILED\n│ 1 failed"));
-        // Its own build folder, beside the read-only copy, never in it.
-        assert!(b.contains("CARGO_TARGET_DIR=/copies/verify/v1/build-billing"), "{b}");
+        // The verification's one build folder, beside the read-only copy,
+        // never in it; a build that writes into the project copies it into
+        // a folder of the lens's own there.
+        assert!(b.contains("CARGO_TARGET_DIR=/copies/verify/v1/build;"), "{b}");
+        assert!(b.contains("copy the project into /copies/verify/v1/build/billing"), "{b}");
         assert!(b.contains("is at /copies/verify/v1/round-1/project"));
         assert!(b.contains("it is read-only"));
         assert!(b.contains("Read-only means read-only."));
@@ -479,8 +488,9 @@ mod tests {
     /// 2026-10-21 `v-e9e6a7defa6d`: every reviewer was refused its own copy
     /// and patch ("one of Nebo's own files"), because they sat in Nebo's own
     /// folder. They are with the working copies now: every lens reads both
-    /// with each tool it has, runs its commands in the copy, and has a build
-    /// folder of its own; Nebo's own folder stays closed to it.
+    /// with each tool it has, runs its commands in the copy, and builds in
+    /// the verification's one build folder; Nebo's own folder stays closed
+    /// to it.
     #[test]
     fn every_reviewer_reads_its_copy_and_patch() {
         crate::test_home::with_home(|home| {
@@ -496,7 +506,7 @@ mod tests {
             let ctx = tools::ToolContext { session_id: "sa-verify-v-reads-r1".into(), ..Default::default() };
             let fence = tools::nebo_files::NeboFiles::of(&ctx).unwrap();
             for lens in [Lens::Correctness, Lens::Security, Lens::Billing, Lens::Data, Lens::Performance, Lens::Experience] {
-                let build = build_dir(&scratch, lens);
+                let build = build_dir(&scratch);
                 let folders = [project.to_string_lossy().into_owned(), build.to_string_lossy().into_owned()];
                 let p = project.to_string_lossy();
                 let reads = [
