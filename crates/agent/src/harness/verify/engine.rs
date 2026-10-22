@@ -24,6 +24,7 @@
 //! fails closed: not verified), and Stop.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +45,7 @@ use crate::harness::{Harness, SeatRequest};
 use crate::worktree::{self, MergeOutcome};
 
 /// How a turn that ended before its checking did leaves its verifications.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Closed {
     /// Waiting on the owner: paused, for the turn that goes on.
     Waiting,
@@ -51,6 +53,12 @@ pub enum Closed {
     Stopped,
     /// Ended otherwise: not verified, with why.
     Ended(Why),
+    /// Answered without its end check (the owner's message ended the work,
+    /// a reply with no words, a compaction): what was still being checked is
+    /// not verified, the run having ended before its checking did; a question
+    /// waiting on the owner stays for the turn that goes on. After a normal
+    /// end check nothing is still being checked, and nothing changes.
+    Unchecked,
 }
 
 /// What one turn's verify loop keeps between its rounds.
@@ -220,9 +228,12 @@ impl Verify {
                 }
                 Closed::Stopped => ("stopped", String::new()),
                 Closed::Ended(w) => ("not_verified", w.text()),
+                Closed::Unchecked if v.state == "paused" => continue,
+                Closed::Unchecked => ("not_verified", Why::new("turn_ended").text()),
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
+            Work::clean_up_reviewers(&v.id);
             ended.push(v.id.clone());
         }
         ended
@@ -579,6 +590,32 @@ impl VerifyCheck {
         &self.harness.store
     }
 
+    /// Make a round's folder for its reviewers: the copy of `head` and the
+    /// patch, under the verification's folder with the working copies.
+    /// Returns that folder.
+    async fn review_folder(&self, id: &str, round: u32, reviewed: &ChangeSet, work: &Work, head: &Snapshot) -> Result<PathBuf, String> {
+        let scratch = Work::copies(id)?;
+        let round_dir = review::round_dir(&scratch, round);
+        let _ = std::fs::remove_dir_all(&round_dir);
+        std::fs::create_dir_all(&round_dir).map_err(|e| format!("create {}: {e}", round_dir.display()))?;
+        let patch = review::patch_file(&round_dir);
+        std::fs::write(&patch, &reviewed.patch).map_err(|e| format!("write {}: {e}", patch.display()))?;
+        work.shadow.export(head, &review::project_dir(&round_dir)).await?;
+        Ok(scratch)
+    }
+
+    /// A round whose reviewers could not be given what they read ends the
+    /// verification unreviewed: nothing passes on a review that didn't
+    /// happen.
+    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, error: &str) -> RoundEnd {
+        tracing::warn!(verification = %v.id, error = %error, "the reviewers' copy could not be made");
+        row.outcome = Why::new("review_incomplete").text();
+        row.finished_at = Some(Self::now());
+        let _ = self.store().put_verification_round(row);
+        self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
+        RoundEnd::Finished
+    }
+
     fn tool_ctx(&self) -> tools::ToolContext {
         self.verify.shared().tool_ctx.clone().unwrap_or_default()
     }
@@ -667,6 +704,8 @@ impl VerifyCheck {
         let _ =
             self.store()
                 .set_verification_state(&v.id, &state_of(v, state, &reason), Self::now());
+        // Its reviewers are done: their copies and shared build folder go.
+        Work::clean_up_reviewers(&v.id);
     }
 
     /// One work's next step.
@@ -931,7 +970,10 @@ impl VerifyCheck {
         self.record_round(&row);
         let mut ctx = self.tool_ctx();
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
-        let build = checks::build_cache(&work.project_root);
+        let build = match checks::build_cache(&work.project_root) {
+            Ok(build) => build,
+            Err(e) => return self.review_incomplete(v, &mut row, &e),
+        };
         let mut runs: Vec<CheckRun> = Vec::with_capacity(checks.len());
         for check in &checks {
             runs.extend(checks::run(&self.harness.tools, &ctx, std::slice::from_ref(check), &build).await);
@@ -945,24 +987,17 @@ impl VerifyCheck {
             return self.stopped(v, &mut row);
         }
 
-        // The reviewers: fresh, one per lens, all at once, each reading its
-        // own copy of exactly what was snapshotted (a throwaway export of
-        // `head`) with a build folder of their own: nothing a reviewer runs
-        // can change the builder's copy, the one that lands.
-        let patch_file = Work::home(&v.id).join(format!("round-{round}.patch"));
-        let _ = std::fs::create_dir_all(Work::home(&v.id));
-        let _ = std::fs::write(&patch_file, &reviewed.patch);
-        let review_dir = Work::home(&v.id).join(format!("review-r{round}"));
-        let _ = std::fs::remove_dir_all(&review_dir);
-        if let Err(e) = work.shadow.export(head, &review_dir).await {
-            tracing::warn!(verification = %v.id, error = %e, "the reviewers' copy could not be made");
-            row.outcome = Why::new("review_incomplete").text();
-            row.finished_at = Some(Self::now());
-            let _ = store.put_verification_round(&row);
-            self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
-            return RoundEnd::Finished;
-        }
-        let review_build = checks::build_cache(&work.project_root).join("review");
+        // The reviewers: fresh, one per lens, all at once, each reading the
+        // round's copy of exactly what was snapshotted (a throwaway export
+        // of `head`) and its patch, sharing the verification's one build
+        // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
+        // change the builder's copy, the one that lands.
+        let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
+            Ok(scratch) => scratch,
+            Err(e) => return self.review_incomplete(v, &mut row, &e),
+        };
+        let round_dir = review::round_dir(&scratch, round);
+        let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
         let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
         let rules = self.review_rules(work).await;
         let input = RoundInput {
@@ -975,7 +1010,7 @@ impl VerifyCheck {
             whole_stat: &whole.stat(),
             patch_file: &patch_file,
             work_dir: &review_dir,
-            build_dir: &review_build,
+            scratch: &scratch,
             checks: &runs,
             prior_open: &prior_open,
             claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
@@ -1005,7 +1040,7 @@ impl VerifyCheck {
         let reviews: Vec<LensReview> =
             review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
         row = live.into_inner().unwrap_or_else(|p| p.into_inner());
-        let _ = std::fs::remove_dir_all(&review_dir);
+        let _ = std::fs::remove_dir_all(&round_dir);
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
         }
@@ -1351,7 +1386,7 @@ impl VerifyCheck {
             Box::pin(async move {
                 let changed = worktree::changed_files(&iso).await;
                 let found = checks::detect(&work_dir, &changed);
-                let done = checks::run(&tools, &ctx, &found, &build).await;
+                let done = checks::run(&tools, &ctx, &found, &build?).await;
                 let failed: Vec<String> = done.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
                 *ran.lock().unwrap_or_else(|p| p.into_inner()) = done;
                 if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
