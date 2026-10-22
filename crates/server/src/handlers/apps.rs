@@ -74,7 +74,7 @@ async fn validate_app_token(
     };
 
     let expected = lifecycle.app_token().await;
-    if expected.is_empty() || token != expected {
+    if expected.is_empty() || !crate::handlers::ws::constant_time_eq(token, &expected) {
         return Err((StatusCode::UNAUTHORIZED, "invalid app token").into_response());
     }
 
@@ -1370,10 +1370,27 @@ fn app_connection_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
         && origin[url::Position::BeforeHost..url::Position::AfterPort].eq_ignore_ascii_case(host)
 }
 
+/// Whether a request header is passed on to the app's sidecar. Nebo's own
+/// credentials never are: the owner's session cookie and bearer, a proxy's
+/// credential, the tunnel's stamp, the app page's pass, a run's credential,
+/// and the connected-account metadata the platform adds itself. A sidecar
+/// calls Nebo with its own `NEBO_APP_TOKEN`; whatever holds its address sees
+/// nothing that opens Nebo.
+fn reaches_sidecar(name: &axum::http::HeaderName) -> bool {
+    let name = name.as_str();
+    !(name.starts_with("x-nebo-connected-")
+        || name == agent::tool_credentials::HEADER
+        || matches!(
+            name,
+            "authorization" | "cookie" | "proxy-authorization" | "x-nebo-tunnel-auth" | crate::middleware::APP_VIEW_PASS
+        ))
+}
+
 /// ANY /apps/{agent_id}/api/*path — proxy HTTP request to sidecar via gRPC UIService.
 ///
-/// Sidecar binaries communicate over Unix socket. Nebo converts the HTTP request
-/// to a gRPC `UIService.HandleRequest` call and returns the response.
+/// The sidecar serves gRPC on its loopback address, on every OS. Nebo converts
+/// the HTTP request to a `UIService.HandleRequest` call, with the launch's
+/// token, and returns the response.
 pub async fn proxy_to_sidecar(
     State(state): State<AppState>,
     Path((agent_id, path)): Path<(String, String)>,
@@ -1396,21 +1413,12 @@ pub async fn proxy_to_sidecar(
     let Some(lifecycle) = crate::app_lifecycle::start(&state, &agent, false).await else {
         return sidecar_unavailable(&agent, None);
     };
-    #[cfg(not(unix))]
-    {
-        let _ = (req, lifecycle);
-        return (StatusCode::SERVICE_UNAVAILABLE, "sidecar proxy requires Unix sockets").into_response();
-    }
-
-    #[cfg(unix)]
-    {
     // Extract HTTP request parts for gRPC
     let method = req.method().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let mut headers_map = std::collections::HashMap::new();
     for (name, value) in req.headers() {
-        // Native connection metadata is platform-owned, never browser-supplied.
-        if name.as_str().starts_with("x-nebo-connected-") { continue; }
+        if !reaches_sidecar(name) { continue; }
         if let Ok(v) = value.to_str() {
             headers_map.insert(name.to_string(), v.to_string());
         }
@@ -1453,30 +1461,29 @@ pub async fn proxy_to_sidecar(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-        let grpc_req = proto::HttpRequest {
-            method,
-            path: path.trim_start_matches('/').to_string(),
-            query,
-            headers: headers_map,
-            body: body_bytes,
-        };
+    let grpc_req = proto::HttpRequest {
+        method,
+        path: path.trim_start_matches('/').to_string(),
+        query,
+        headers: headers_map,
+        body: body_bytes,
+    };
 
-        match lifecycle.serve(grpc_req).await {
-            Ok(inner) => {
-                let status = StatusCode::from_u16(inner.status_code as u16)
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let mut response = Response::builder().status(status);
-                for (name, value) in &inner.headers {
-                    if let Ok(v) = HeaderValue::from_str(value) {
-                        response = response.header(name.as_str(), v);
-                    }
+    match lifecycle.serve(grpc_req).await {
+        Ok(inner) => {
+            let status = StatusCode::from_u16(inner.status_code as u16)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let mut response = Response::builder().status(status);
+            for (name, value) in &inner.headers {
+                if let Ok(v) = HeaderValue::from_str(value) {
+                    response = response.header(name.as_str(), v);
                 }
-                response
-                    .body(Body::from(inner.body))
-                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
             }
-            Err(unavailable) => sidecar_unavailable(&agent, Some(&unavailable)),
+            response
+                .body(Body::from(inner.body))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
+        Err(unavailable) => sidecar_unavailable(&agent, Some(&unavailable)),
     }
 }
 
@@ -2162,6 +2169,32 @@ mod connection_origin_tests {
         assert!(!app_connection_origin_allowed(&h));
         h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
         assert!(!app_connection_origin_allowed(&h));
+    }
+}
+
+#[cfg(test)]
+mod sidecar_header_tests {
+    use super::reaches_sidecar;
+
+    /// Whatever holds a sidecar's address sees the app's own request, never
+    /// a credential that opens Nebo.
+    #[test]
+    fn a_sidecar_never_sees_nebos_credentials() {
+        for name in [
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "x-nebo-tunnel-auth",
+            "x-nebo-app-view",
+            "x-nebo-run-credential",
+            "x-nebo-connected-neboai",
+            "x-nebo-connected-profiles",
+        ] {
+            assert!(!reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name} must not reach the sidecar");
+        }
+        for name in ["content-type", "accept", "x-app-thing", "range"] {
+            assert!(reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name} is the app's own");
+        }
     }
 }
 

@@ -82,6 +82,9 @@ struct Shared {
     /// Verifications whose open minors the builder was asked to fix or
     /// defer with a reason.
     minors_offered: HashSet<String>,
+    /// Times this turn the owner sent each stalled verification on (his
+    /// "Keep going", or his own words): at [`STALL_GO_ONS`] it stops.
+    went_on: std::collections::HashMap<String, usize>,
 }
 
 /// Who a turn's code work is for: what every work it starts records.
@@ -128,12 +131,27 @@ pub struct Verify {
 /// the loop stops.
 const CONFLICT_TRIES: usize = 3;
 
+/// Times in one turn the owner may send a stalled verification on before
+/// the loop stops instead of asking again, as with [`CONFLICT_TRIES`].
+const STALL_GO_ONS: usize = CONFLICT_TRIES;
+
 impl Shared {
     /// Count a landing of `id` that met a conflict; whether it is stuck.
     fn stuck(&mut self, id: &str) -> bool {
         let n = self.conflicts.entry(id.to_string()).or_default();
         *n += 1;
         *n >= CONFLICT_TRIES
+    }
+
+    /// Whether the owner already sent `id` on [`STALL_GO_ONS`] times this
+    /// turn after it stalled.
+    fn gone_on_enough(&self, id: &str) -> bool {
+        self.went_on.get(id).is_some_and(|n| *n >= STALL_GO_ONS)
+    }
+
+    /// Count the owner sending `id` on after it stalled.
+    fn go_on(&mut self, id: &str) {
+        *self.went_on.entry(id.to_string()).or_default() += 1;
     }
 }
 
@@ -253,8 +271,11 @@ pub struct VerifyCheck {
 enum Purpose {
     /// A product or business call a reviewer found.
     Decision { title: String },
-    /// The loop stopped making progress with `open` blocking issues.
-    Stalled { open: usize },
+    /// The loop stopped making progress with `open` blocking issues;
+    /// `brief` is what the builder is told if it goes on (the round's
+    /// findings), kept so his words after a restart go on top of the
+    /// same brief.
+    Stalled { open: usize, brief: String },
     /// Reviewed, but no build or test could run.
     NoChecks,
     /// The owner's own edits are in the way of landing verified work.
@@ -267,6 +288,68 @@ const STOP_HERE: &str = "Stop here";
 const KEEP_IN_COPY: &str = "Keep it in its copy";
 const LAND_AFTER_MINE: &str = "Land it after I commit mine";
 const KEEP_MINE: &str = "Keep mine, don't land it";
+/// The owner's answer to one of the loop's questions: a choice the card
+/// offered, or his own words (typed in the conversation, read by the bot as
+/// the answer: `handlers::asks::answer_in_words`).
+#[derive(Debug, Clone, PartialEq)]
+enum Reply {
+    Picked(String),
+    Words(String),
+}
+
+impl Reply {
+    fn text(&self) -> &str {
+        match self {
+            Reply::Picked(t) | Reply::Words(t) => t,
+        }
+    }
+
+    /// What `ask_owner` returned: `picked` is a choice, `own_words` (or an
+    /// open question's `response`) his own words.
+    fn read(result: &serde_json::Value) -> Option<Self> {
+        if let Some(p) = result["picked"].as_str() {
+            return Some(Reply::Picked(p.to_string()));
+        }
+        result["own_words"].as_str().or(result["response"].as_str()).map(|w| Reply::Words(w.to_string()))
+    }
+}
+
+/// The builder told what the owner said in his own words to a question of
+/// the loop's that offered choices: it does that, and the next round checks
+/// it. Nothing lands on words alone. `brief` is what the builder would be
+/// told had he sent it on without words (a stalled loop's findings): his
+/// words go on top of it, never in place of it.
+fn owner_said(words: &str, brief: &str) -> String {
+    let said = format!(
+        "The owner answered in his own words: \"{}\". Do what he says in your working copy, then end your reply; \
+         the next round checks it before anything lands.",
+        words.trim()
+    );
+    if brief.trim().is_empty() {
+        return said;
+    }
+    format!("{}\n\n{said} Where his words and what is above differ, his words win.", brief.trim_end())
+}
+
+/// His own words to a question that offered choices (keep going, land it,
+/// keep his edits) are instructions, never a choice guessed from them: the
+/// builder does what he says and the work is checked again; to a stalled
+/// loop they go on top of its brief ([`owner_said`]). A call of his
+/// (`Decision`) is carried out as he put it, words or choice.
+fn instruction(purpose: &Purpose, answer: Option<&Reply>) -> Option<String> {
+    match (purpose, answer) {
+        (Purpose::Decision { .. }, _) => None,
+        (Purpose::Stalled { brief, .. }, Some(Reply::Words(words))) => Some(owner_said(words, brief)),
+        (_, Some(Reply::Words(words))) => Some(owner_said(words, "")),
+        _ => None,
+    }
+}
+
+/// Whether the owner's answer to a stalled loop sends it on: his "Keep
+/// going", or his own words.
+fn went_on(answer: Option<&Reply>) -> bool {
+    matches!(answer, Some(Reply::Words(_))) || answer.map(Reply::text) == Some(KEEP_GOING)
+}
 
 /// Where one work's round left it.
 enum Step {
@@ -529,9 +612,13 @@ impl VerifyCheck {
 
     /// A round whose reviewers could not be given what they read ends the
     /// verification unreviewed: nothing passes on a review that didn't
-    /// happen.
-    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, error: &str) -> RoundEnd {
+    /// happen. No reviewer could read it, so each one failed, never "no
+    /// issues".
+    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, lenses: &[Lens], error: &str) -> RoundEnd {
         tracing::warn!(verification = %v.id, error = %error, "the reviewers' copy could not be made");
+        for lens in lenses {
+            row.detail["reviewers"][lens.as_str()] = json!("failed");
+        }
         row.outcome = Why::new("review_incomplete").text();
         row.finished_at = Some(Self::now());
         let _ = self.store().put_verification_round(row);
@@ -559,7 +646,7 @@ impl VerifyCheck {
         context: &str,
         options: &[&str],
         purpose: &Purpose,
-    ) -> Option<String> {
+    ) -> Option<Reply> {
         if options.iter().all(|o| o.trim().is_empty()) {
             tracing::error!(verification = %id, question, "a question for the owner with no choices was not asked");
             return None;
@@ -590,12 +677,7 @@ impl VerifyCheck {
         if result.is_error {
             return None;
         }
-        let answer: serde_json::Value = serde_json::from_str(&result.content).unwrap_or_default();
-        answer["picked"]
-            .as_str()
-            .or(answer["own_words"].as_str())
-            .or(answer["response"].as_str())
-            .map(str::to_string)
+        Reply::read(&serde_json::from_str(&result.content).unwrap_or_default())
     }
 
     /// The builder's turn as the parent of its reviewers.
@@ -676,28 +758,31 @@ impl VerifyCheck {
                 })
                 .unwrap_or_default();
             let opts: Vec<&str> = options.iter().map(String::as_str).collect();
+            let (question, context) = (ask["question"].as_str().unwrap_or(""), ask["context"].as_str().unwrap_or(""));
             let purpose = serde_json::from_value::<Purpose>(ask["purpose"].clone()).ok();
-            let answer = self
-                .ask_owner(
-                    &v.id,
-                    ask["question"].as_str().unwrap_or(""),
-                    ask["context"].as_str().unwrap_or(""),
-                    &opts,
-                    purpose.as_ref().unwrap_or(&Purpose::NoChecks),
-                )
-                .await;
-            // The answer does what it did when it was first asked.
-            match &purpose {
-                Some(p) => {
-                    if let Some(step) = self.answered(&mut work, &v, p, answer.as_deref()).await {
-                        return step;
+            // The answer does what it did when it was first asked; his own
+            // words to a stalled loop go on top of the brief it was asked
+            // with.
+            if let Some(Purpose::Stalled { open, brief }) = &purpose {
+                if let Some(step) = self.stalled(&mut work, &v, question, context, *open, brief).await {
+                    return step;
+                }
+            } else {
+                let answer = self
+                    .ask_owner(&v.id, question, context, &opts, purpose.as_ref().unwrap_or(&Purpose::NoChecks))
+                    .await;
+                match &purpose {
+                    Some(p) => {
+                        if let Some(step) = self.answered(&mut work, &v, p, answer.as_ref()).await {
+                            return step;
+                        }
                     }
+                    None if answer.is_none() => {
+                        self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
+                        return Step::Finished;
+                    }
+                    None => {}
                 }
-                None if answer.is_none() => {
-                    self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
-                    return Step::Finished;
-                }
-                None => {}
             }
         }
         let head = match work.shadow.snapshot().await {
@@ -880,7 +965,7 @@ impl VerifyCheck {
         let store = self.store().clone();
         // An app's pages no app is served from: it can't be checked live,
         // and no round of checks proves otherwise.
-        let own = (work.kind == WorkKind::AppPages).then(|| super::work::app_served_from(&store, &work.work_dir));
+        let own = (work.kind == WorkKind::AppPages).then(|| store.app_served_from(&work.work_dir.to_string_lossy()).ok().flatten());
         if own.as_ref().is_some_and(Option::is_none) {
             self.finish(v, "not_verified", Some(Why::new("live_failed")));
             return RoundEnd::Finished;
@@ -935,7 +1020,7 @@ impl VerifyCheck {
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
         let build = match checks::build_cache(&work.project_root) {
             Ok(build) => build,
-            Err(e) => return self.review_incomplete(v, &mut row, &e),
+            Err(e) => return self.review_incomplete(v, &mut row, lenses, &e),
         };
         let mut runs: Vec<CheckRun> = Vec::with_capacity(planned.len());
         for check in &checks {
@@ -987,7 +1072,7 @@ impl VerifyCheck {
         } else {
             let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
                 Ok(scratch) => scratch,
-                Err(e) => return self.review_incomplete(v, &mut row, &e),
+                Err(e) => return self.review_incomplete(v, &mut row, lenses, &e),
             };
             let round_dir = review::round_dir(&scratch, round);
             let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
@@ -1164,8 +1249,8 @@ impl VerifyCheck {
             );
             match self.ask_owner(&v.id, &d.title, &context, &options, &Purpose::Decision { title: d.title.clone() }).await {
                 Some(answer) => {
-                    decided.push(format!("The owner decided \"{}\": {answer}. Carry it out.", d.title));
-                    asked.push(json!({ "finding": d, "answer": answer }));
+                    decided.push(format!("The owner decided \"{}\": {}. Carry it out.", d.title, answer.text()));
+                    asked.push(json!({ "finding": d, "answer": answer.text() }));
                 }
                 None => unanswered.push(d.clone()),
             }
@@ -1199,6 +1284,14 @@ impl VerifyCheck {
             return RoundEnd::Finished;
         }
         if blocking_now > 0 {
+            let brief = findings_brief(
+                &work.project_root.display().to_string(),
+                round,
+                lenses,
+                &open,
+                &runs,
+                &decided,
+            );
             if findings::stalled(&counts, came_back) {
                 let question = format!(
                     "The review of {} keeps finding problems: {blocking_now} blocking issue{} still open after {round} rounds, \
@@ -1212,20 +1305,11 @@ impl VerifyCheck {
                     .map(|f| format!("- {} ({})", f.title, f.evidence))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let purpose = Purpose::Stalled { open: blocking_now };
-                let answer = self.ask_owner(&v.id, &question, &context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
-                if let Some(step) = self.answered(work, &after, &purpose, answer.as_deref()).await {
+                if let Some(step) = self.stalled(work, &after, &question, &context, blocking_now, &brief).await {
                     return step.into();
                 }
             }
-            return RoundEnd::Continue(findings_brief(
-                &work.project_root.display().to_string(),
-                round,
-                lenses,
-                &open,
-                &runs,
-                &decided,
-            ));
+            return RoundEnd::Continue(brief);
         }
         if !decided.is_empty() {
             return RoundEnd::Continue(findings_brief(
@@ -1277,7 +1361,7 @@ impl VerifyCheck {
                     work.project_root.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
-                return self.answered(work, &after, &Purpose::NoChecks, answer.as_deref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
+                return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
             }
             self.finish(&after, "not_verified", Some(reason));
             return RoundEnd::Finished;
@@ -1534,9 +1618,7 @@ impl VerifyCheck {
                 said,
                 findings::ROUNDS_WITHOUT_PROGRESS
             );
-            let purpose = Purpose::Stalled { open: 1 };
-            let answer = self.ask_owner(&v.id, &question, &text, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
-            if let Some(step) = self.answered(work, v, &purpose, answer.as_deref()).await {
+            if let Some(step) = self.stalled(work, v, &question, &text, 1, &text).await {
                 return step;
             }
         }
@@ -1581,7 +1663,7 @@ impl VerifyCheck {
                     work.work_dir.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
-                self.answered(work, v, &Purpose::OwnerEdits, answer.as_deref()).await.unwrap_or(Step::Finished)
+                self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref()).await.unwrap_or(Step::Finished)
             }
             other => {
                 // Why it did not land, as a code; the raw words (a git
@@ -1593,9 +1675,31 @@ impl VerifyCheck {
         }
     }
 
+    /// The loop stopped making progress with `open` blocking issues: the
+    /// owner is asked whether it goes on, lands anyway or stops. Once he
+    /// has sent it on [`STALL_GO_ONS`] times this turn and it stalls again,
+    /// it stops as stalled instead of asking again. `brief`: what the
+    /// builder is told if it goes on. `None`: the round goes on.
+    async fn stalled(&self, work: &mut Work, v: &db::Verification, question: &str, context: &str, open: usize, brief: &str) -> Option<Step> {
+        if self.verify.shared().gone_on_enough(&v.id) {
+            self.finish(v, "not_verified", Some(Why::new("stalled").with("open", open)));
+            return Some(Step::Finished);
+        }
+        let purpose = Purpose::Stalled { open, brief: brief.to_string() };
+        let answer = self.ask_owner(&v.id, question, context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+        if went_on(answer.as_ref()) {
+            self.verify.shared().go_on(&v.id);
+        }
+        self.answered(work, v, &purpose, answer.as_ref()).await
+    }
+
     /// What the owner's answer to one of the loop's questions does, the same
     /// whenever it comes. `None`: the round goes on.
-    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&str>) -> Option<Step> {
+    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>) -> Option<Step> {
+        if let Some(told) = instruction(purpose, answer) {
+            return Some(Step::Continue(told));
+        }
+        let answer = answer.map(Reply::text);
         match purpose {
             Purpose::Decision { title } => Some(match answer {
                 Some(a) => Step::Continue(format!("The owner decided \"{title}\": {a}. Carry it out.")),
@@ -1604,7 +1708,7 @@ impl VerifyCheck {
                     Step::Finished
                 }
             }),
-            Purpose::Stalled { open } => match answer {
+            Purpose::Stalled { open, .. } => match answer {
                 Some(KEEP_GOING) => None,
                 Some(LAND_ANYWAY) => {
                     Some(self.land_unverified(work, v, Why::new("landed_unreviewed")).await.map_or(Step::Finished, Step::Continue))
@@ -1750,8 +1854,6 @@ fn app_checks(app: &db::models::Agent, pages: &std::path::Path) -> Vec<checks::C
     }
 }
 
-/// The rules a review read, as a hash kept on its step: a review is skipped
-/// on unchanged work only under the same rules.
 /// `items` (a JSON array) added to the end of the array `into`.
 fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     let mut all = into.as_array().cloned().unwrap_or_default();
@@ -1759,6 +1861,8 @@ fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     *into = serde_json::Value::Array(all);
 }
 
+/// The rules a review read, as a hash kept on its step: a review is skipped
+/// on unchanged work only under the same rules.
 fn rules_hash(rules: &str) -> String {
     format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }
@@ -1791,5 +1895,63 @@ fn landing_message(spec: &str) -> String {
     match chars.next() {
         Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
         None => "Code changes made by an employee".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The card's choice is a choice; his typed words are his own words.
+    #[test]
+    fn an_answer_is_a_choice_or_his_own_words() {
+        assert_eq!(Reply::read(&json!({"picked": "Keep going"})), Some(Reply::Picked("Keep going".into())));
+        assert_eq!(Reply::read(&json!({"own_words": "add a test first"})), Some(Reply::Words("add a test first".into())));
+        assert_eq!(Reply::read(&json!({"response": "yes"})), Some(Reply::Words("yes".into())));
+        assert_eq!(Reply::read(&json!({})), None);
+    }
+
+    /// Review of #998: "keep going" typed to a stalled loop stopped it, and
+    /// anything but the exact choice did the wrong thing on the others.
+    /// Typed words are instructions on every question but a call of his.
+    #[test]
+    fn typed_words_are_instructions_never_a_guessed_choice() {
+        let words = Reply::Words("keep going, but add a test for the total".into());
+        for purpose in [Purpose::Stalled { open: 2, brief: String::new() }, Purpose::NoChecks, Purpose::OwnerEdits] {
+            let told = instruction(&purpose, Some(&words)).expect("words are an instruction");
+            assert!(told.contains("add a test for the total") && told.contains("next round checks it"), "{purpose:?}");
+            assert_eq!(instruction(&purpose, Some(&Reply::Picked(LAND_ANYWAY.into()))), None, "a choice does what it says");
+            assert_eq!(instruction(&purpose, None), None);
+        }
+        assert_eq!(instruction(&Purpose::Decision { title: "Pins".into() }, Some(&words)), None, "a call is carried out as he put it");
+    }
+
+    /// Review of #998: his words to a stalled loop replaced its findings,
+    /// so the builder never heard what was still open. They go on top of
+    /// the findings, which stay whole.
+    #[test]
+    fn his_words_to_a_stalled_loop_go_on_top_of_its_findings() {
+        let brief = "Independent reviewers checked your change.\n- f1 [blocker] total() drops cents: total.py:1";
+        let told = instruction(&Purpose::Stalled { open: 1, brief: brief.into() }, Some(&Reply::Words("use Decimal".into()))).unwrap();
+        assert!(told.starts_with(brief), "the findings stay whole and first: {told}");
+        assert!(told.contains("\"use Decimal\"") && told.contains("his words win"), "{told}");
+    }
+
+    /// Review of #998: a stalled loop the owner kept sending on asked him
+    /// again every round without end. He sends it on at most
+    /// [`STALL_GO_ONS`] times a turn, by choice or in words; a Land or Stop
+    /// is no go-on.
+    #[test]
+    fn a_stalled_loop_is_sent_on_a_bounded_number_of_times() {
+        assert!(went_on(Some(&Reply::Picked(KEEP_GOING.into()))));
+        assert!(went_on(Some(&Reply::Words("try a Decimal".into()))));
+        assert!(!went_on(Some(&Reply::Picked(LAND_ANYWAY.into()))) && !went_on(Some(&Reply::Picked(STOP_HERE.into()))) && !went_on(None));
+        let mut shared = Shared::default();
+        for _ in 0..STALL_GO_ONS {
+            assert!(!shared.gone_on_enough("v1"));
+            shared.go_on("v1");
+        }
+        assert!(shared.gone_on_enough("v1"));
+        assert!(!shared.gone_on_enough("v2"), "counted per verification");
     }
 }

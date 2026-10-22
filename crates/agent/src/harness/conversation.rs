@@ -554,7 +554,7 @@ pub(crate) fn order_as_heard(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 }
 
 /// The last row the call that wrote `reply` was built from.
-fn heard_through(reply: &ChatMessage) -> Option<String> {
+pub fn heard_through(reply: &ChatMessage) -> Option<String> {
     let meta: serde_json::Value = serde_json::from_str(reply.metadata.as_deref()?).ok()?;
     meta.get(HEARD_THROUGH)?.as_str().map(str::to_string)
 }

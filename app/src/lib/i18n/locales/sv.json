@@ -4536,6 +4536,10 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "Svarar på: {question}",
+		"tellIt": "Säg vad den ska göra",
+		"sending": "Skickar…",
+		"sendFailed": "Ditt svar skickades inte."
 	}
 }

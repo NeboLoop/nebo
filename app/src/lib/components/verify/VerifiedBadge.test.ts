@@ -25,6 +25,7 @@ vi.mock('@novnc/novnc', () => ({ default: class {} }));
 
 import VerifiedBadge from './VerifiedBadge.svelte';
 import VerificationHistory from './VerificationHistory.svelte';
+import VerificationQuestion from './VerificationQuestion.svelte';
 import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
 
 beforeAll(() => {
@@ -145,5 +146,18 @@ describe('BackgroundStatus', () => {
 	it('shows nothing when nothing runs and nothing is checked', () => {
 		const out = render(BackgroundStatus, { props: { sessionKey: 'agent:dev:web' } }).body;
 		expect(out).not.toContain('bg-status-row');
+	});
+});
+
+describe('VerificationQuestion', () => {
+	it("asks the loop's question in its sheet, with each choice, Skip, and his own words", () => {
+		const out = render(VerificationQuestion, {
+			props: { ask: { question: 'Pin saves only to local store', options: ['Save it to the thread', 'Keep it local'] }, onpick: async () => true, onclose: () => {} },
+		}).body;
+		expect(out).toContain('Pin saves only to local store');
+		expect(out).toContain('data-answer="Save it to the thread"');
+		expect(out).toContain('data-answer="Keep it local"');
+		expect(out).toContain('data-answer="__skip__"');
+		expect(out).toContain('Tell it what to do');
 	});
 });

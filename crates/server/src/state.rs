@@ -229,6 +229,9 @@ pub struct AppState {
     pub live_calls: crate::handlers::voice::LiveCalls,
     /// Open spreadsheet edit sessions (the Work panel's sheet view).
     pub sheets: crate::handlers::sheet::Sessions,
+    /// How each session's last turn ended, as a schedule's follow-up reads
+    /// it (`scheduler::turn_ended` writes it).
+    pub turn_ends: Arc<crate::scheduler::TurnEnds>,
 }
 
 impl AppState {

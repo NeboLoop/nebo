@@ -319,6 +319,10 @@ pub enum TurnExit {
     GoalPaused(goal::Pause),
 }
 
+/// How a run that panicked ended, as [`Harness::turn_ended`] tells it
+/// (there is no [`TurnExit`] for it: the run never reached one).
+pub const PANICKED: &str = "panicked";
+
 impl TurnExit {
     /// The word stored on the run's usage row and read by the workflow
     /// engine and `test runs`.
@@ -666,6 +670,10 @@ async fn run(
                 use super::verify::engine::Closed;
                 close_verifications(&h, &verify, Closed::Ended(super::verify::Why::new("turn_ended"))).await;
             }
+            // Its end is still told, freed first, as any end is: what waits
+            // on this turn (a schedule's answer) is not left waiting.
+            drop(guard);
+            h.turn_ended(&session_key, PANICKED);
             std::panic::resume_unwind(panic)
         }
     };
@@ -679,6 +687,7 @@ async fn run(
         )
         .await;
     drop(guard);
+    h.turn_ended(&session_key, &exit.label());
     if carried > 0 {
         match h.answer_thread() {
             Some(answer) => {
@@ -5353,6 +5362,50 @@ mod tests {
         let tab = seen.iter().find(|r| !r.is_command).and_then(|r| r.session_id.clone()).expect("the run opened a tab");
         let closes: Vec<Option<String>> = seen.iter().filter(|r| r.tool == "close_session_tabs").map(|r| r.session_id.clone()).collect();
         assert_eq!(closes, vec![Some(tab)], "the panicked run's tab closes");
+    }
+
+    /// A run that panics still tells its end, so nothing waiting on the
+    /// turn (a schedule's answer) waits forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_panics_still_tells_its_end() {
+        struct Boom;
+        impl tools::registry::DynTool for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            fn description(&self) -> String {
+                "fails hard".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move { panic!("the tool broke") })
+            }
+        }
+        let model = Scripted::new(vec![Step::Call("boom", serde_json::json!({}))]);
+        let h = harness_with(&model, vec![Box::new(Boom)]).await;
+        let ends = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let told = ends.clone();
+        h.bind(crate::harness::Outlets {
+            turn_ended: Some(Arc::new(move |key: &str, exit: &str| told.lock().unwrap().push((key.to_string(), exit.to_string())))),
+            ..Default::default()
+        });
+        let req = owner("Do the thing");
+        let key = req.session_key.clone();
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        assert_eq!(*ends.lock().unwrap(), vec![(key, PANICKED.to_string())]);
     }
 
     /// A tab the run left open for the owner stays open when it ends.
@@ -11491,6 +11544,214 @@ mod tests {
         })
     }
 
+
+    /// The owner's replies to the loop's questions, in order, as the
+    /// ask_owner tool returns them; each question asked is kept. `on_ask`
+    /// runs as each question is asked.
+    struct OwnerReplies {
+        replies: Mutex<std::collections::VecDeque<serde_json::Value>>,
+        asked: Arc<Mutex<Vec<String>>>,
+        on_ask: Option<Box<dyn Fn() + Send + Sync>>,
+    }
+
+    impl tools::registry::DynTool for OwnerReplies {
+        fn name(&self) -> &str {
+            "ask_owner"
+        }
+        fn description(&self) -> String {
+            "asks the owner".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.asked.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                if let Some(f) = &self.on_ask {
+                    f();
+                }
+                let reply = self.replies.lock().unwrap().pop_front().expect("a question the test did not expect");
+                tools::ToolResult::ok(reply.to_string())
+            })
+        }
+    }
+
+    /// The same blocker, every round: a review that never gets fewer.
+    const SAME_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "kind": "defect", "title": "total() drops cents", "evidence": "total.py:1", "repro": "total(0.1, 0.2)", "impact": "invoices are wrong", "fix": "add exactly"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+
+    /// A verifying harness whose owner answers with `replies`; `on_ask`
+    /// runs as each question is asked.
+    async fn stalling_harness(
+        model: &Arc<Scripted>,
+        replies: Vec<serde_json::Value>,
+        on_ask: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> (Harness, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let h = harness_with(
+            model,
+            vec![
+                Box::new(FileWriter),
+                Box::new(Checks(Arc::new(Mutex::new(Vec::new())))),
+                Box::new(OwnerReplies { replies: Mutex::new(replies.into()), asked: asked.clone(), on_ask }),
+            ],
+        )
+        .await;
+        let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+        h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+        (h, asked)
+    }
+
+    /// Review of #998: the owner's own words to a stalled loop replaced its
+    /// findings, and the builder heard only his words. They go on top of
+    /// the round's findings, in the same brief.
+    #[test]
+    fn his_words_to_a_stalled_loop_go_on_top_of_its_findings() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried again."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Used Decimal."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                ]);
+                let replies = vec![serde_json::json!({"own_words": "use Decimal for the total"}), serde_json::json!({"picked": "Stop here"})];
+                let (h, asked) = stalling_harness(&model, replies, None).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(asked.lock().unwrap().len(), 2, "{:?}", asked.lock().unwrap());
+                let calls = model.calls();
+                let told = calls
+                    .iter()
+                    .flat_map(|c| c.messages.iter())
+                    .find(|m| m.content.contains("use Decimal for the total"))
+                    .expect("the builder heard his words");
+                assert!(told.content.contains("Independent reviewers checked your change"), "the findings brief stays: {}", told.content);
+                assert!(told.content.contains("total() drops cents"), "with its findings: {}", told.content);
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert!(v.reason.contains("stopped_by_owner"), "{v:?}");
+            })
+        })
+    }
+
+    /// Review of #998: his own words to a stalled loop's question asked
+    /// again after a restart went on top of the card's short list of
+    /// problems. They go on top of the full brief the question was asked
+    /// with: repro, impact and fix included.
+    #[test]
+    fn his_words_after_a_restart_go_on_top_of_the_brief_it_was_asked_with() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried again."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                    Step::Say("Nothing else."),
+                    Step::Say("Used Decimal."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                ]);
+                // The question as the row held it while it was asked: what a
+                // restart finds.
+                let rows: Arc<Mutex<Option<Arc<db::Store>>>> = Default::default();
+                let held: Arc<Mutex<Option<serde_json::Value>>> = Default::default();
+                let (r, k) = (rows.clone(), held.clone());
+                let on_ask: Box<dyn Fn() + Send + Sync> = Box::new(move || {
+                    let store = r.lock().unwrap().clone().expect("the store");
+                    let v = store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    k.lock().unwrap().get_or_insert(v.pending_ask.expect("the question waits on the row"));
+                });
+                let replies = vec![
+                    serde_json::json!({"picked": "Stop here"}),
+                    serde_json::json!({"own_words": "use Decimal for the total"}),
+                    serde_json::json!({"picked": "Stop here"}),
+                ];
+                let (h, asked) = stalling_harness(&model, replies, Some(on_ask)).await;
+                *rows.lock().unwrap() = Some(h.store.clone());
+                run_turn(&h, owner("Make total() add a and b")).await;
+                // A restart while the question waited.
+                let ask = held.lock().unwrap().clone().expect("the stalled question was asked");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                h.store.set_verification_pending_ask(&v.id, Some(&ask)).unwrap();
+                h.store
+                    .set_verification_state(&v.id, &db::VerificationState { state: "paused", rounds: v.rounds, ..Default::default() }, 5)
+                    .unwrap();
+                let before = model.calls().len();
+                run_turn(&h, owner("Anything else?")).await;
+                assert_eq!(asked.lock().unwrap().len(), 3, "{:?}", asked.lock().unwrap());
+                let calls = model.calls();
+                let told = calls[before..]
+                    .iter()
+                    .flat_map(|c| c.messages.iter())
+                    .find(|m| m.content.contains("use Decimal for the total"))
+                    .expect("the builder heard his words");
+                assert!(
+                    told.content.trim_start_matches("<system-reminder>").trim_start().starts_with("Review of your code work: Independent reviewers checked your change"),
+                    "the brief first, whole: {}",
+                    told.content
+                );
+                for part in ["total() drops cents", "total(0.1, 0.2)", "invoices are wrong", "add exactly"] {
+                    assert!(told.content.contains(part), "the brief keeps {part:?}: {}", told.content);
+                }
+                assert!(told.content.contains("his words win"), "his words on top: {}", told.content);
+            })
+        })
+    }
+
+    /// Review of #998: a stalled loop the owner kept sending on asked him
+    /// again every round, without end. After he has sent it on three
+    /// times in a turn and it stalls again, it stops as stalled, said so,
+    /// with no fourth question.
+    #[test]
+    fn a_stalled_loop_he_keeps_sending_on_stops_after_three_tries() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let mut steps = vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                ];
+                for _ in 0..5 {
+                    steps.push(Step::Say(SAME_BLOCKER));
+                    steps.push(Step::Say("Tried."));
+                }
+                steps.push(Step::Say(SAME_BLOCKER));
+                steps.push(Step::Say("Stopped: it kept finding the same problem."));
+                let model = Scripted::new(steps);
+                let replies = vec![serde_json::json!({"picked": "Keep going"}); 4];
+                let (h, asked) = stalling_harness(&model, replies, None).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let asked = asked.lock().unwrap().clone();
+                assert_eq!(asked.len(), 3, "asked three times, never a fourth: {asked:?}");
+                assert!(asked.iter().all(|q| q.contains("keeps finding problems")), "{asked:?}");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "not_verified", "{v:?}");
+                assert!(v.reason.contains(r#""code":"stalled""#), "said as stalled: {}", v.reason);
+                assert_eq!(model.calls().len(), 14, "it stopped at the sixth review");
+            })
+        })
+    }
     /// Review round 3 M5: work that kept changing after it was reported is
     /// checked again over the change: the old verdict is no longer what its
     /// badge says, and the new one is reported.
@@ -11708,6 +11969,39 @@ mod tests {
         })
     }
 
+    /// A round whose reviewers' copy could not be made ends unreviewed, and
+    /// its record names each reviewer as failed, never "no issues".
+    #[test]
+    fn a_round_nobody_could_review_records_each_reviewer_failed() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                // The reviewers' folder can't be made: a file sits where it goes.
+                let reviewers = config::copies_dir().unwrap().join("verify");
+                let _ = std::fs::remove_dir_all(&reviewers);
+                std::fs::write(&reviewers, "").unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say("It could not be reviewed, so it isn't verified."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                std::fs::remove_file(&reviewers).unwrap();
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#), "{v:?}");
+                assert!(v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].kind, "review");
+                assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
+                assert_eq!(rounds[0].detail["reviewers"], serde_json::json!({ "correctness": "failed" }));
+                assert!(!model.calls().iter().any(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))), "no reviewer ran");
+            })
+        })
+    }
+
     /// Review 2026-10-20 B3: work reported once is never reported again: a
     /// turn with no code after a turn whose work was not verified costs
     /// exactly one model call.
@@ -11742,7 +12036,7 @@ mod tests {
     #[test]
     fn an_answer_after_a_restart_does_what_it_did_before() {
         for (purpose, picked, state, reason) in [
-            (serde_json::json!({"kind": "stalled", "open": 2}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
+            (serde_json::json!({"kind": "stalled", "open": 2, "brief": ""}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
             (serde_json::json!({"kind": "no_checks"}), "Keep it in its copy", "not_verified", r#"{"code":"no_checks"}"#),
             (serde_json::json!({"kind": "owner_edits"}), "Keep mine, don't land it", "verified", r#"{"code":"kept_own_edits"}"#),
         ] {

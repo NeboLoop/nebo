@@ -3,18 +3,19 @@
 //! rebuilt on disk and a dead or silent process all go through it.
 //!
 //! Liveness is active. The child's exit is awaited on its own handle (never
-//! inferred from `kill(pid, 0)`, which a zombie still answers), and its socket
-//! is probed on a timer, so a process that died, or stopped accepting
+//! inferred from `kill(pid, 0)`, which a zombie still answers), and it is
+//! probed on a timer with a call carrying its token, so a process that died, or stopped accepting
 //! connections, is noticed within seconds instead of on the next request.
 //!
 //! A failure is logged with its exit status and the last lines of the
-//! sidecar's log, its socket is removed, and it is restarted with backoff. A
+//! sidecar's log, and it is restarted with backoff. A
 //! run of fast failures ends in [`SidecarState::Failed`], the state the app
 //! shows the person, after which it keeps retrying on the slow cadence without
 //! flapping the state. A permanent cause (no program, one the system refuses
 //! to run, a damaged manifest) is `Failed` at once. A clean shutdown is never
 //! counted as a crash.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,7 +24,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{info, warn};
 
 use crate::manifest::Manifest;
-use crate::runtime::{Process, Runtime};
+use crate::runtime::{Health, Process, Runtime};
 
 /// How a supervisor waits between attempts and decides a sidecar is down.
 #[derive(Debug, Clone)]
@@ -36,7 +37,7 @@ pub struct RestartPolicy {
     pub healthy_after: Duration,
     /// Consecutive failures before the app shows `Failed`.
     pub max_failures: u32,
-    /// How often a running sidecar's socket is probed.
+    /// How often a running sidecar's address is probed.
     pub probe_every: Duration,
     /// Consecutive failed probes that mean the process is no longer serving.
     pub probe_misses: u32,
@@ -67,10 +68,20 @@ impl RestartPolicy {
 #[derive(Debug)]
 pub struct Launched {
     pub pid: u32,
-    pub sock_path: PathBuf,
+    /// The loopback address it serves on.
+    pub addr: SocketAddr,
     /// The per-launch token the sidecar authenticates to Nebo's API with.
     pub app_token: String,
+    /// The per-launch token Nebo sends on every call to the sidecar.
+    pub sidecar_token: String,
     pub manifest: Manifest,
+}
+
+impl Launched {
+    /// One `UIService.HandleRequest` call to this sidecar, with its token.
+    pub async fn handle_request(&self, req: proto::HttpRequest) -> Result<proto::HttpResponse, tonic::Status> {
+        crate::runtime::handle_request(self.addr, &self.sidecar_token, req).await
+    }
 }
 
 /// What a supervised sidecar is doing. Every change is published.
@@ -187,7 +198,7 @@ impl Supervisor {
     pub async fn shutdown(&self) {
         let _ = self.cmds.send(Cmd::Stop);
         let mut rx = self.state.clone();
-        // Off is published once the process is stopped and its socket removed;
+        // Off is published once the process is stopped;
         // a closed channel means the supervisor is already gone.
         let _ = rx.wait_for(|s| matches!(s, SidecarState::Off)).await;
     }
@@ -237,8 +248,8 @@ async fn supervise(
 ) {
     let mut out = Publisher { tx, waiting: Vec::new() };
     let name = tool_dir.display().to_string();
-    // A previous Nebo that died without stopping its sidecar leaves it running
-    // on our socket; retire it before the first launch.
+    // A previous Nebo that died without stopping its sidecar leaves it
+    // running; retire it before the first launch.
     runtime.cleanup_stale(&tool_dir);
 
     let mut failures: u32 = 0;
@@ -255,8 +266,9 @@ async fn supervise(
                 quiet = false;
                 let launched = Arc::new(Launched {
                     pid: process.pid,
-                    sock_path: process.sock_path.clone(),
+                    addr: process.addr,
                     app_token: process.app_token.clone(),
+                    sidecar_token: process.sidecar_token.clone(),
                     manifest: process.manifest.clone(),
                 });
                 out.set(SidecarState::Running(launched));
@@ -318,7 +330,7 @@ async fn supervise(
     }
 }
 
-/// Watch a running sidecar until it ends: its exit awaited, its socket probed,
+/// Watch a running sidecar until it ends: its exit awaited, its address probed,
 /// its binary checked, commands obeyed. Returns how it ended and whether a
 /// revive request is what found it down.
 async fn watch_process(
@@ -329,7 +341,7 @@ async fn watch_process(
 ) -> (Ended, bool) {
     let mut probe = tokio::time::interval(policy.probe_every);
     probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    probe.tick().await; // the first tick is immediate; launch already checked the socket
+    probe.tick().await; // the first tick is immediate; launch already checked the address
     let mut misses: u32 = 0;
     loop {
         tokio::select! {
@@ -339,13 +351,20 @@ async fn watch_process(
                     process.stop().await;
                     return (Ended::BinaryChanged, false);
                 }
-                if answers(&process).await {
-                    misses = 0;
-                } else {
-                    misses += 1;
-                    if misses >= policy.probe_misses {
+                match crate::runtime::probe(process.addr, &process.sidecar_token, &process.app_token).await {
+                    Health::Proven => misses = 0,
+                    Health::Unreachable => {
+                        misses += 1;
+                        if misses >= policy.probe_misses {
+                            process.stop().await;
+                            return (Ended::Down(format!("stopped accepting connections ({misses} probes in a row)")), false);
+                        }
+                    }
+                    // Whatever holds its address is not the sidecar: stop
+                    // sending it anything, now.
+                    Health::Unproven(why) => {
                         process.stop().await;
-                        return (Ended::Down(format!("stopped accepting connections ({misses} probes in a row)")), false);
+                        return (Ended::Down(format!("{} ({why})", Health::UNPROVEN)), false);
                     }
                 }
             }
@@ -356,30 +375,22 @@ async fn watch_process(
                 }
                 Some(Cmd::Revive(reply)) => {
                     out.waiting.push(reply);
-                    if !answers(&process).await {
-                        process.stop().await;
-                        return (Ended::Down("a request could not reach it".into()), true);
+                    match crate::runtime::probe(process.addr, &process.sidecar_token, &process.app_token).await {
+                        Health::Proven => {}
+                        Health::Unreachable => {
+                            process.stop().await;
+                            return (Ended::Down("a request could not reach it".into()), true);
+                        }
+                        Health::Unproven(why) => {
+                            process.stop().await;
+                            return (Ended::Down(format!("{} ({why})", Health::UNPROVEN)), true);
+                        }
                     }
                     out.flush();
                 }
             },
         }
     }
-}
-
-/// Whether the sidecar accepts a connection on its socket right now.
-#[cfg(unix)]
-async fn answers(process: &Process) -> bool {
-    matches!(
-        tokio::time::timeout(Duration::from_secs(2), tokio::net::UnixStream::connect(&process.sock_path)).await,
-        Ok(Ok(_))
-    )
-}
-
-/// Unix sockets only: elsewhere the awaited exit is the liveness signal.
-#[cfg(not(unix))]
-async fn answers(_process: &Process) -> bool {
-    true
 }
 
 #[cfg(test)]
@@ -395,7 +406,7 @@ mod tests {
 }
 
 /// Real processes: the fixture sidecar, killed, crashed and starved.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod process_tests {
     use super::*;
     use crate::test_sidecar::{self, TestApp};
@@ -419,10 +430,20 @@ mod process_tests {
     }
 
     fn pid(state: &SidecarState) -> u32 {
+        running(state).pid
+    }
+
+    fn running(state: &SidecarState) -> Arc<Launched> {
         match state {
-            SidecarState::Running(l) => l.pid,
+            SidecarState::Running(l) => l.clone(),
             other => panic!("expected running, got {other:?}"),
         }
+    }
+
+    /// Whether it answers the probe's challenge and proves itself.
+    async fn connects(state: &SidecarState) -> bool {
+        let l = running(state);
+        crate::runtime::probe(l.addr, &l.sidecar_token, &l.app_token).await == Health::Proven
     }
 
     /// Wait until the state satisfies `f`, or fail after `secs`.
@@ -441,10 +462,9 @@ mod process_tests {
         let first = pid(&sup.settled(Duration::from_secs(20)).await);
         test_sidecar::kill(first);
         let again = until(&sup, 10, |s| matches!(s, SidecarState::Running(l) if l.pid != first)).await;
-        assert!(tokio::net::UnixStream::connect(app.sock_path()).await.is_ok(), "the new one serves");
+        assert!(connects(&again).await, "the new one serves");
         assert_eq!(app.launches(), 2);
         assert!(!test_sidecar::exists(first), "the dead one was reaped, not left a zombie");
-        let _ = again;
         sup.shutdown().await;
     }
 
@@ -455,26 +475,75 @@ mod process_tests {
         let sup = start(&app, quick());
         let first = pid(&sup.settled(Duration::from_secs(20)).await);
         app.set_mode("serve");
-        until(&sup, 10, |s| matches!(s, SidecarState::Running(l) if l.pid != first)).await;
-        assert!(tokio::net::UnixStream::connect(app.sock_path()).await.is_ok());
+        let again = until(&sup, 10, |s| matches!(s, SidecarState::Running(l) if l.pid != first)).await;
+        assert!(connects(&again).await);
         sup.shutdown().await;
     }
 
-    /// The owner's report: a sidecar process behind a leftover socket file
-    /// that refuses connections. With the probe far away, the request that
-    /// finds it unreachable revives it through the same restart path.
+    /// The owner's report: a live sidecar process that refuses connections.
+    /// With the probe far away, the request that finds it unreachable
+    /// revives it through the same restart path.
     #[tokio::test]
     async fn a_request_that_finds_it_unreachable_relaunches_it() {
         let app = TestApp::new("stale");
         app.set_mode("deaf");
         let sup = start(&app, RestartPolicy { probe_every: Duration::from_secs(3600), ..quick() });
-        let first = pid(&sup.settled(Duration::from_secs(20)).await);
-        assert!(app.sock_path().exists(), "the socket file is there");
-        assert!(tokio::net::UnixStream::connect(app.sock_path()).await.is_err(), "and refuses");
+        let deaf = sup.settled(Duration::from_secs(20)).await;
+        let first = pid(&deaf);
+        assert!(!connects(&deaf).await, "it refuses");
         app.set_mode("serve");
         let now = sup.revive(Duration::from_secs(20)).await;
         assert_ne!(pid(&now), first);
-        assert!(tokio::net::UnixStream::connect(app.sock_path()).await.is_ok());
+        assert!(connects(&now).await);
+        sup.shutdown().await;
+    }
+
+    /// The sidecar stopped listening and another process took its port: the
+    /// port accepts connections, but nothing there answers with the launch's
+    /// token, so the probe takes the sidecar for dead and relaunches it. A
+    /// bare connection never passes for the sidecar.
+    #[tokio::test]
+    async fn an_imposter_on_its_port_is_not_taken_for_it() {
+        let app = TestApp::new("imposter");
+        app.set_mode("deaf");
+        let sup = start(&app, quick());
+        let deaf = sup.settled(Duration::from_secs(20)).await;
+        let first = running(&deaf);
+        let imposter = std::net::TcpListener::bind(first.addr).expect("take the sidecar's port");
+        app.set_mode("serve");
+        let again = until(&sup, 10, |s| matches!(s, SidecarState::Running(l) if l.pid != first.pid)).await;
+        assert!(tokio::net::TcpStream::connect(first.addr).await.is_ok(), "the imposter still accepts connections");
+        assert_ne!(running(&again).addr, first.addr);
+        assert!(connects(&again).await, "the relaunched one answers");
+        drop(imposter);
+        sup.shutdown().await;
+    }
+
+    /// Something on the sidecar's address that saw the sidecar token on
+    /// Nebo's calls answers the health check with a correct-looking proof,
+    /// keyed with that token. It cannot hold the app token, so the proof is
+    /// wrong: the first probe stops it — no grace for misses — and the
+    /// supervisor relaunches the real sidecar. The real one proves itself.
+    #[tokio::test]
+    async fn an_imposter_that_captured_the_sidecar_token_cannot_prove_itself() {
+        let app = TestApp::new("captured");
+        // Probes far apart, so it is one probe, not a run of misses, that ends it.
+        let policy = RestartPolicy { probe_misses: 100, ..quick() };
+        let sup = start(&app, policy);
+        let real = sup.settled(Duration::from_secs(20)).await;
+        assert!(connects(&real).await, "the real sidecar proves itself");
+        app.set_imposter(true);
+        let caught = until(&sup, 10, |s| !s.is_running()).await;
+        let reason = match &caught {
+            SidecarState::Restarting { reason, .. } | SidecarState::Failed { reason, .. } => reason.clone(),
+            other => panic!("expected it taken down, got {other:?}"),
+        };
+        assert!(reason.contains(Health::UNPROVEN), "{reason}");
+        assert!(reason.contains("a wrong proof"), "{reason}");
+        assert!(!test_sidecar::exists(pid(&real)), "the process behind the address was stopped");
+        app.set_imposter(false);
+        let again = until(&sup, 20, |s| matches!(s, SidecarState::Running(l) if l.pid != pid(&real))).await;
+        assert!(connects(&again).await);
         sup.shutdown().await;
     }
 
@@ -510,13 +579,14 @@ mod process_tests {
     async fn a_clean_shutdown_is_not_a_crash() {
         let app = TestApp::new("clean");
         let sup = start(&app, quick());
-        let first = pid(&sup.settled(Duration::from_secs(20)).await);
+        let up = sup.settled(Duration::from_secs(20)).await;
+        let first = pid(&up);
         let mut rx = sup.subscribe();
         rx.borrow_and_update();
         sup.shutdown().await;
         assert!(matches!(*rx.borrow(), SidecarState::Off), "off, never restarting or failed");
         assert!(!test_sidecar::exists(first));
-        assert!(!app.sock_path().exists(), "its socket is removed");
+        assert!(!connects(&up).await, "nothing listens on its address any more");
         assert_eq!(app.launches(), 1);
     }
 

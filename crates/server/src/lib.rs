@@ -53,7 +53,7 @@ pub mod layers_update;
 mod liveness;
 #[cfg(test)]
 mod staffed_proof;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod sidecar_proof;
 #[cfg(test)]
 mod harness;
@@ -2962,6 +2962,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         linked_apps: Default::default(),
         live_calls: Default::default(),
         sheets: Default::default(),
+        turn_ends: Default::default(),
     };
 
     // The assistant's side of the guided first-run chat: it reads the step
@@ -3112,6 +3113,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             verification_changed: Some({
                 let state = state.clone();
                 Arc::new(move |id: &str| verification::broadcast(&state, id))
+            }),
+            // A schedule's request a turn took in is settled by its end.
+            turn_ended: Some({
+                let state = state.clone();
+                Arc::new(move |session_key: &str, exit: &str| scheduler::turn_ended(&state, session_key, exit))
             }),
         });
         // `suggest_goal` reaches the agreed goal through the harness.

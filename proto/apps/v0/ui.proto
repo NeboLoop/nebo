@@ -8,7 +8,7 @@ import "proto/apps/v0/common.proto";
 
 // UIService is the interface for apps that provide a configuration UI.
 // Apps serve their own HTML/CSS/JS frontend. Nebo proxies HTTP requests
-// through gRPC over the existing Unix socket.
+// through gRPC to the app's loopback address, with its launch token.
 service UIService {
   // HealthCheck verifies the app is running.
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);

@@ -4536,6 +4536,10 @@
 		},
 		"time": {
 			"minutes": "{m} דק׳ {s} שנ׳"
-		}
+		},
+		"answering": "עונה על: {question}",
+		"tellIt": "אמור לו מה לעשות",
+		"sending": "שולח…",
+		"sendFailed": "התשובה שלך לא נשלחה."
 	}
 }
