@@ -822,8 +822,8 @@ The SDKs (`nebo-sdk-rust`, `nebo-sdk-go`, `nebo-sdk-c`) do all of this in their 
 2. Serve the `UIService` gRPC service on it.
 3. Print one line on stdout once it is listening, and flush it: `nebo-app-listening 127.0.0.1:<port>`. Nebo reads it, accepts only a loopback address, and connects there.
 4. Refuse every call that does not carry `authorization: Bearer <NEBO_SIDECAR_TOKEN>` with `UNAUTHENTICATED`, including a call carrying `NEBO_APP_TOKEN`. Nebo sends the sidecar token on every call; nothing else on the computer has it. Answer `UIService.HealthCheck` (with that token): it is Nebo's health probe, and it carries a challenge (below).
-6. Prove yourself on every health probe. The probe carries `x-nebo-challenge`: a fresh 32-byte nonce in lowercase hex. Answer OK with the response header `x-nebo-proof` = lowercase hex of HMAC-SHA256 with key `NEBO_APP_TOKEN` over `nonce bytes || NEBO_SIDECAR_TOKEN || your port as 2 bytes big-endian`. Only the sidecar Nebo launched holds `NEBO_APP_TOKEN` (Nebo never sends it), so a process that took your port cannot answer; Nebo stops sending it anything at once and relaunches you.
-5. Exit when stdin closes. Nebo holds the other end for the sidecar's whole life, so this is how a sidecar notices Nebo is gone, however it went. Exit on SIGTERM too.
+5. Prove yourself on every health probe. The probe carries `x-nebo-challenge`: a fresh 32-byte nonce in lowercase hex. Answer OK with the response header `x-nebo-proof` = lowercase hex of HMAC-SHA256 with key `NEBO_APP_TOKEN` over `nonce bytes || NEBO_SIDECAR_TOKEN || your port as 2 bytes big-endian`. Only the sidecar Nebo launched holds `NEBO_APP_TOKEN` (Nebo never sends it), so a process that took your port cannot answer; Nebo stops sending it anything at once and relaunches you.
+6. Exit when stdin closes. Nebo holds the other end for the sidecar's whole life, so this is how a sidecar notices Nebo is gone, however it went. Exit on SIGTERM too.
 
 Minimal Rust example, with the SDK:
 

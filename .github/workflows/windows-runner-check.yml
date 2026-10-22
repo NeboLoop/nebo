@@ -197,3 +197,13 @@ jobs:
           cargo test -p nebo-agent tool_credentials
           cargo test -p nebo-ai providers::cli
           cargo test -p nebo-server --lib harness::permissions::proof::a_linked_agent_calls_nebos_tools_as_each_turn -- --exact --nocapture
+
+      # App sidecars on Windows, for real: the fixture sidecar listens on
+      # loopback, announces its address, proves itself to the health probe
+      # and exits when its stdin closes; the supervisor restarts a killed one,
+      # refuses an imposter on its port, and the app proxy serves through it.
+      - name: App sidecars on Windows
+        shell: bash
+        run: |
+          cargo test -p nebo-napp -- runtime:: supervisor::
+          cargo test -p nebo-server --lib sidecar_proof

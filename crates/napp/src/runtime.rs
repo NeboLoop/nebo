@@ -66,11 +66,6 @@ pub struct Process {
 }
 
 impl Process {
-    /// Get the gRPC endpoint for this tool.
-    pub fn grpc_endpoint(&self) -> String {
-        format!("http://{}", self.addr)
-    }
-
     /// Check if the binary on disk has changed since launch.
     ///
     /// Follows symlinks so a rebuild of the target binary is detected even
@@ -538,10 +533,9 @@ pub async fn probe(addr: SocketAddr, sidecar_token: &str, app_token: &str) -> He
     };
     let answer = match tokio::time::timeout(PROBE_TIMEOUT, call).await {
         Err(_) => return Health::Unreachable,
-        // A connection that could not be made, or one that never spoke gRPC.
-        Ok(Err(status)) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::Unknown) => {
-            return Health::Unreachable;
-        }
+        Ok(Err(status)) if unreachable(&status) => return Health::Unreachable,
+        // Whatever holds the address answered with a status of its own, any
+        // status: the sidecar answers its probe with a proof, never a refusal.
         Ok(Err(status)) => return Health::Unproven(format!("{}: {}", status.code(), status.message())),
         Ok(Ok(answer)) => answer,
     };
@@ -556,6 +550,15 @@ pub async fn probe(addr: SocketAddr, sidecar_token: &str, app_token: &str) -> He
         Ok(()) => Health::Proven,
         Err(_) => Health::Unproven("a wrong proof".into()),
     }
+}
+
+/// Whether a failed probe found nothing to answer it: the connection could
+/// not be made, or it broke before a gRPC answer came back. tonic keeps the
+/// transport's own error as the status's source then; a status the peer sent
+/// has none. Only this is a miss the supervisor may wait out: a status the
+/// peer chose (`UNAVAILABLE` included) is an answer without a proof.
+fn unreachable(status: &tonic::Status) -> bool {
+    std::error::Error::source(status).is_some()
 }
 
 /// The program a tool directory runs, if it has one — the ONE rule for
@@ -690,7 +693,7 @@ mod tests {
 }
 
 /// The fixture sidecar, launched for real.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod process_tests {
     use super::*;
     use crate::test_sidecar::{self, TestApp};
@@ -723,5 +726,44 @@ mod process_tests {
         assert!(!test_sidecar::exists(pid), "the process is gone");
         assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "nothing listens");
         assert!(!process.pid_file.exists(), "its pid file is removed");
+    }
+
+    /// A probe tells nothing-answered from something-answered. A closed port
+    /// is a miss the supervisor may wait out; a server that answers the
+    /// probe with a status of its own, `UNAVAILABLE` included, is unproven
+    /// and is never sent another request.
+    #[tokio::test]
+    async fn a_status_the_peer_sent_is_unproven_and_a_closed_port_is_unreachable() {
+        use proto::ui_service_server::{UiService, UiServiceServer};
+        struct Refuses;
+        #[tonic::async_trait]
+        impl UiService for Refuses {
+            async fn health_check(
+                &self,
+                _: tonic::Request<proto::HealthCheckRequest>,
+            ) -> Result<tonic::Response<proto::HealthCheckResponse>, tonic::Status> {
+                Err(tonic::Status::unavailable("busy, try later"))
+            }
+            async fn configure(&self, _: tonic::Request<proto::SettingsMap>) -> Result<tonic::Response<proto::Empty>, tonic::Status> {
+                Ok(tonic::Response::new(proto::Empty {}))
+            }
+            async fn handle_request(
+                &self,
+                _: tonic::Request<proto::HttpRequest>,
+            ) -> Result<tonic::Response<proto::HttpResponse>, tonic::Status> {
+                Err(tonic::Status::unavailable("busy"))
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = futures::stream::unfold(listener, |l| async move { Some((l.accept().await.map(|(s, _)| s), l)) });
+        tokio::spawn(tonic::transport::Server::builder().add_service(UiServiceServer::new(Refuses)).serve_with_incoming(incoming));
+        match probe(addr, "sidecar-token", "app-token").await {
+            Health::Unproven(why) => assert!(why.contains("busy, try later"), "{why}"),
+            other => panic!("a peer's own UNAVAILABLE must be unproven, got {other:?}"),
+        }
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert_eq!(probe(closed, "sidecar-token", "app-token").await, Health::Unreachable);
     }
 }

@@ -375,9 +375,16 @@ async fn watch_process(
                 }
                 Some(Cmd::Revive(reply)) => {
                     out.waiting.push(reply);
-                    if crate::runtime::probe(process.addr, &process.sidecar_token, &process.app_token).await != Health::Proven {
-                        process.stop().await;
-                        return (Ended::Down("a request could not reach it".into()), true);
+                    match crate::runtime::probe(process.addr, &process.sidecar_token, &process.app_token).await {
+                        Health::Proven => {}
+                        Health::Unreachable => {
+                            process.stop().await;
+                            return (Ended::Down("a request could not reach it".into()), true);
+                        }
+                        Health::Unproven(why) => {
+                            process.stop().await;
+                            return (Ended::Down(format!("{} ({why})", Health::UNPROVEN)), true);
+                        }
                     }
                     out.flush();
                 }
@@ -399,7 +406,7 @@ mod tests {
 }
 
 /// Real processes: the fixture sidecar, killed, crashed and starved.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod process_tests {
     use super::*;
     use crate::test_sidecar::{self, TestApp};

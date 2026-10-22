@@ -1370,6 +1370,22 @@ fn app_connection_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
         && origin[url::Position::BeforeHost..url::Position::AfterPort].eq_ignore_ascii_case(host)
 }
 
+/// Whether a request header is passed on to the app's sidecar. Nebo's own
+/// credentials never are: the owner's session cookie and bearer, a proxy's
+/// credential, the tunnel's stamp, the app page's pass, a run's credential,
+/// and the connected-account metadata the platform adds itself. A sidecar
+/// calls Nebo with its own `NEBO_APP_TOKEN`; whatever holds its address sees
+/// nothing that opens Nebo.
+fn reaches_sidecar(name: &axum::http::HeaderName) -> bool {
+    let name = name.as_str();
+    !(name.starts_with("x-nebo-connected-")
+        || name == agent::tool_credentials::HEADER
+        || matches!(
+            name,
+            "authorization" | "cookie" | "proxy-authorization" | "x-nebo-tunnel-auth" | crate::middleware::APP_VIEW_PASS
+        ))
+}
+
 /// ANY /apps/{agent_id}/api/*path — proxy HTTP request to sidecar via gRPC UIService.
 ///
 /// The sidecar serves gRPC on its loopback address, on every OS. Nebo converts
@@ -1402,8 +1418,7 @@ pub async fn proxy_to_sidecar(
     let query = req.uri().query().unwrap_or("").to_string();
     let mut headers_map = std::collections::HashMap::new();
     for (name, value) in req.headers() {
-        // Native connection metadata is platform-owned, never browser-supplied.
-        if name.as_str().starts_with("x-nebo-connected-") { continue; }
+        if !reaches_sidecar(name) { continue; }
         if let Ok(v) = value.to_str() {
             headers_map.insert(name.to_string(), v.to_string());
         }
@@ -2154,6 +2169,32 @@ mod connection_origin_tests {
         assert!(!app_connection_origin_allowed(&h));
         h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
         assert!(!app_connection_origin_allowed(&h));
+    }
+}
+
+#[cfg(test)]
+mod sidecar_header_tests {
+    use super::reaches_sidecar;
+
+    /// Whatever holds a sidecar's address sees the app's own request, never
+    /// a credential that opens Nebo.
+    #[test]
+    fn a_sidecar_never_sees_nebos_credentials() {
+        for name in [
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "x-nebo-tunnel-auth",
+            "x-nebo-app-view",
+            "x-nebo-run-credential",
+            "x-nebo-connected-neboai",
+            "x-nebo-connected-profiles",
+        ] {
+            assert!(!reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name} must not reach the sidecar");
+        }
+        for name in ["content-type", "accept", "x-app-thing", "range"] {
+            assert!(reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name} is the app's own");
+        }
     }
 }
 

@@ -520,17 +520,6 @@ impl Registry {
             .collect()
     }
 
-    /// Get the gRPC endpoint for a running tool.
-    pub async fn get_endpoint(&self, tool_id: &str) -> Option<String> {
-        let tools = self.tools.read().await;
-        tools.get(tool_id).and_then(|t| {
-            match t.process.as_ref()?.state() {
-                SidecarState::Running(l) => Some(format!("http://{}", l.addr)),
-                _ => None,
-            }
-        })
-    }
-
     /// Get a tool's manifest.
     pub async fn get_manifest(&self, tool_id: &str) -> Option<Manifest> {
         let tools = self.tools.read().await;

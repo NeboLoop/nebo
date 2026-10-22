@@ -118,16 +118,45 @@ impl TestApp {
     }
 }
 
-/// SIGKILL a process, the way an OOM kill or a stray `kill -9` would.
+/// Kill a process outright, the way an OOM kill or a stray `kill -9` (on
+/// Windows, Task Manager's End task) would.
 pub fn kill(pid: u32) {
+    #[cfg(unix)]
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
     }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
 }
 
-/// Whether a pid names a process (a zombie counts).
+/// Whether a pid names a process that has not exited (on Unix a zombie
+/// counts).
 pub fn exists(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, 0) == 0
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(handle, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        CloseHandle(handle);
+        running
+    }
 }
 
 /// A stand-in sidecar server on a loopback address of its own, run on its own

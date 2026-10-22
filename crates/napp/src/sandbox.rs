@@ -15,10 +15,13 @@ const _BLOCKED_ENV_VARS: &[&str] = &[
     "STRIPE_SECRET_KEY",
 ];
 
-/// System environment variables that are allowed through. `SystemRoot` is
-/// Windows': without it a process cannot open a network socket (Winsock fails
-/// to load its providers), so a sidecar could never listen.
-const ALLOWED_SYSTEM_VARS: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "SystemRoot"];
+/// System environment variables that are allowed through. The last four are
+/// Windows': without `SystemRoot` a process cannot open a network socket
+/// (Winsock fails to load its providers), so a sidecar could never listen;
+/// without `TEMP`/`TMP` its temporary folder falls back to `C:\Windows`, which
+/// it cannot write; `USERPROFILE` is Windows' `HOME`.
+const ALLOWED_SYSTEM_VARS: &[&str] =
+    &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "SystemRoot", "TEMP", "TMP", "USERPROFILE"];
 
 /// Build a sanitized environment for an app process.
 pub fn sanitize_env(
