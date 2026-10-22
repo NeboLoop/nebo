@@ -523,7 +523,7 @@ impl TurnWork {
         let mut notes = Vec::new();
         let mut names = Vec::new();
         for pages in deployed {
-            let Some(app) = app_served_from(who.store, &pages) else { continue };
+            let Some(app) = who.store.app_served_from(&pages.to_string_lossy()).ok().flatten() else { continue };
             let mut works = self.works.lock().await;
             let mut gated: Vec<String> = works
                 .iter()
@@ -793,15 +793,6 @@ fn app_pages_of(store: &db::Store, agent_id: &str) -> Vec<PathBuf> {
         .filter(|a| a.is_app.unwrap_or(0) != 0 && tools::app_dev::may_work_on(store, agent_id, a))
         .filter_map(|a| tools::app_dev::served_dir(&a).map(PathBuf::from))
         .collect()
-}
-
-/// The app served from `pages`, if one is.
-pub fn app_served_from(store: &db::Store, pages: &Path) -> Option<db::models::Agent> {
-    store
-        .list_agents(1_000, 0)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|a| tools::app_dev::served_dir(a).is_some_and(|d| Path::new(d) == pages))
 }
 
 /// The call that runs the app `app_id`'s live check: it names the app, so
