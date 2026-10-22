@@ -146,11 +146,16 @@ pub fn agent_folder(name: &str) -> bool {
 /// Nebo's own names at its top ([`store_own`]), never a coding agent's
 /// folder ([`agent_folder`]), never anything hidden at any depth. The files
 /// route, an app's file route and an app's `filesystem:read:` grant all ask
-/// this, and nothing else decides it.
+/// this, and nothing else decides it. Names are compared the way the disks
+/// they live on compare them: case aside (macOS, Windows), and without the
+/// trailing dots and spaces Windows drops (`Claude-Code.` is `claude-code`).
+/// The routes ask it again of the path a file resolves to, so a link or a
+/// short name (`CLAUDE~1`) is judged by what it opens.
 pub fn workspace_private(rel: &str) -> bool {
     let mut parts = rel.split(['/', '\\']).filter(|p| !p.is_empty());
     let Some(first) = parts.next() else { return true };
-    store_own(first) || agent_folder(first) || parts.any(|p| p.starts_with('.'))
+    let top = first.trim_end_matches(['.', ' ']).to_lowercase();
+    first.starts_with('.') || store_own(&top) || agent_folder(&top) || parts.any(|p| p.starts_with('.'))
 }
 
 /// Industry, franchise, and company packs installed on this Nebo:
@@ -487,6 +492,9 @@ mod workspace_private_tests {
             "Media\\.git\\config",
         ] {
             assert!(workspace_private(private), "{private}");
+        }
+        for private in ["Claude-Code/repo", "CODEX-2", "Uploads/a.png", "WORK/blobs/x", "claude-code./x", "claude-code /x", "Screenshot-1.png"] {
+            assert!(workspace_private(private), "case and trailing dots aside: {private}");
         }
         for open in ["Media/Projects/reel/render.mp4", "Docs/a.pdf", "README.md", "codex.txt"] {
             assert!(!workspace_private(open), "{open}");

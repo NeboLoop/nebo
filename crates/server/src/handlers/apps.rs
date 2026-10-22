@@ -1951,7 +1951,7 @@ pub async fn share_file(
     // in the store, never a folder of the owner's that shares the app's
     // name, and never over another file. Its page opens sandboxed with no
     // folder pass (`files::document_folder`).
-    let Ok(files_dir) = config::data_dir().map(|d| d.join("files")) else {
+    let Ok(files_dir) = config::files_dir() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let staging = std::env::temp_dir().join(format!("nebo-app-share-{}", uuid::Uuid::new_v4()));

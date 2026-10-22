@@ -450,6 +450,15 @@ pub async fn serve_file(
     let (canonical, canonical_root) = within_files_root(&files_root, &files_root.join(&file_path))
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    // Out of the workspace, the rule is asked again of what the path opens:
+    // a link or a name the disk reads another way never reaches a private
+    // folder.
+    if files_root == config::workspace_dir().map_err(to_error_response)?
+        && files_root != config::files_dir().map_err(to_error_response)?
+        && canonical.strip_prefix(&canonical_root).map_or(true, |rel| config::workspace_private(&rel.to_string_lossy()))
+    {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
 
     // A page opened without its folder's pass (the Work panel's frame, the
     // owner opening a link): opened again under one. It runs sandboxed
