@@ -351,26 +351,30 @@ impl Store {
     /// is moving: a verification's work folder and copy state, and a
     /// helper's held copy. A path inside the copy moves with it; a copy
     /// whose path only starts alike (`v-1` for `v-10`) is not this one.
-    /// Returns how many rows changed.
-    pub fn move_copy_paths(&self, from: &str, to: &str) -> Result<usize, NeboError> {
+    /// `sep` is the paths' separator (`std::path::MAIN_SEPARATOR`: `\` on
+    /// Windows). Returns how many rows changed.
+    pub fn move_copy_paths(&self, from: &str, to: &str, sep: char) -> Result<usize, NeboError> {
+        // A path inside the copy, in its JSON spelling: the separator as
+        // JSON writes it (`\\` for `\`).
         let json = |col: &str| {
             format!(
                 "{col} = replace(replace({col}, json_quote(?1), json_quote(?2)), \
-                 substr(json_quote(?1), 1, length(json_quote(?1)) - 1) || '/', \
-                 substr(json_quote(?2), 1, length(json_quote(?2)) - 1) || '/')"
+                 substr(json_quote(?1), 1, length(json_quote(?1)) - 1) || substr(json_quote(?3), 2, length(json_quote(?3)) - 2), \
+                 substr(json_quote(?2), 1, length(json_quote(?2)) - 1) || substr(json_quote(?3), 2, length(json_quote(?3)) - 2))"
             )
         };
+        let sep = sep.to_string();
         let conn = self.conn()?;
         let mut changed = conn
             .execute(
                 &format!(
                     "UPDATE verifications SET work_dir = CASE WHEN work_dir = ?1 THEN ?2 \
-                     WHEN substr(work_dir, 1, length(?1) + 1) = ?1 || '/' THEN ?2 || substr(work_dir, length(?1) + 1) \
+                     WHEN substr(work_dir, 1, length(?1) + 1) = ?1 || ?3 THEN ?2 || substr(work_dir, length(?1) + 1) \
                      ELSE work_dir END, {} \
-                     WHERE work_dir = ?1 OR substr(work_dir, 1, length(?1) + 1) = ?1 || '/' OR instr(isolation_json, substr(json_quote(?1), 2, length(json_quote(?1)) - 2)) > 0",
+                     WHERE work_dir = ?1 OR substr(work_dir, 1, length(?1) + 1) = ?1 || ?3 OR instr(isolation_json, substr(json_quote(?1), 2, length(json_quote(?1)) - 2)) > 0",
                     json("isolation_json")
                 ),
-                params![from, to],
+                params![from, to, sep],
             )
             .db_err("move_copy_paths (verifications)")?;
         changed += conn
@@ -379,7 +383,7 @@ impl Store {
                     "UPDATE engine_runs SET {} WHERE instr(held_copy, substr(json_quote(?1), 2, length(json_quote(?1)) - 2)) > 0",
                     json("held_copy")
                 ),
-                params![from, to],
+                params![from, to, sep],
             )
             .db_err("move_copy_paths (engine_runs)")?;
         Ok(changed)
@@ -631,7 +635,7 @@ mod tests {
         s.engine_create_run(&crate::NewRun { id: "sa-1", kind: "helper", session_key: "k", agent_id: "dev", lane: "main", ..Default::default() }).unwrap();
         s.engine_set_run_held_copy("sa-1", Some(&serde_json::json!({"iso": state}).to_string())).unwrap();
 
-        assert_eq!(s.move_copy_paths(from, to).unwrap(), 2);
+        assert_eq!(s.move_copy_paths(from, to, '/').unwrap(), 2);
         let v = s.get_verification("v-1").unwrap().unwrap();
         assert_eq!(v.work_dir, to);
         let moved = v.isolation_state.unwrap().to_string();
@@ -640,7 +644,35 @@ mod tests {
         let held = s.engine_runs_holding_copies("helper").unwrap().remove(0).1;
         assert!(held.contains(to) && !held.contains(from), "{held}");
         assert_eq!(s.get_verification("v-10").unwrap().unwrap().work_dir, other, "a copy whose name only starts alike");
-        assert_eq!(s.move_copy_paths(from, to).unwrap(), 0, "moved once");
+        assert_eq!(s.move_copy_paths(from, to, '/').unwrap(), 0, "moved once");
+    }
+
+    /// Review of #1016: on Windows a path inside the copy is joined with
+    /// `\` (in JSON `\\`), and moves with it; a copy whose name only
+    /// starts alike stays.
+    #[test]
+    fn a_moved_copy_takes_its_windows_records_with_it() {
+        let s = store();
+        let from = r"C:\Users\al\AppData\Roaming\Nebo\worktrees\site\v-1";
+        let to = r"C:\Users\al\AppData\Local\Temp\nebo\worktrees\site\v-1";
+        let twin = format!(r"{from}\src\a.rs.nebo-owner");
+        let state = serde_json::json!({"Copy": {"path": from, "pending": [{"twin": twin}], "root": r"C:\site"}});
+        s.create_verification(&NewVerification { work_dir: &format!(r"{from}\src"), isolation_state: Some(&state), ..new("v-1", "agent:dev:web", r"C:\site") }, 10).unwrap();
+        let other = format!("{from}0");
+        s.create_verification(&NewVerification { work_dir: &other, ..new("v-10", "agent:dev:web", r"C:\site") }, 10).unwrap();
+        s.engine_create_run(&crate::NewRun { id: "sa-1", kind: "helper", session_key: "k", agent_id: "dev", lane: "main", ..Default::default() }).unwrap();
+        s.engine_set_run_held_copy("sa-1", Some(&serde_json::json!({"iso": state}).to_string())).unwrap();
+
+        assert_eq!(s.move_copy_paths(from, to, '\\').unwrap(), 2);
+        let v = s.get_verification("v-1").unwrap().unwrap();
+        assert_eq!(v.work_dir, format!(r"{to}\src"));
+        let iso = v.isolation_state.unwrap();
+        assert_eq!(iso["Copy"]["path"], to);
+        assert_eq!(iso["Copy"]["pending"][0]["twin"], format!(r"{to}\src\a.rs.nebo-owner"));
+        assert_eq!(iso["Copy"]["root"], r"C:\site", "the owner's project is not the copy");
+        let held: serde_json::Value = serde_json::from_str(&s.engine_runs_holding_copies("helper").unwrap().remove(0).1).unwrap();
+        assert_eq!(held["iso"]["Copy"]["pending"][0]["twin"], format!(r"{to}\src\a.rs.nebo-owner"));
+        assert_eq!(s.get_verification("v-10").unwrap().unwrap().work_dir, other, "a copy whose name only starts alike");
     }
 
     #[test]

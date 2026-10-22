@@ -2380,10 +2380,10 @@ async fn move_copy(store: &db::Store, from: &Path, to: &Path) -> Result<(), Stri
 /// fails points them back at `from`, where the copy still is.
 async fn moved(store: &db::Store, from: &Path, to: &Path, move_it: impl std::future::Future<Output = Result<(), String>>) -> Result<(), String> {
     let (from_s, to_s) = (from.to_string_lossy(), to.to_string_lossy());
-    store.move_copy_paths(&from_s, &to_s).map_err(|e| e.to_string())?;
+    store.move_copy_paths(&from_s, &to_s, std::path::MAIN_SEPARATOR).map_err(|e| e.to_string())?;
     let done = move_it.await;
     if done.is_err() && from.exists() {
-        let _ = store.move_copy_paths(&to_s, &from_s);
+        let _ = store.move_copy_paths(&to_s, &from_s, std::path::MAIN_SEPARATOR);
     }
     done
 }
