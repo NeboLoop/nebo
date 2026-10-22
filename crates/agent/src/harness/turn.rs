@@ -7369,6 +7369,7 @@ mod tests {
             // An app that builds itself has the developer pack's tools.
             h.store.create_agent("ops", Some("agent"), "Kart Racer", "", "", "{}", None, None).unwrap();
             h.store.set_agent_app_fields("ops", true, Some("/tmp/kart/ui"), None, None).unwrap();
+            h.store.set_agent_built_here("ops", true).unwrap();
             let mut req = owner(request);
             req.seat.agent_id = "ops".into();
             run_turn(&h, req).await;
@@ -7440,6 +7441,7 @@ mod tests {
             let h = harness_with(&model, vec![code]).await;
             h.store.create_agent("ops", Some("agent"), "Flip-Flap", "", "", "{}", None, None).unwrap();
             h.store.set_agent_app_fields("ops", true, Some("/tmp/flip/ui"), None, None).unwrap();
+            h.store.set_agent_built_here("ops", true).unwrap();
             h.store.update_settings(None, None, None, None, None, None, None, Some(on), None, Some(on)).unwrap();
             let mut req = owner("Fix the tap.");
             req.seat.agent_id = "ops".into();
