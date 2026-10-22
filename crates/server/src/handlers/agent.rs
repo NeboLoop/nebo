@@ -56,7 +56,7 @@ pub async fn get_session_messages(
 /// model reads left out), the last `limit` (50 by default, at most 200)
 /// before the message `before`, or the last ones; and whether older ones
 /// remain. `id` is the session's id or its key (an app's page names its
-/// conversation by key, `agent:<id>:app:<thread>`). A session that does not
+/// conversation by key, `agent:<id>:page:<thread>`). A session that does not
 /// exist yet has no messages.
 pub(crate) fn session_messages(
     state: &AppState,

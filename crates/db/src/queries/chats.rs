@@ -40,7 +40,8 @@ fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, Nebo
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Conversations {
     /// Every conversation: the owner's, and the employee's threads with
-    /// colleagues and teams, each shown as what it is.
+    /// colleagues and teams, each shown as what it is. Never an app page's
+    /// (`Conversation::App`): that one is the app's, read in the app.
     #[default]
     All,
     /// The owner's own. Its latest thread, the thread a loop DM continues,
@@ -58,7 +59,7 @@ pub enum Conversations {
 impl Conversations {
     fn sql(self, session_name: &str) -> String {
         match self {
-            Conversations::All => format!("conversation_kind({session_name}) IS NOT NULL"),
+            Conversations::All => format!("conversation_kind({session_name}) IN ('owner', 'colleague', 'team')"),
             Conversations::Owners => format!("conversation_kind({session_name}) = 'owner'"),
             Conversations::Teammates => format!("conversation_kind({session_name}) IN ('colleague', 'team')"),
         }

@@ -1340,6 +1340,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 crate::handlers::asks::approval_raised(&ask_state, &tc.id, &card);
                                 record_approval_card(&approval_channels, &tc.id, card).await;
                                 hub.broadcast("approval_request", request);
+                                // That the turn waits on the owner, and nothing
+                                // of what about: what an app page hears of it.
+                                hub.broadcast("chat_waiting", ws_payload!());
                                 // Relay the approval into the loop conversation
                                 // (personal contexts only) — otherwise the run
                                 // parks on a prompt the remote owner never sees.

@@ -24,7 +24,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;
 use common::TestServer;
-use common::model::{Reply, Script, eventually, hire_blank, main_call, server_with};
+use common::model::{Reply, Script, eventually, has_result, hire_blank, main_call, server_with};
 
 const APP: &str = "app-crm";
 const OTHER: &str = "app-notes";
@@ -113,7 +113,12 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
             return Reply::Text("ok");
         }
         let last = messages.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
-        if last.contains("MARK-OTHER") {
+        if last.contains("MARK-TOOL") && !has_result(messages) {
+            Reply::Call(vec![("bot", json!({ "resource": "memory", "action": "search", "query": "deals" }))])
+        } else if last.contains("MARK-SLOW") {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            Reply::Text("SLOW-REPLY")
+        } else if last.contains("MARK-OTHER") {
             Reply::Text("OTHER-REPLY")
         } else if last.contains("MARK-OWNER") {
             Reply::Text("OWNER-REPLY")
@@ -141,13 +146,21 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
         }
     });
 
+    // An employee the owner turned off stays off: the page can't turn it on.
+    let (status, body) = page.say(APP, json!({ "message": "hi" })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("turned off"), "{body}");
+    for app in [APP, OTHER] {
+        assert_eq!(server.post_json(&format!("/agents/{app}/activate"), &json!({})).await.status(), 200);
+    }
+
     // Said and answered, in the app's own conversation.
     let (status, body) = page.say(APP, json!({ "message": "MARK-HELLO what's on my board?", "context": { "deal": "d-7" } })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let replies = page.replies(APP, None, 1).await;
     assert_eq!(replies[0]["content"], "APP-REPLY");
     let history = page.history(APP, None).await;
-    assert_eq!(history["sessionId"], format!("agent:{APP}:app"));
+    assert_eq!(history["sessionId"], format!("agent:{APP}:page"));
     let first = &history["messages"][0];
     assert_eq!((first["role"].as_str(), first["content"].as_str()), (Some("user"), Some("MARK-HELLO what's on my board?")));
     // The page's context reached the model beside the words.
@@ -156,7 +169,7 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     // Its socket heard the words and the reply of its conversation.
     eventually(10, "the socket hears the reply", async || {
         let h = heard.lock().unwrap();
-        let ours = |kind: &str| h.iter().any(|e| e["type"] == kind && e["data"]["session_id"] == format!("agent:{APP}:app"));
+        let ours = |kind: &str| h.iter().any(|e| e["type"] == kind && e["data"]["session_id"] == format!("agent:{APP}:page"));
         (ours("chat_user_message") && ours("chat_stream") && ours("chat_complete")).then_some(())
     })
     .await;
@@ -192,6 +205,51 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     page.replies(APP, None, before + 1).await;
     assert!(!server.get(&format!("/agents/{pam}/chats")).await.text().await.unwrap().contains("MARK-AGENT"));
 
+    // What the employee does on the way (a tool call and its result) stays
+    // with the owner: the page hears the words alone.
+    let before = page.replies(APP, None, 1).await.len();
+    assert_eq!(page.say(APP, json!({ "message": "MARK-TOOL look it up" })).await.0, StatusCode::OK);
+    page.replies(APP, None, before + 1).await;
+    assert!(calls.lock().unwrap().iter().any(|(_, b)| has_result(b["messages"].as_array().map(Vec::as_slice).unwrap_or(&[]))), "the tool ran");
+
+    // One message at a time: while a turn runs, another send and starting
+    // over are refused, never queued without their own context.
+    let before = page.replies(APP, None, 1).await.len();
+    assert_eq!(page.say(APP, json!({ "message": "MARK-SLOW think hard" })).await.0, StatusCode::OK);
+    eventually(10, "the slow turn is running", async || (page.history(APP, None).await["running"] == true).then_some(())).await;
+    let (status, body) = page.say(APP, json!({ "message": "and another thing", "context": { "deal": "d-9" } })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let fresh = client().post(page.url(APP, "/new")).header("origin", "null").json(&json!({})).send().await.unwrap();
+    assert_eq!(fresh.status(), StatusCode::CONFLICT);
+    page.replies(APP, None, before + 1).await;
+
+    // The owner's own doors stay out of the page's conversation: his
+    // composer naming it, or a thread key naming its chat, is refused, and
+    // it is never one of his chats to open or list.
+    let store = server.db_store();
+    let page_chat = store.get_session_by_name(&format!("agent:{APP}:page")).unwrap().unwrap().active_chat_id.unwrap();
+    let (mut owner_ws, _) = connect_async(server.ws_url()).await.unwrap();
+    use futures_util::SinkExt;
+    owner_ws.send(Message::Text(json!({"type": "connect", "data": {"client_id": "owner"}}).to_string().into())).await.unwrap();
+    for key in [format!("agent:{APP}:page"), format!("agent:{APP}:thread:{page_chat}")] {
+        let send = json!({"type": "chat", "data": {"agent_id": APP, "session_id": key, "prompt": "MARK-INTRUDE"}});
+        owner_ws.send(Message::Text(send.to_string().into())).await.unwrap();
+    }
+    let mut refused = 0;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while refused < 2 {
+        let Ok(Some(Ok(Message::Text(text)))) = tokio::time::timeout_at(deadline, owner_ws.next()).await else { break };
+        let ev: Value = serde_json::from_str(&text).unwrap_or_default();
+        if ev["type"] == "chat_error" && ev["data"]["error"].as_str().is_some_and(|e| e.contains("belongs to an app")) {
+            refused += 1;
+        }
+    }
+    assert_eq!(refused, 2, "both of the owner's doors into the page's conversation are refused");
+    assert!(!calls.lock().unwrap().iter().any(|(_, b)| b.to_string().contains("MARK-INTRUDE")), "nothing of his ran there");
+    assert_eq!(server.post_json(&format!("/agents/{APP}/chats/{page_chat}/activate"), &json!({})).await.status(), 404);
+    let listed = server.get(&format!("/agents/{APP}/chats")).await.text().await.unwrap();
+    assert!(!listed.contains(&page_chat), "never among the owner's chats: {listed}");
+
     // Another app's pass never reaches this app's chat, and the owner's
     // install key is not an app page.
     assert_eq!(other.say(APP, json!({ "message": "hi" })).await.0, StatusCode::UNAUTHORIZED);
@@ -205,7 +263,6 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     assert_eq!(other.say(OTHER, json!({ "message": "MARK-OTHER" })).await.0, StatusCode::OK);
     other.replies(OTHER, None, 1).await;
     let (mut desk, _) = connect_async(server.ws_url()).await.unwrap();
-    use futures_util::SinkExt;
     desk.send(Message::Text(json!({"type": "connect", "data": {"client_id": "desk"}}).to_string().into())).await.unwrap();
     let owner_key = format!("agent:{pam}:web");
     let send = json!({"type": "chat", "message_id": "m-1", "data": {"agent_id": pam, "session_id": owner_key, "prompt": "MARK-OWNER"}});
@@ -222,7 +279,7 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     assert!(!all.contains("OWNER-REPLY") && !all.contains("MARK-OWNER"), "the owner's chat never reaches an app");
     for e in &h {
         if let Some(key) = e["data"]["session_id"].as_str() {
-            assert!(key == format!("agent:{APP}:app") || key.starts_with(&format!("agent:{APP}:app:")), "{e}");
+            assert!(key == format!("agent:{APP}:page") || key.starts_with(&format!("agent:{APP}:page:")), "{e}");
         }
         assert!(!matches!(e["type"].as_str(), Some("tool_start" | "tool_result" | "thinking" | "approval_request")), "{e}");
     }
@@ -233,14 +290,13 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     assert_eq!(client().post(other.url(APP, "/stop")).json(&json!({})).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
 
     // Starting over: the next words begin a new conversation; the one
-    // before is kept for the owner.
+    // before is kept.
     let kept = page.history(APP, None).await["messages"].as_array().unwrap().len();
     assert!(kept > 0);
     let fresh = client().post(page.url(APP, "/new")).header("origin", "null").json(&json!({})).send().await.unwrap();
     assert_eq!(fresh.status(), StatusCode::OK);
     assert_eq!(page.history(APP, None).await["messages"].as_array().unwrap().len(), 0, "a new conversation");
-    let store = server.db_store();
-    let session = store.get_session_by_name(&format!("agent:{APP}:app")).unwrap().unwrap();
+    let session = store.get_session_by_name(&format!("agent:{APP}:page")).unwrap().unwrap();
     let earlier = store.list_chats_by_session(session.name.as_deref().unwrap()).unwrap_or_default();
     assert!(earlier.len() >= 2, "the conversation before is kept beside the new one: {earlier:?}");
     assert_eq!(client().post(other.url(APP, "/new")).json(&json!({})).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);

@@ -238,10 +238,11 @@ pub async fn app_ws_handler(
 /// app's own reaches it: an event that names the app (`appId`: its data
 /// changed, a reload), one of its surfaces (`agent:<id>:<view>`, an A2UI
 /// message or an action's status), and the turns of its own conversations
-/// (`session_id` of `agent:<id>:app[:<ctx>]` or `app:<id>:…`), their words
-/// alone ([`APP_CONVERSATION_EVENTS`]). Nothing else: never the owner's
-/// other conversations, his approvals, his roster, another app's data or
-/// cards, a tool's call or result.
+/// (`session_id` of `agent:<id>:page[:<thread>]` or `app:<id>:…`,
+/// `keyparser::is_app_session`), their words alone
+/// ([`APP_CONVERSATION_EVENTS`]). Nothing else: never the owner's other
+/// conversations, his approvals, his roster, another app's data or cards, a
+/// tool's call or result.
 pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
     let p = &event.payload;
     let field = |k: &str| p.get(k).and_then(|v| v.as_str());
@@ -251,7 +252,7 @@ pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
     if let Some(surface) = field("surface_id").or_else(|| field("surfaceId")) {
         return is_app_surface(agent_id, surface);
     }
-    field("session_id").or_else(|| field("session_key")).is_some_and(|key| is_app_session(agent_id, key))
+    field("session_id").or_else(|| field("session_key")).is_some_and(|key| types::keyparser::is_app_session(agent_id, key))
         && APP_CONVERSATION_EVENTS.contains(&event.event_type.as_str())
 }
 
@@ -267,19 +268,14 @@ const APP_CONVERSATION_EVENTS: &[&str] = &[
     "chat_cancelled",
     "chat_taken_in",
     "chat_created",
+    // That the turn waits on the owner, never what about.
+    "chat_waiting",
 ];
 
 /// Whether `surface` is one of app `agent_id`'s own surfaces
 /// (`agent:<id>:<view>`).
 pub(crate) fn is_app_surface(agent_id: &str, surface: &str) -> bool {
     surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) == Some(agent_id)
-}
-
-/// Whether `key` is one of app `agent_id`'s own conversations: its page's
-/// (`agent:<id>:app`, `agent:<id>:app:<ctx>`) or its SDK's (`app:<id>:…`).
-pub(crate) fn is_app_session(agent_id: &str, key: &str) -> bool {
-    let page = format!("agent:{agent_id}:app");
-    key == page || key.strip_prefix(&page).is_some_and(|r| r.starts_with(':')) || key.strip_prefix(&format!("app:{agent_id}:")).is_some()
 }
 
 /// How often an open app socket keeps its page's pass
@@ -444,7 +440,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                 }
 
                 // Fall through to LLM — same pattern as client WS handler
-                let session_key = types::keyparser::build_agent_session_key(&agent_id, "app");
+                let session_key = types::keyparser::app_page_key(&agent_id, None);
 
                 let prompt = if context.is_null() || context == serde_json::json!({}) {
                     format!(
@@ -1491,7 +1487,6 @@ struct ChatPayload {
     user_id: String,
     channel: String,
     agent_id: String,
-    scope: String,
     attachments: Vec<comm::wire::Attachment>,
     /// Working directory for the run (empty = the process cwd). The WS is
     /// owner-authenticated, so an owner-supplied cwd is the owner choosing
@@ -1501,9 +1496,6 @@ struct ChatPayload {
     /// Explicit model for this run (empty = the selector's choice). The test
     /// harness's `--model` arrives here.
     model_override: String,
-    /// App-provided context (the chat embed's `setContext`), shown to the
-    /// model beside the prompt.
-    app_context: Option<String>,
     /// The client whose socket sent it (`EventOrigin::client_id`); never
     /// read from the message itself. None for a platform-written prompt.
     client_id: Option<String>,
@@ -1532,16 +1524,8 @@ impl ChatPayload {
             user_id: data["user_id"].as_str().unwrap_or("").to_string(),
             channel: data["channel"].as_str().unwrap_or("web").to_string(),
             agent_id: data["agent_id"].as_str().unwrap_or("").to_string(),
-            scope: data["scope"].as_str().unwrap_or("").to_string(),
             cwd: data["cwd"].as_str().unwrap_or("").to_string(),
             model_override: data["model_override"].as_str().unwrap_or("").to_string(),
-            app_context: data.get("context").filter(|v| !v.is_null()).map(|v| {
-                if let Some(s) = v.as_str() {
-                    s.to_string()
-                } else {
-                    format!("App context: {}", v)
-                }
-            }),
             // Uploaded attachment metadata from the WS payload
             attachments: data
                 .get("attachments")
@@ -1667,11 +1651,9 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         user_id,
         channel,
         agent_id,
-        scope,
         attachments: ws_attachments,
         cwd,
         model_override,
-        app_context,
         client_id,
         platform,
         message_id,
@@ -1691,6 +1673,17 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         "chat_ack",
         chat_ack(&serde_json::json!(&session_id), message_id.as_deref(), "accepted"),
     );
+
+    // An app page's conversation is the app's: the owner's composer never
+    // writes into it (`apps::kept_from_owner`).
+    if super::apps::kept_from_owner(&state.store, &turn_session_key(&session_id, &agent_id, &channel)) {
+        warn!(session_id = %session_id, "chat: an app page's conversation is not one the owner writes in");
+        state.hub.broadcast(
+            "chat_error",
+            serde_json::json!({ "session_id": session_id, "error": "This conversation belongs to an app. Write to the employee in its own chat." }),
+        );
+        return;
+    }
 
     // Intercept marketplace codes before they reach the agent: a message of
     // nothing but codes installs them, one after another, and the reply is a
@@ -1799,8 +1792,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     }
 
     // Use the client-provided session_id if it already has the correct agent prefix
-    // (e.g. "agent:brief:app:doc123" for document-scoped sessions).
-    // Otherwise, build one from agent_id + channel.
+    // (e.g. "agent:<id>:thread:<chat>"). Otherwise, build one from agent_id + channel.
     let session_key = turn_session_key(&session_id, &agent_id, &channel);
 
     info!(session_key = %session_key, agent_id = %agent_id, channel = %channel, "[THREAD-DEBUG] dispatch_chat final session_key");
@@ -1971,8 +1963,6 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         );
     }
 
-    // Extract app-provided context (sent by chat embed's setContext)
-
     // @mentions route the message to the addressed agent(s). When the user
     // @mentions other agents, ONLY they respond — the thread's own agent stays
     // quiet (Slack/Discord semantics: you addressed pam, pam answers, the thread
@@ -1997,8 +1987,8 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
             attachments: attachments.clone(),
             entity_name: String::new(), // resolved from agent_registry in run_chat
             origin_agent_id: None,
-            mention_context: app_context,
-            tool_scope: if scope.is_empty() { None } else { Some(scope) },
+            mention_context: None,
+            tool_scope: None,
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
@@ -2770,7 +2760,6 @@ mod chat_payload_tests {
             assert_eq!(p.prompt, "");
             assert_eq!(p.user_id, "");
             assert_eq!(p.agent_id, "");
-            assert_eq!(p.scope, "");
             assert!(p.attachments.is_empty());
         }
     }
@@ -2794,7 +2783,6 @@ mod chat_payload_tests {
         assert_eq!(p.user_id, "u1");
         assert_eq!(p.channel, "app");
         assert_eq!(p.agent_id, "a1");
-        assert_eq!(p.scope, "browser");
     }
 
     /// Non-string values fall back to the same defaults as missing fields —
@@ -3187,16 +3175,17 @@ mod app_event_tests {
         let other = ev("a2ui_message", serde_json::json!({ "surface_id": "chat-1", "message": {} }));
         assert!(!reaches_app("notes", &other));
 
-        for key in ["agent:crm:app", "agent:crm:app:doc-1", "app:crm:api"] {
+        for key in ["agent:crm:page", "agent:crm:page:doc-1", "app:crm:api"] {
             let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
             assert!(reaches_app("crm", &turn), "{key}");
             assert!(!reaches_app("notes", &turn), "{key}");
         }
         for kind in ["tool_start", "tool_result", "thinking", "approval_request"] {
-            let own = ev(kind, serde_json::json!({ "session_id": "agent:crm:app", "input": "secret" }));
+            let own = ev(kind, serde_json::json!({ "session_id": "agent:crm:page", "input": "secret" }));
             assert!(!reaches_app("crm", &own), "never its own turn's {kind}");
         }
-        for key in ["agent:crm:web", "agent:crm:thread:t1", "agent:crm:apple", "agent:crmx:app", "default"] {
+        assert!(reaches_app("crm", &ev("chat_waiting", serde_json::json!({ "session_id": "agent:crm:page" }))));
+        for key in ["agent:crm:web", "agent:crm:app", "agent:crm:thread:t1", "agent:crm:pages", "agent:crmx:page", "default"] {
             let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
             assert!(!reaches_app("crm", &turn), "the owner's own conversation {key}");
         }
