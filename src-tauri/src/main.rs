@@ -817,7 +817,12 @@ fn app_route(agent_id: &str, path: &str) -> Option<String> {
     let rest = path.strip_prefix("/api/v1/apps/")?;
     let (id, tail) = rest.split_once('/')?;
     let id = percent_decode(id)?;
-    (!agent_id.is_empty() && id == agent_id && !tail.is_empty()).then(|| path.to_string())
+    // A dot segment, even an encoded one (`%2e%2e`), would climb out of the
+    // app's routes once the address is parsed again on its way to the server.
+    let plain = tail.split(['?', '#']).next().unwrap_or("").split('/').all(|seg| {
+        percent_decode(seg).is_some_and(|d| d != "." && d != "..")
+    });
+    (!agent_id.is_empty() && id == agent_id && !tail.is_empty() && plain).then(|| path.to_string())
 }
 
 /// A path segment with its `%XX` escapes decoded; `None` when malformed.
@@ -1530,6 +1535,9 @@ mod neboapp_proxy_tests {
             "/k/",
             "/api/v1/apps/%zz/storage",
             "/apps/crm/api/x",
+            "/api/v1/apps/crm/../../agents",
+            "/api/v1/apps/crm/%2e%2e/notes/storage",
+            "/api/v1/apps/crm/storage/%2E",
         ] {
             assert_eq!(app_route("crm", refused), None, "{refused}");
         }
