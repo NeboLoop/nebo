@@ -524,21 +524,25 @@ async fn drive_socket(
         return Ended::Lost(format!("session.update failed: {e}"));
     }
     // A reply that was under way when the line dropped is asked for again
-    // (the new session has its question in the call so far), then each one
-    // asked for and not begun, with its input: typed words, words to say,
-    // tool outputs as words (the new session never saw those calls). Tool
-    // outputs sent with no reply asked for yet go up as words too.
-    let mut again: Vec<Asked> = std::mem::take(&mut memory.resend);
-    if std::mem::take(&mut memory.reanswer) {
-        again.insert(0, Asked::Again);
+    // (the new session has its question in the call so far). Then, in the
+    // order they went up, each reply asked for and not begun, with its
+    // input (typed words, words to say, tool outputs as words: the new
+    // session never saw those calls), and each tool output sent with no
+    // reply asked for yet, as words, still waiting on its `ToolOutputsDone`.
+    if std::mem::take(&mut memory.reanswer)
+        && let Err(e) = ask_again(&mut sink, state, Asked::Again).await
+    {
+        return Ended::Lost(format!("realtime send failed: {e}"));
     }
-    for output in std::mem::take(&mut memory.resend_outputs) {
-        if let Err(e) = up(&mut sink, state, words_item(&output_words(&output)), false).await {
-            return Ended::Lost(format!("realtime send failed: {e}"));
-        }
-    }
-    for asked in again {
-        if let Err(e) = ask_again(&mut sink, state, asked).await {
+    for resend in std::mem::take(&mut memory.resend) {
+        let sent = match resend {
+            Resend::Ask(asked) => ask_again(&mut sink, state, asked).await,
+            Resend::Output(output) => {
+                state.outputs.push((state.frames + 1, output.clone()));
+                up(&mut sink, state, words_item(&output_words(&output)), false).await.map(drop)
+            }
+        };
+        if let Err(e) = sent {
             return Ended::Lost(format!("realtime send failed: {e}"));
         }
     }
@@ -567,7 +571,6 @@ async fn drive_socket(
                     if matches!(dropped.asked, Asked::Say(_)) {
                         state.say_pending = None;
                     }
-                    state.cancel_on_create = state.cancel_on_create.min(state.pending_creates() as u32);
                     state.last_done = Some(std::time::Instant::now());
                     if event_tx.send(response_done(state)).await.is_err() {
                         return Ended::Done;
@@ -673,7 +676,8 @@ where
             }
         }
         RealtimeCommand::ToolOutput { call_id, output } => {
-            state.outputs.push(output.clone());
+            // Named by the frame it goes up in (the next one).
+            state.outputs.push((state.frames + 1, output.clone()));
             let item = if memory.orphans.remove(&call_id) {
                 // The call it answers was made on a line that dropped: the
                 // session on this one never saw it, so the result arrives
@@ -706,7 +710,7 @@ where
         RealtimeCommand::ToolOutputsDone => {
             state.asked += 1;
             up(sink, state, json!({ "type": "response.create" }), false).await?;
-            let outputs = std::mem::take(&mut state.outputs);
+            let outputs = std::mem::take(&mut state.outputs).into_iter().map(|(_, o)| o).collect();
             state.ask(Asked::Outputs(outputs));
         }
         RealtimeCommand::Close => {
@@ -757,11 +761,14 @@ async fn settle_lost_socket(
     }
     // A reply under way is asked for again on the next line, and so is each
     // one asked for and not begun, with its input — but never one the owner
-    // tapped away before it began (the oldest `cancel_on_create` of them).
+    // tapped away before it began — and each tool output with no reply
+    // asked for yet: all in the order they went up.
     memory.lost(state.response_active);
-    let tapped = (state.cancel_on_create as usize).min(state.unbegun.len());
-    memory.resend = state.unbegun.drain(..).skip(tapped).map(|u| u.asked).collect();
-    memory.resend_outputs = std::mem::take(&mut state.outputs);
+    let asks = state.unbegun.drain(..).filter(|u| !u.tapped).map(|u| (u.frame, Resend::Ask(u.asked)));
+    let outputs = std::mem::take(&mut state.outputs).into_iter().map(|(frame, o)| (frame, Resend::Output(o)));
+    let mut resend: Vec<(u64, Resend)> = asks.chain(outputs).collect();
+    resend.sort_by_key(|(frame, _)| *frame);
+    memory.resend = resend.into_iter().map(|(_, r)| r).collect();
     *state = SessionState {
         initialized: state.initialized,
         asked: state.asked,
@@ -772,7 +779,7 @@ async fn settle_lost_socket(
     // Whatever was in flight went with the line; what is asked for again on
     // the next one is still open.
     event_tx
-        .send(ConversationEvent::ResponseDone { asked: state.asked, open: memory.reanswer || !memory.resend.is_empty() })
+        .send(ConversationEvent::ResponseDone { asked: state.asked, open: memory.reanswer || memory.resend.iter().any(|r| matches!(r, Resend::Ask(_))) })
         .await
         .map_err(|_| ())?;
     Ok(())
@@ -853,12 +860,9 @@ struct CallMemory {
     orphans: std::collections::HashSet<String>,
     /// A reply was in flight when the line dropped: ask for it again.
     reanswer: bool,
-    /// Replies asked for and not begun when the line dropped: asked for
-    /// again on the next, with their input.
-    resend: Vec<Asked>,
-    /// Tool outputs sent with no reply asked for yet when the line dropped:
-    /// they go up again, as words.
-    resend_outputs: Vec<String>,
+    /// What goes up again on the next line, in the order it went up on the
+    /// one that dropped.
+    resend: Vec<Resend>,
     /// This call has been redialled: its session.update carries the recap.
     resumed: bool,
 }
@@ -965,10 +969,25 @@ impl CallMemory {
     }
 }
 
+/// What a dropped line's next one is sent again (see [`CallMemory::resend`]).
+#[derive(Debug, PartialEq)]
+enum Resend {
+    /// A reply asked for and not begun, asked for again with its input.
+    Ask(Asked),
+    /// A tool output sent with no reply asked for yet, as words.
+    Output(String),
+}
+
 /// A reply asked for that the provider has not begun, and what it answers.
 struct Unbegun {
     asked: Asked,
     at: std::time::Instant,
+    /// The frame that asked for it (see [`SessionState::frames`]).
+    frame: u64,
+    /// The owner cut the reply short before the provider began this one:
+    /// it is cancelled as it begins, its audio never played, and never
+    /// asked for again after a drop.
+    tapped: bool,
 }
 
 /// What a reply asked for answers, kept so a dropped line can ask again with
@@ -1001,7 +1020,7 @@ impl SessionState {
 
     /// A reply was asked for, answering `asked`.
     fn ask(&mut self, asked: Asked) {
-        self.unbegun.push_back(Unbegun { asked, at: std::time::Instant::now() });
+        self.unbegun.push_back(Unbegun { asked, at: std::time::Instant::now(), frame: self.frames, tapped: false });
     }
 
     /// When the oldest reply asked for has waited too long, if it is still
@@ -1106,9 +1125,9 @@ struct SessionState {
     /// with what each answers: a dropped line asks for them again, input
     /// and all, on the next.
     unbegun: std::collections::VecDeque<Unbegun>,
-    /// Tool outputs sent since the last response asked for: what the next
-    /// `ToolOutputsDone` answers.
-    outputs: Vec<String>,
+    /// Tool outputs sent since the last response asked for, each with the
+    /// frame it went up in: what the next `ToolOutputsDone` answers.
+    outputs: Vec<(u64, String)>,
     /// When the last response ended: a reply asked for while another ran
     /// waits from here, not from when it was asked for.
     last_done: Option<std::time::Instant>,
@@ -1117,11 +1136,6 @@ struct SessionState {
     /// The last frame sent was the waiting `Say`: an error naming no frame
     /// can only be about it.
     say_alone: bool,
-    /// The owner cut the reply short before the provider began those asked
-    /// for: how many of the replies then waiting are cancelled as they
-    /// begin, oldest first, their audio never played. Never more than are
-    /// still waiting: one refused or lost takes its cancel with it.
-    cancel_on_create: u32,
     /// Set when a begun response must be cancelled now; the socket loop
     /// sends the cancel (the event handler has no way upstream).
     cancel_now: bool,
@@ -1269,10 +1283,12 @@ fn interrupt_frames(
         state.response_active = false;
         state.discard_audio = true;
         frames.push(json!({ "type": "response.cancel" }));
-    } else if state.pending_creates() > 0 {
+    } else {
         // Cut short before the provider began them: each reply waiting now
         // is cancelled as it begins.
-        state.cancel_on_create = state.pending_creates() as u32;
+        for waiting in &mut state.unbegun {
+            waiting.tapped = true;
+        }
     }
     if let Some(item) = state.heard_item.take() {
         let forwarded_ms = (item.bytes / format.bytes_per_ms()) as u64;
@@ -1436,20 +1452,18 @@ async fn handle_server_event(
         // the response's first audio (`reply_audio`).
         "response.created" => {
             state.say_pending = None;
-            state.unbegun.pop_front();
+            let tapped = state.unbegun.pop_front().is_some_and(|u| u.tapped);
             state.response_active = true;
             state.discard_audio = false;
             // A reply begun while the owner is speaking is the provider's
             // answer to him, never one the tap was about.
-            if state.cancel_on_create > 0 && state.utterance == Utterance::Closed {
+            if tapped && state.utterance == Utterance::Closed {
                 // The owner cut it short before it began: none of it plays,
                 // and its `response.done` still ends it.
-                state.cancel_on_create -= 1;
                 state.response_active = false;
                 state.discard_audio = true;
                 state.cancel_now = true;
             }
-            state.cancel_on_create = state.cancel_on_create.min(state.pending_creates() as u32);
             state.pending_item = None;
             if state.utterance != Utterance::Closed {
                 state.answering = Some(
@@ -1539,7 +1553,6 @@ async fn handle_server_event(
                 if let Some(at) = state.unbegun.iter().position(|u| matches!(u.asked, Asked::Say(_))) {
                     state.unbegun.remove(at);
                 }
-                state.cancel_on_create = state.cancel_on_create.min(state.pending_creates() as u32);
                 warn!(frame = %::types::redact::redact(text), "realtime refused a spoken update; no more this call");
                 send(ConversationEvent::SayRefused).await?;
                 send(response_done(state)).await?;
@@ -2632,7 +2645,7 @@ mod tests {
         // The Say tapped before it began is refused: nothing is left to cancel.
         let mut state = fresh();
         interrupt_frames(&mut state, None, std::time::Instant::now(), AudioFormat::Pcm24k);
-        assert_eq!(state.cancel_on_create, 1);
+        assert!(state.unbegun.iter().all(|u| u.tapped));
         handle_server_event(&janus_error("invalid_value", Some("say_1")), &tx, &mut state).await.unwrap();
         state.ask(Asked::Again); // a reply asked for after the tap
         handle_server_event(created, &tx, &mut state).await.unwrap();
@@ -2653,7 +2666,7 @@ mod tests {
 
     /// `n` replies asked for with nothing kept to resend.
     fn waiting(n: usize) -> std::collections::VecDeque<Unbegun> {
-        (0..n).map(|_| Unbegun { asked: Asked::Again, at: std::time::Instant::now() }).collect()
+        (0..n).map(|_| Unbegun { asked: Asked::Again, at: std::time::Instant::now(), frame: 0, tapped: false }).collect()
     }
 
     /// A question put just before the line drops, its reply not begun, is
@@ -2665,7 +2678,7 @@ mod tests {
         state.ask(Asked::Words("Book the flight.".into()));
         let mut memory = CallMemory::default();
         settle_lost_socket(&tx, &mut state, &mut memory).await.unwrap();
-        assert_eq!(memory.resend, [Asked::Words("Book the flight.".into())], "a reply asked for just before the drop was dropped with it");
+        assert_eq!(memory.resend, [Resend::Ask(Asked::Words("Book the flight.".into()))], "a reply asked for just before the drop was dropped with it");
         assert!(matches!(rx.recv().await, Some(ConversationEvent::ResponseDone { asked: 1, open: true })));
     }
 
@@ -2676,7 +2689,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let mut state = SessionState { initialized: true, asked: 1, unbegun: waiting(1), ..Default::default() };
         interrupt_frames(&mut state, None, std::time::Instant::now(), AudioFormat::Pcm24k);
-        assert_eq!(state.cancel_on_create, 1);
+        assert!(state.unbegun.iter().all(|u| u.tapped));
         let mut memory = CallMemory::default();
         settle_lost_socket(&tx, &mut state, &mut memory).await.unwrap();
         let _ = rx.recv().await;
@@ -2731,6 +2744,132 @@ mod tests {
         assert_eq!(again[2]["type"], "response.create");
         assert_eq!(again[3]["item"]["content"][0]["text"], "(The result of the task you started earlier: Seat 12A.)");
         assert_eq!(again[4]["type"], "response.create");
+        drop(tx);
+    }
+
+    /// A tap lets go of only the replies waiting at that moment: the oldest,
+    /// let go of unbegun, takes its cancel with it, and a reply asked for
+    /// after the tap plays when it begins. (Review repro: Text A, tap,
+    /// Text B, A never begun, B begins.)
+    #[tokio::test]
+    async fn a_reply_asked_after_the_tap_plays_when_the_tapped_one_is_let_go() {
+        let (l, cfg) = listener().await;
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await; // session.update
+            say(&mut ws, json!({"type": "session.created"})).await;
+            for _ in 0..4 {
+                next_json(&mut ws).await; // item A, create A, item B, create B
+            }
+            // A is let go; the line stays up (pings answered) meanwhile.
+            tokio::pin!(go_rx);
+            loop {
+                tokio::select! {
+                    _ = &mut go_rx => break,
+                    msg = ws.next() => assert!(matches!(msg, Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_)))), "unexpected {msg:?}"),
+                }
+            }
+            say(&mut ws, json!({"type": "response.created", "response": {"id": "rb"}})).await;
+            ws.send(WsMessage::Binary(vec![0u8; 480].into())).await.unwrap();
+            say(&mut ws, json!({"type": "response.done", "response": {"id": "rb"}})).await;
+            let after = next_json(&mut ws).await;
+            (after, ws, l)
+        });
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        tx.send(RealtimeCommand::Text { text: "A".into(), respond: true }).await.unwrap();
+        tx.send(RealtimeCommand::Interrupt { played_ms: None }).await.unwrap();
+        tx.send(RealtimeCommand::Text { text: "B".into(), respond: true }).await.unwrap();
+        assert_eq!(ends_until(&mut rx, 1, &mut events).await, [(2, true)], "A was not let go: {events:?}");
+        go_tx.send(()).unwrap();
+        assert_eq!(ends_until(&mut rx, 1, &mut events).await, [(2, false)]);
+        assert!(events.iter().any(|e| matches!(e, ConversationEvent::PlaybackStart)), "the reply asked after the tap did not play: {events:?}");
+        tx.send(RealtimeCommand::Text { text: "marker".into(), respond: false }).await.unwrap();
+        let (after, _ws, _l) = tokio::time::timeout(std::time::Duration::from_secs(5), server).await.unwrap().unwrap();
+        assert_eq!(after["item"]["content"][0]["text"], "marker", "the reply asked after the tap was cancelled: {after}");
+        drop(tx);
+    }
+
+    /// A tapped `Say` refused takes its cancel with it: a reply asked for
+    /// after the tap plays when it begins.
+    #[tokio::test]
+    async fn a_refused_say_takes_its_tap_with_it() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await; // session.update
+            say(&mut ws, json!({"type": "session.created"})).await;
+            let said = next_json(&mut ws).await;
+            for _ in 0..2 {
+                next_json(&mut ws).await; // item B, create B
+            }
+            let about = said["event_id"].as_str().unwrap().to_string();
+            ws.send(WsMessage::Text(janus_error("invalid_value", Some(&about)).into())).await.unwrap();
+            say(&mut ws, json!({"type": "response.created", "response": {"id": "rb"}})).await;
+            say(&mut ws, json!({"type": "response.done", "response": {"id": "rb"}})).await;
+            let after = next_json(&mut ws).await;
+            (after, ws, l)
+        });
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        tx.send(RealtimeCommand::Say("Now editing.".into())).await.unwrap();
+        tx.send(RealtimeCommand::Interrupt { played_ms: None }).await.unwrap();
+        tx.send(RealtimeCommand::Text { text: "B".into(), respond: true }).await.unwrap();
+        assert_eq!(ends_until(&mut rx, 2, &mut events).await, [(2, true), (2, false)], "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, ConversationEvent::SayRefused)), "{events:?}");
+        tx.send(RealtimeCommand::Text { text: "marker".into(), respond: false }).await.unwrap();
+        let (after, _ws, _l) = tokio::time::timeout(std::time::Duration::from_secs(5), server).await.unwrap().unwrap();
+        assert_eq!(after["item"]["content"][0]["text"], "marker", "the reply asked after the tap was cancelled: {after}");
+        drop(tx);
+    }
+
+    /// What goes up again after a drop goes in the order it first went up,
+    /// and a tool output still waiting on its `ToolOutputsDone` survives a
+    /// second drop too.
+    #[tokio::test]
+    async fn a_tool_output_waiting_survives_two_drops_in_order() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut first = accept(&l).await;
+            next_json(&mut first).await; // session.update
+            say(&mut first, json!({"type": "session.created"})).await;
+            for _ in 0..3 {
+                next_json(&mut first).await; // item, create, output
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(first);
+            let mut lines = Vec::new();
+            for last in [false, true] {
+                let mut ws = accept(&l).await;
+                let mut again = Vec::new();
+                for _ in 0..4 {
+                    again.push(next_json(&mut ws).await); // update, item, create, output words
+                }
+                if last {
+                    again.push(next_json(&mut ws).await); // the ToolOutputsDone's create
+                    lines.push(again);
+                    return (lines, ws, l);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                drop(ws);
+                lines.push(again);
+            }
+            unreachable!()
+        });
+        let (tx, _rx) = connect(cfg).await.unwrap();
+        tx.send(RealtimeCommand::Text { text: "Book the flight.".into(), respond: true }).await.unwrap();
+        tx.send(RealtimeCommand::ToolOutput { call_id: "c1".into(), output: "Seat 12A.".into() }).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+        tx.send(RealtimeCommand::ToolOutputsDone).await.unwrap();
+        let (lines, _ws, _l) = tokio::time::timeout(std::time::Duration::from_secs(10), server).await.unwrap().unwrap();
+        for again in &lines {
+            assert_eq!(again[0]["type"], "session.update");
+            assert_eq!(again[1]["item"]["content"][0]["text"], "Book the flight.");
+            assert_eq!(again[2]["type"], "response.create");
+            assert_eq!(again[3]["item"]["content"][0]["text"], "(The result of the task you started earlier: Seat 12A.)", "{again:?}");
+        }
+        assert_eq!(lines[1][4]["type"], "response.create");
         drop(tx);
     }
 
