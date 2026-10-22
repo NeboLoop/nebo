@@ -193,11 +193,11 @@ impl WorkspaceFolder {
     pub fn holds(self) -> &'static str {
         match self {
             WorkspaceFolder::DesignStudio => "websites, decks, cards and mailers",
-            WorkspaceFolder::MediaStudio => "videos and their media",
-            WorkspaceFolder::Apps => "source for apps the owner builds",
-            WorkspaceFolder::Code => "code built outside a studio",
+            WorkspaceFolder::MediaStudio => "videos, as Nebo Media projects",
+            WorkspaceFolder::Apps => "source of apps the owner builds outside Nebo; an app employee keeps its own folder",
+            WorkspaceFolder::Code => "code projects built outside a studio",
             WorkspaceFolder::Documents => "files made for the owner",
-            WorkspaceFolder::Downloads => "files saved for the owner",
+            WorkspaceFolder::Downloads => "files downloaded for the owner",
         }
     }
 }

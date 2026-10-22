@@ -1057,192 +1057,41 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 // ── Nebo Media's projects into the Media Studio folder ─────────────
 
-/// Where Nebo Media kept its projects before the workspace had a Media
-/// Studio folder: `<workspace>/Media/Projects`.
-const OLD_MEDIA_PROJECTS: [&str; 2] = ["Media", "Projects"];
-/// The move's plan, `[[old name, new name], …]`, kept in the old folder
-/// until everything is out of it.
-const MOVE_JOURNAL: &str = ".moving.json";
+/// The first Nebo Media that reads its projects from the Media Studio folder
+/// (`NEBO_MEDIA_STUDIO_DIR`). An older one reads `Media/Projects`, so the
+/// move waits for this one: moving under an older reader would leave it
+/// writing new work back into the old folder.
+const MEDIA_STUDIO_READER: semver::Version = semver::Version::new(0, 6, 1);
 
-/// What [`move_media_projects_in`] did, entry by entry.
-#[derive(Debug, Default, PartialEq)]
-pub struct MediaProjectsMove {
-    /// `(old name, new name)` of every entry moved; the names differ when
-    /// the Media Studio folder already had one of that name (both are kept).
-    pub moved: Vec<(String, String)>,
-    /// Entries that could not be moved: still in the old folder, tried again
-    /// at the next start.
-    pub left: Vec<String>,
-}
-
-/// The owner's Nebo Media projects, moved once from `~/NeboAI/Media/Projects/<p>`
-/// into the Media Studio folder (`config::WorkspaceFolder::MediaStudio`),
-/// before any plugin or app starts. Every start runs it; once the old
-/// folder is gone it does nothing.
-pub fn move_media_projects() {
+/// The owner's Nebo Media projects into the Media Studio folder
+/// (`tools::workspace_history::move_media_projects`), once the Nebo Media
+/// installed here reads them there, or none is installed (the next one
+/// installed is current). Called at startup and whenever Nebo Media is
+/// installed or updated; once the old folder is gone it does nothing.
+pub fn move_media_projects(store: &db::Store, plugins: &napp::plugin::PluginStore) {
+    if let Some(m) = plugins.get_manifest(tools::media_tool::MEDIA_PLUGIN) {
+        match semver::Version::parse(&m.version) {
+            Ok(v) if v >= MEDIA_STUDIO_READER => {}
+            _ => {
+                debug!(version = %m.version, "Nebo Media still reads Media/Projects; its projects stay until it updates");
+                return;
+            }
+        }
+    }
     let studio = config::WorkspaceFolder::MediaStudio;
     let (Ok(workspace), Ok(to)) = (config::workspace_dir(), config::workspace_folder(studio)) else {
         return;
     };
-    let done = move_media_projects_in(&workspace, &to, dirs::home_dir().as_deref());
+    let done = tools::workspace_history::move_media_projects(store, &workspace, &to, dirs::home_dir().as_deref());
     for (from, to_name) in &done.moved {
         if from == to_name {
             info!(project = %from, "media project moved into {}", to.display());
         } else {
-            warn!(project = %from, kept_as = %to_name, "{} already had a project of this name: both kept", to.display());
+            warn!(project = %from, kept_as = %to_name, "{} already had one of this name: both kept", to.display());
         }
     }
     for name in &done.left {
         warn!(project = %name, "media project could not be moved; it stays where it was and is tried again at the next start");
-    }
-}
-
-/// The move, for `workspace` and its Media Studio folder `studio`:
-/// - nothing is ever overwritten: an entry whose name the Media Studio folder
-///   already holds is kept beside it as `<name>-2` (`-3`, …);
-/// - every entry is moved by one rename, so a project is either all in the
-///   old folder or all in the new one, and each move is checked (the new path
-///   is there, the old one gone);
-/// - the projects' own JSON files (stored timelines, `project.json`) name
-///   their media by path: once moved, the old folder's paths in them are
-///   rewritten to the new ones;
-/// - what goes where is written down first (`.moving.json` in the old
-///   folder), so a move cut short (a crash, a full disk) goes on at the next
-///   start with the same names, and its rewrites are made then.
-///
-/// The old `Projects` folder is removed once everything is out; `Media`
-/// (Nebo Media's brand kits, looks and loose files) stays. `home` spells the
-/// `~/` form of the paths the JSON files may hold.
-pub fn move_media_projects_in(workspace: &Path, studio: &Path, home: Option<&Path>) -> MediaProjectsMove {
-    let old = OLD_MEDIA_PROJECTS.iter().fold(workspace.to_path_buf(), |p, part| p.join(part));
-    let journal = old.join(MOVE_JOURNAL);
-    let mut done = MediaProjectsMove::default();
-    let Ok(entries) = std::fs::read_dir(&old) else {
-        return done;
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(Result::ok)
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n != ".DS_Store" && n != MOVE_JOURNAL)
-        .collect();
-    names.sort();
-    if let Err(e) = std::fs::create_dir_all(studio) {
-        warn!(error = %e, folder = %studio.display(), "the Media Studio folder could not be made; media projects stay where they are");
-        done.left = names;
-        return done;
-    }
-
-    // Every entry's new name before anything moves: a move cut short keeps
-    // the names it chose, and each project's paths to another project are
-    // rewritten to where that one went.
-    let mut plan: Vec<(String, String)> = std::fs::read(&journal)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    // A name chosen earlier that something has taken since is chosen again.
-    plan.retain(|(from, to)| !(names.contains(from) && studio.join(to).exists()));
-    let unplanned: Vec<String> = names.iter().filter(|n| !plan.iter().any(|(f, _)| f == *n)).cloned().collect();
-    for name in &unplanned {
-        let is_dir = old.join(name).is_dir();
-        let mut target = name.clone();
-        let mut n = 2;
-        while studio.join(&target).exists() || plan.iter().any(|(_, t)| *t == target) {
-            target = numbered(name, n, is_dir);
-            n += 1;
-        }
-        plan.push((name.clone(), target));
-    }
-    let written = serde_json::to_vec(&plan).map_err(std::io::Error::other).and_then(|b| std::fs::write(&journal, b));
-    if let Err(e) = written {
-        warn!(error = %e, "the media projects move could not be written down; nothing is moved");
-        done.left = names;
-        return done;
-    }
-
-    for (name, target) in plan.iter().filter(|(f, _)| names.contains(f)) {
-        let (from, to) = (old.join(name), studio.join(target));
-        if std::fs::rename(&from, &to).is_ok() && to.exists() && !from.exists() {
-            done.moved.push((name.clone(), target.clone()));
-        } else {
-            done.left.push(name.clone());
-        }
-    }
-    let spellings = path_spellings(&old, studio, home);
-    for (_, target) in &plan {
-        let dir = studio.join(target);
-        if dir.is_dir() {
-            rewrite_project_paths(&dir, &plan, &spellings);
-        }
-    }
-    if done.left.is_empty() {
-        let _ = std::fs::remove_file(&journal);
-        let _ = std::fs::remove_file(old.join(".DS_Store"));
-        let _ = std::fs::remove_dir(&old);
-    }
-    done
-}
-
-/// `name` numbered `n` to keep it beside one already there: `reel-2`, or
-/// `notes-2.md` for a file.
-fn numbered(name: &str, n: u32, is_dir: bool) -> String {
-    match name.rsplit_once('.').filter(|(stem, _)| !is_dir && !stem.is_empty()) {
-        Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
-        None => format!("{name}-{n}"),
-    }
-}
-
-/// The ways a JSON file may spell the old projects folder, each with the
-/// same spelling of the new one: the absolute path, and the `~/` path when
-/// the workspace is under `home`. Always with `/`, as Nebo Media writes them.
-fn path_spellings(old: &Path, studio: &Path, home: Option<&Path>) -> Vec<(String, String)> {
-    let slashed = |p: &Path| p.to_string_lossy().replace('\\', "/");
-    let mut out = vec![(slashed(old), slashed(studio))];
-    if let Some(home) = home
-        && let (Ok(o), Ok(s)) = (old.strip_prefix(home), studio.strip_prefix(home))
-    {
-        out.push((format!("~/{}", slashed(o)), format!("~/{}", slashed(s))));
-    }
-    out
-}
-
-/// Rewrite, in place, the old folder's paths in every JSON file of the
-/// project at `dir` to where `plan` moves each project. Hidden entries and
-/// links are left alone; a file is replaced whole (written beside it, then
-/// renamed over it), only when something in it changed.
-fn rewrite_project_paths(dir: &Path, plan: &[(String, String)], spellings: &[(String, String)]) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.filter_map(Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(kind) = entry.file_type() else { continue };
-        if name.starts_with('.') || kind.is_symlink() {
-            continue;
-        }
-        let path = entry.path();
-        if kind.is_dir() {
-            rewrite_project_paths(&path, plan, spellings);
-            continue;
-        }
-        if !name.ends_with(".json") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        let mut new = text.clone();
-        for (old_root, new_root) in spellings {
-            for (from, to) in plan.iter().filter(|(f, t)| f != t) {
-                for end in ['/', '"'] {
-                    new = new.replace(&format!("{old_root}/{from}{end}"), &format!("{new_root}/{to}{end}"));
-                }
-            }
-            new = new.replace(&format!("{old_root}/"), &format!("{new_root}/"));
-        }
-        if new == text {
-            continue;
-        }
-        let part = dir.join(format!(".{name}.moving"));
-        if let Err(e) = std::fs::write(&part, &new).and_then(|_| std::fs::rename(&part, &path)) {
-            let _ = std::fs::remove_file(&part);
-            warn!(error = %e, file = %path.display(), "a media project's paths could not be rewritten");
-        }
     }
 }
 
@@ -1535,145 +1384,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod media_projects_move_tests {
-    use super::*;
-    use std::fs;
-    use tempfile::TempDir;
-
-    /// A home with `~/NeboAI` as the workspace.
-    struct Home {
-        _tmp: TempDir,
-        home: std::path::PathBuf,
-        workspace: std::path::PathBuf,
-        studio: std::path::PathBuf,
-        old: std::path::PathBuf,
-    }
-
-    impl Home {
-        fn new() -> Home {
-            let tmp = TempDir::new().unwrap();
-            let home = tmp.path().canonicalize().unwrap();
-            let workspace = home.join("NeboAI");
-            Home { studio: workspace.join("Media Studio"), old: workspace.join("Media/Projects"), workspace, home, _tmp: tmp }
-        }
-
-        fn run(&self) -> MediaProjectsMove {
-            move_media_projects_in(&self.workspace, &self.studio, Some(&self.home))
-        }
-
-        /// A project in the old folder whose stored timeline names its own
-        /// media both ways Nebo Media writes paths, and another project's.
-        fn old_project(&self, name: &str, other: &str) {
-            let dir = self.old.join(name);
-            fs::create_dir_all(dir.join("work")).unwrap();
-            fs::create_dir_all(dir.join("deliver")).unwrap();
-            fs::write(dir.join("project.json"), r#"{"timelines":{}}"#).unwrap();
-            fs::write(dir.join("deliver").join("cut.mp4"), format!("{name} video")).unwrap();
-            let abs = self.old.join(name).join("frames/a.png");
-            let timeline = format!(
-                r#"{{"assets":{{"a":{{"src":"~/NeboAI/Media/Projects/{name}/frames/a.png"}},"b":{{"src":"{}"}},"c":{{"src":"~/NeboAI/Media/Projects/{other}/voice/v.mp3"}}}}}}"#,
-                abs.display()
-            );
-            fs::write(dir.join("work").join(format!("{name}-v1.timeline.json")), timeline).unwrap();
-        }
-
-        fn timeline(&self, project: &str, name: &str) -> String {
-            fs::read_to_string(self.studio.join(project).join("work").join(format!("{name}-v1.timeline.json"))).unwrap()
-        }
-    }
-
-    /// Every project lands in the Media Studio folder under its own name,
-    /// its timelines name the new paths, and the old folder is gone; `Media`
-    /// itself, with Nebo Media's other folders, stays.
-    #[test]
-    fn projects_move_into_the_media_studio_folder() {
-        let h = Home::new();
-        h.old_project("reel", "launch");
-        h.old_project("launch", "reel");
-        fs::create_dir_all(h.workspace.join("Media/brand/acme")).unwrap();
-        fs::write(h.old.join(".DS_Store"), "x").unwrap();
-
-        let done = h.run();
-        assert_eq!(done.moved, vec![("launch".into(), "launch".into()), ("reel".into(), "reel".into())]);
-        assert!(done.left.is_empty());
-        assert_eq!(fs::read_to_string(h.studio.join("reel/deliver/cut.mp4")).unwrap(), "reel video");
-        let reel = h.timeline("reel", "reel");
-        assert!(!reel.contains("Media/Projects"), "{reel}");
-        assert!(reel.contains("\"~/NeboAI/Media Studio/reel/frames/a.png\""), "{reel}");
-        assert!(reel.contains(&format!("\"{}\"", h.studio.join("reel/frames/a.png").display())), "{reel}");
-        assert!(reel.contains("\"~/NeboAI/Media Studio/launch/voice/v.mp3\""), "{reel}");
-        assert!(!h.old.exists(), "the old projects folder is gone");
-        assert!(h.workspace.join("Media/brand/acme").is_dir(), "Media's other folders stay");
-    }
-
-    /// A second start finds nothing to do and changes nothing.
-    #[test]
-    fn a_second_run_does_nothing() {
-        let h = Home::new();
-        h.old_project("reel", "reel");
-        h.run();
-        let before = h.timeline("reel", "reel");
-        assert_eq!(h.run(), MediaProjectsMove::default());
-        assert_eq!(h.timeline("reel", "reel"), before);
-        assert_eq!(fs::read_dir(&h.studio).unwrap().count(), 1);
-    }
-
-    /// A name the Media Studio folder already has is never overwritten: both
-    /// are kept, the moved one numbered, its paths to itself following it.
-    #[test]
-    fn a_name_already_there_is_never_overwritten() {
-        let h = Home::new();
-        fs::create_dir_all(h.studio.join("reel")).unwrap();
-        fs::write(h.studio.join("reel/project.json"), "the one already there").unwrap();
-        fs::write(h.studio.join("notes.md"), "mine").unwrap();
-        h.old_project("reel", "reel");
-        fs::write(h.old.join("notes.md"), "moved").unwrap();
-
-        let done = h.run();
-        assert_eq!(done.moved, vec![("notes.md".into(), "notes-2.md".into()), ("reel".into(), "reel-2".into())]);
-        assert_eq!(fs::read_to_string(h.studio.join("reel/project.json")).unwrap(), "the one already there");
-        assert_eq!(fs::read_to_string(h.studio.join("notes.md")).unwrap(), "mine");
-        assert_eq!(fs::read_to_string(h.studio.join("notes-2.md")).unwrap(), "moved");
-        assert_eq!(fs::read_to_string(h.studio.join("reel-2/deliver/cut.mp4")).unwrap(), "reel video");
-        let moved = h.timeline("reel-2", "reel");
-        assert!(moved.contains("\"~/NeboAI/Media Studio/reel-2/frames/a.png\"") && !moved.contains("Media Studio/reel/"), "{moved}");
-        assert!(!h.old.exists());
-    }
-
-    /// A move cut short: one project already moved but not yet rewritten
-    /// (the plan was written down), one collision planned, one never
-    /// started. The next start finishes it with the names first chosen.
-    #[test]
-    fn a_move_cut_short_is_finished_at_the_next_start() {
-        let h = Home::new();
-        h.old_project("reel", "launch");
-        h.old_project("launch", "reel");
-        h.old_project("promo", "promo");
-        fs::create_dir_all(h.studio.join("promo")).unwrap();
-        // The first start chose the names, moved `reel`, then stopped.
-        let plan = vec![("launch", "launch"), ("promo", "promo-2"), ("reel", "reel")];
-        fs::write(h.old.join(MOVE_JOURNAL), serde_json::to_vec(&plan).unwrap()).unwrap();
-        fs::rename(h.old.join("reel"), h.studio.join("reel")).unwrap();
-
-        let done = h.run();
-        assert_eq!(done.moved, vec![("launch".into(), "launch".into()), ("promo".into(), "promo-2".into())]);
-        assert!(done.left.is_empty());
-        for (project, name) in [("reel", "reel"), ("launch", "launch"), ("promo-2", "promo")] {
-            let t = h.timeline(project, name);
-            assert!(!t.contains("Media/Projects"), "{project}: {t}");
-        }
-        assert!(h.timeline("promo-2", "promo").contains("Media Studio/promo-2/voice/v.mp3"));
-        assert!(fs::read_dir(h.studio.join("promo")).unwrap().next().is_none(), "the one already there is untouched");
-        assert!(!h.old.exists(), "the plan and the old folder are gone once everything is out");
-        assert_eq!(h.run(), MediaProjectsMove::default());
-    }
-
-    /// No old folder: nothing is made, nothing moved.
-    #[test]
-    fn without_old_projects_nothing_happens() {
-        let h = Home::new();
-        assert_eq!(h.run(), MediaProjectsMove::default());
-        assert!(!h.studio.exists());
-    }
-}

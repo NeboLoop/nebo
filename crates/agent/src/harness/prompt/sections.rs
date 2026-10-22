@@ -461,7 +461,7 @@ pub fn workspace_layout(workspace: &str) -> String {
         .map(|f| format!("{}/{} ({})", f.name(), f.per(), f.holds()))
         .collect();
     format!(
-        "{workspace}. Work goes in its folder unless the owner names another: {}",
+        "{workspace}. Each kind of work goes in its folder here, unless the owner names another folder: {}",
         folders.join("; ")
     )
 }
@@ -515,14 +515,14 @@ mod owner_now_tests {
     fn the_environment_names_the_workspace_folders() {
         let told = environment_fields(None, Some("/Users/a/NeboAI"), "web", Watching::Live, None, None);
         let workspace = &told.iter().find(|(k, _)| k == "Workspace").unwrap().1;
-        assert!(workspace.starts_with("/Users/a/NeboAI. ") && workspace.contains("unless the owner names another"), "{workspace}");
+        assert!(workspace.starts_with("/Users/a/NeboAI. ") && workspace.contains("unless the owner names another folder"), "{workspace}");
         for part in [
             "Design Studio/<project>/ (websites",
             "Media Studio/<project>/ (videos",
-            "Apps/<app>/ (source for apps",
-            "Code/<project>/ (code",
+            "Apps/<app>/ (source of apps",
+            "Code/<project>/ (code projects",
             "Documents/ (files made",
-            "Downloads/ (files saved",
+            "Downloads/ (files downloaded",
         ] {
             assert!(workspace.contains(part), "{part}: {workspace}");
         }

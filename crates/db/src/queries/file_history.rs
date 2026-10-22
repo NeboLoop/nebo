@@ -128,6 +128,35 @@ impl Store {
         tx.commit().map_err(db_err)
     }
 
+    /// A workspace folder or file moved from `from` to `to` (both relative
+    /// to the workspace, '/'-separated) carries its records with it, in one
+    /// transaction: its index rows and earlier contents now name the new
+    /// place, and what an employee created there (`employee_created`, by
+    /// absolute `file:` target, `from_target` to `to_target`) is still that
+    /// employee's. A path already recorded at the new place keeps its row.
+    pub fn move_workspace_records(&self, from: &str, to: &str, from_target: &str, to_target: &str) -> Result<(), NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(db_err)?;
+        // The column is `from` itself or under it (`from` + the separator),
+        // compared exactly (no LIKE wildcards), and becomes `to` with the
+        // same rest. Workspace paths use '/'; `file:` targets the OS's own.
+        let os_sep = std::path::MAIN_SEPARATOR.to_string();
+        for (table, column, a, b, sep) in [
+            ("workspace_index", "path", from, to, "/"),
+            ("file_history", "path", from, to, "/"),
+            ("employee_created", "target", from_target, to_target, os_sep.as_str()),
+        ] {
+            let cond = format!("(?1 = {column} OR substr({column}, 1, length(?1) + 1) = ?1 || ?3)");
+            tx.execute(
+                &format!("UPDATE OR IGNORE {table} SET {column} = ?2 || substr({column}, length(?1) + 1) WHERE {cond}"),
+                params![a, b, sep],
+            )
+            .map_err(db_err)?;
+            tx.execute(&format!("DELETE FROM {table} WHERE {cond}"), params![a, b, sep]).map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)
+    }
+
     /// A file's earlier contents, newest first.
     pub fn list_file_history(&self, path: &str, limit: i64) -> Result<Vec<FileHistoryEntry>, NeboError> {
         let conn = self.conn()?;

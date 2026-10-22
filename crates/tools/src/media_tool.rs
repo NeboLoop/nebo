@@ -46,9 +46,9 @@ const MAX_SECONDS: u64 = 30;
 const SPEECH_MODEL: &str = "nebo-speech";
 /// The speed transcripts are made and billed as.
 const TRANSCRIBE_MODEL: &str = "nebo-transcribe";
-/// The plugin whose engine pulls a video's sound out as small speech and
-/// cuts a long recording in pauses, for a transcript.
-const MEDIA_PLUGIN: &str = "nebo-media";
+/// Nebo Media, the plugin whose engine pulls a video's sound out as small
+/// speech and cuts a long recording in pauses, for a transcript.
+pub const MEDIA_PLUGIN: &str = "nebo-media";
 /// The longest part of a recording sent in one transcription request, in
 /// seconds; a longer one is cut into parts in its pauses.
 const TRANSCRIPT_PART: u32 = 1200;

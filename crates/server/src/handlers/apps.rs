@@ -1903,8 +1903,9 @@ fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
 }
 
 /// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
-/// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
-/// replaced when shared again), and the owner's open chat shows the one
+/// a file to share. The file goes into the owner's Documents folder
+/// (`Documents/<app name>/<name>` in the workspace, replaced when shared
+/// again), and the owner's open chat shows the one
 /// Share dialog on it. The page never calls the share API: who can open the
 /// link, and until when, is his choice there.
 pub async fn share_file(
@@ -1929,7 +1930,8 @@ pub async fn share_file(
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "content is empty" }))).into_response();
     }
     let folder = work_segment(&app_name, false).unwrap_or_else(|| agent_id.clone());
-    let dir = match config::files_dir() {
+    let documents = config::WorkspaceFolder::Documents;
+    let dir = match config::workspace_folder(documents) {
         Ok(d) => d.join(&folder),
         Err(e) => return to_error_response(e).into_response(),
     };
@@ -1942,7 +1944,7 @@ pub async fn share_file(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     // The same unencoded reference a run's own Work files carry.
-    let artifact = format!("/api/v1/files/{folder}/{name}");
+    let artifact = format!("/api/v1/files/{}/{folder}/{name}", documents.name());
     state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
     axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }

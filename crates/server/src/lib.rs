@@ -1900,10 +1900,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // before any sidecar starts (one-time).
     migration::migrate_app_data_per_app(&data_dir, &store);
 
-    // The owner's Nebo Media projects into the Media Studio folder, before
-    // any plugin or app reads them there.
-    migration::move_media_projects();
-
     // Stored shapes that name tools move onto the current tool set once,
     // before anything loads an employee, a skill or a workflow.
     stored_tool_names::upgrade(&store, &data_dir)?;
@@ -1940,6 +1936,13 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // SIGKILL (orphaned `<version>.staging` dirs). Must run before the plugin
     // scan / skill load below so resumed plugins are picked up.
     plugin_store.reconcile_orphaned_staging().await;
+
+    // The owner's Nebo Media projects into the Media Studio folder, before
+    // any plugin or app reads them there (once Nebo Media reads them there).
+    {
+        let (store, plugins) = (store.clone(), plugin_store.clone());
+        let _ = tokio::task::spawn_blocking(move || migration::move_media_projects(&store, &plugins)).await;
+    }
 
     // Every installed plugin runs with the owner's stored settings (API keys,
     // tokens, …): the same load a plugin that arrives later gets.
@@ -4099,6 +4102,12 @@ async fn handle_plugin_fs_event(state: &AppState, event: napp::plugin::PluginFsE
                 codes::activate_plugins(state, std::slice::from_ref(slug)).await;
             }
             info!(slug = %slug, path = %binary_path.display(), action, by_hand, "plugin hot-loaded");
+            // An updated Nebo Media may be the first to read the Media Studio
+            // folder: its projects move there now.
+            if slug == tools::media_tool::MEDIA_PLUGIN {
+                let (store, plugins) = (state.store.clone(), state.plugin_store.clone());
+                let _ = tokio::task::spawn_blocking(move || migration::move_media_projects(&store, &plugins)).await;
+            }
         }
         napp::plugin::PluginFsEvent::Removed { .. } => {
             state.hooks.unregister_app(slug);
