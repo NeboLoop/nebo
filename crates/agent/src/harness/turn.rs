@@ -10786,7 +10786,8 @@ mod tests {
             input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
-                self.asked.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                let options: Vec<&str> = input["options"].as_array().map(|a| a.iter().filter_map(|o| o.as_str()).collect()).unwrap_or_default();
+                self.asked.lock().unwrap().push(format!("{} [{}]", input["question"].as_str().unwrap_or(""), options.join(" | ")));
                 if let Some(f) = &self.on_ask {
                     f();
                 }
@@ -10925,6 +10926,46 @@ mod tests {
                 assert_eq!(asked.lock().unwrap().len(), 1, "asked once: {:?}", asked.lock().unwrap());
                 let calls = model.calls();
                 assert!(calls[5].messages.iter().any(|m| m.content.contains("The owner already decided")), "the answer came back, not a second question");
+            })
+        })
+    }
+
+    /// Live 2026-10-21: a reviewer called "Contact form does nothing on
+    /// static site" the owner's decision with no choices, and his card had
+    /// only Skip. A decision without choices goes to the builder as a defect
+    /// and never reaches the owner; a real one is asked with the recommended
+    /// choice first.
+    #[test]
+    fn a_decision_without_choices_goes_to_the_builder_and_a_real_one_to_the_owner() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let review: &'static str = r#"{"findings": [
+                    {"severity": "major", "kind": "decision", "title": "Contact form does nothing on static site", "evidence": "total.py:1", "repro": "submit the form", "impact": "messages are lost", "fix": "post it to a form endpoint"},
+                    {"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "dollars"}
+                ], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(review),
+                    Step::Say("Posted the form; rounded to dollars."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "the form posts"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(OwnerAnswers { picked: "dollars", asked: asked.clone(), on_ask: None })],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars [dollars | cents]"], "only the real call, recommended first");
+                let calls = model.calls();
+                let brief = calls[3].messages.iter().rev().find(|m| m.content.contains("Independent reviewers")).expect("the builder's findings");
+                assert!(brief.content.contains("Contact form does nothing on static site") && brief.content.contains("Fix: post it to a form endpoint"), "{}", brief.content);
             })
         })
     }

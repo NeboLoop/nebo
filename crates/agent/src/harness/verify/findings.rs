@@ -4,8 +4,10 @@
 //! to [`answer_schema`]): ranked findings, each with its evidence, a repro
 //! and a fix; the checks it made that held; and, from the second round on,
 //! what became of each earlier finding. A finding that is the owner's call
-//! (a product or business decision, not a defect) says so, with options and
-//! a recommended one: the loop asks the owner, never the builder.
+//! (a product or business decision, not a defect) says so, with at least two
+//! options and a recommended one: the loop asks the owner, never the builder.
+//! A "decision" without them is no question anyone can answer, and is read
+//! as a defect for the builder ([`Review::settled`]).
 
 use std::collections::BTreeSet;
 
@@ -90,7 +92,31 @@ impl Finding {
     }
 }
 
+/// The fewest choices an owner's call offers.
+pub const MIN_CHOICES: usize = 2;
+
 impl Finding {
+    /// A decision's choices as the owner sees them: the recommended one
+    /// first, then the rest, each once, none blank.
+    pub fn choices(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for o in self.recommended.iter().chain(self.options.iter()) {
+            let o = o.trim();
+            if !o.is_empty() && !out.contains(&o) {
+                out.push(o);
+            }
+        }
+        out
+    }
+
+    /// Whether this is a call the owner can be asked: a decision with a
+    /// recommended option and at least [`MIN_CHOICES`] choices.
+    pub fn is_owner_call(&self) -> bool {
+        self.kind == Kind::Decision
+            && self.recommended.as_deref().is_some_and(|r| !r.trim().is_empty())
+            && self.choices().len() >= MIN_CHOICES
+    }
+
     /// Whether `other` is the same call for the owner as this decision,
     /// whichever reviewer raised it: most of the same words in its title, or
     /// the same evidence.
@@ -213,6 +239,20 @@ pub struct Review {
     pub verified_ok: Vec<Held>,
     #[serde(default)]
     pub prior: Vec<Prior>,
+}
+
+impl Review {
+    /// The answer as the loop acts on it: a "decision" that is no owner's
+    /// call ([`Finding::is_owner_call`]) is a defect, which the builder
+    /// fixes. The owner is never asked a question with nothing to pick.
+    pub fn settled(mut self) -> Self {
+        for f in &mut self.findings {
+            if f.kind == Kind::Decision && !f.is_owner_call() {
+                f.kind = Kind::Defect;
+            }
+        }
+        self
+    }
 }
 
 /// The JSON schema a reviewer's final answer must match.
@@ -415,6 +455,33 @@ mod tests {
         assert_eq!(review.findings[0].kind, Kind::Defect);
         let bad = serde_json::json!({"findings": [{"severity": "huge"}], "verified_ok": []});
         assert!(a2ui_validation::validate(&answer_schema(), &bad, "answer").is_err());
+    }
+
+    /// Live 2026-10-21: a reviewer marked "Contact form does nothing on
+    /// static site" a decision with no options, and the owner got a card
+    /// with nothing to pick but Skip. A decision without a recommended
+    /// option and two choices is a defect for the builder; a real one keeps
+    /// its choices, the recommended one first.
+    #[test]
+    fn a_decision_without_choices_is_a_defect_for_the_builder() {
+        let mut bare = finding("", Severity::Major, "src/routes/contact/+page.svelte:19", "Contact form does nothing on static site");
+        bare.kind = Kind::Decision;
+        let mut one = bare.clone();
+        one.options = vec!["Use a form service".into()];
+        one.recommended = Some("Use a form service".into());
+        let mut unrecommended = bare.clone();
+        unrecommended.options = vec!["A".into(), "B".into()];
+        let mut blank = bare.clone();
+        blank.options = vec![" ".into(), "".into()];
+        blank.recommended = Some(" ".into());
+        let mut real = bare.clone();
+        real.title = "Which plan is the default?".into();
+        real.options = vec!["Monthly".into(), "Yearly".into()];
+        real.recommended = Some("Yearly".into());
+        let review = Review { findings: vec![bare, one, unrecommended, blank, real], ..Default::default() }.settled();
+        let kinds: Vec<Kind> = review.findings.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, [Kind::Defect, Kind::Defect, Kind::Defect, Kind::Defect, Kind::Decision]);
+        assert_eq!(review.findings[4].choices(), ["Yearly", "Monthly"], "the recommended one first, each once");
     }
 
     #[test]

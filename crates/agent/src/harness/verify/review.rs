@@ -107,7 +107,7 @@ pub async fn run_round(
             // A check named with no words is no check.
             let review = review.map(|mut r| {
                 r.verified_ok.retain(|h| !h.checked.trim().is_empty());
-                r
+                r.settled()
             });
             let review = review.and_then(|r| match r.findings.is_empty() && r.verified_ok.is_empty() {
                 true => Err("it found nothing and named nothing it checked".to_string()),
@@ -279,8 +279,10 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
          - blocker: wrong results, lost or corrupted data, a security hole, money wrong, or the build or tests fail.\n\
          - major: a real defect or regression someone will hit.\n\
          - minor: worth fixing, harmless meanwhile.\n\
-         - kind \"decision\": the change needs a product or business call only the owner can make (not a defect). Give \
-         the choices in `options` and the one you recommend in `recommended`.\n",
+         - kind \"decision\": only a product or business choice that is the owner's to make (what to offer, \
+         charge, promise or call something), never how to fix a bug: anything broken, missing or wrong with a clear \
+         fix is a defect, with that fix. A decision gives at least two concrete choices in `options` and the one you \
+         recommend in `recommended`; one without them is read as a defect.\n",
     );
     out
 }

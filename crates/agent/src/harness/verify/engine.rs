@@ -511,7 +511,8 @@ impl VerifyCheck {
     /// Ask the owner one question with choices, the recommended one first,
     /// on the conversation's card (and the mobile app). `None` when nobody
     /// can answer in this run. The question waits on the row while it is
-    /// asked, so a restart asks it again.
+    /// asked, so a restart asks it again. A question with no choices is
+    /// never asked: the owner would have nothing to pick but Skip.
     async fn ask_owner(
         &self,
         id: &str,
@@ -520,6 +521,10 @@ impl VerifyCheck {
         options: &[&str],
         purpose: &Purpose,
     ) -> Option<String> {
+        if options.iter().all(|o| o.trim().is_empty()) {
+            tracing::error!(verification = %id, question, "a question for the owner with no choices was not asked");
+            return None;
+        }
         let ask = json!({ "question": question, "context": context, "options": options, "purpose": purpose });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
@@ -1044,15 +1049,7 @@ impl VerifyCheck {
                 asked.push(json!({ "finding": d, "answer": answer }));
                 continue;
             }
-            let mut options: Vec<&str> = Vec::new();
-            if let Some(r) = d.recommended.as_deref() {
-                options.push(r);
-            }
-            for o in &d.options {
-                if Some(o.as_str()) != d.recommended.as_deref() {
-                    options.push(o);
-                }
-            }
+            let options = d.choices();
             let context = format!(
                 "{}\n\nWhy it matters: {}\n\nWhere: {}",
                 d.repro, d.impact, d.evidence
