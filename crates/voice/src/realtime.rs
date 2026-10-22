@@ -564,6 +564,8 @@ async fn drive_socket(
                     if matches!(dropped.asked, Asked::Say(_)) {
                         state.say_pending = None;
                     }
+                    // Its input is with the session alone, never answered.
+                    state.hold(dropped.frame, dropped.asked);
                     state.last_done = Some(std::time::Instant::now());
                     if event_tx.send(response_done(state)).await.is_err() {
                         return Ended::Done;
@@ -755,7 +757,7 @@ async fn settle_lost_socket(
     // The reply under way is asked for again on the next line, with its
     // input, and so is each one asked for and not begun. One the owner cut
     // short or tapped away is never asked for again, but its input goes up
-    // again with the input held for those before it, and each tool output
+    // again with the input held for those no reply answered, and each tool output
     // with no reply asked for yet: all in the order they went up.
     memory.lost();
     let mut resend: Vec<(u64, Resend)> = Vec::new();
@@ -1022,6 +1024,31 @@ const CREATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const CREATE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
 
 impl SessionState {
+    /// Keep the input of a reply nothing answered, for the next line: the
+    /// newest `RECAP_TURNS` of them within `RECAP_CHARS`, the newest always.
+    /// A bare reply or words to say carry no input.
+    fn hold(&mut self, frame: u64, asked: Asked) {
+        if matches!(asked, Asked::Again | Asked::Say(_)) {
+            return;
+        }
+        self.held.push((frame, asked));
+        let size = |asked: &Asked| match asked {
+            Asked::Words(text) => text.len(),
+            Asked::Outputs(outputs) => outputs.iter().map(String::len).sum(),
+            Asked::Again | Asked::Say(_) => 0,
+        };
+        let (mut kept, mut used) = (0, 0);
+        for (_, asked) in self.held.iter().rev() {
+            used += size(asked);
+            if kept > 0 && (kept == RECAP_TURNS || used > RECAP_CHARS) {
+                break;
+            }
+            kept += 1;
+        }
+        let stale = self.held.len() - kept;
+        self.held.drain(..stale);
+    }
+
     /// Replies asked for and not begun.
     fn pending_creates(&self) -> usize {
         self.unbegun.len()
@@ -1119,7 +1146,7 @@ where
         }
     }
     if !respond {
-        state.held.push((frame, asked));
+        state.hold(frame, asked);
         return Ok(());
     }
     up(sink, state, json!({ "type": "response.create" }), false).await?;
@@ -1144,8 +1171,10 @@ struct SessionState {
     /// The reply under way, from its `response.created` to its
     /// `response.done`: a dropped line asks for it again with its input.
     begun: Option<Begun>,
-    /// Input re-sent on this line for replies the owner cut short or tapped
-    /// away, with the frame each went up in: the next line needs it too.
+    /// Input no reply on this line answered (one the owner cut short or
+    /// tapped away, or the provider never began), with the frame each went up
+    /// in: the next line needs it too. The newest, bounded like the recap
+    /// ([`SessionState::hold`]).
     held: Vec<(u64, Asked)>,
     /// Tool outputs sent since the last response asked for, each with the
     /// frame it went up in: what the next `ToolOutputsDone` answers.
@@ -1550,7 +1579,7 @@ async fn handle_server_event(
             if let Some(begun) = state.begun.take()
                 && begun.cut
             {
-                state.held.push((begun.frame, begun.asked));
+                state.hold(begun.frame, begun.asked);
             }
             // The reply to the utterance is over — spoken with no finished
             // transcript yet, or silent (a tool call): the words already sent
@@ -2991,6 +3020,69 @@ mod tests {
         assert_eq!(again[2]["item"]["content"][0]["text"], "Book the flight.", "{again:?}");
         assert_eq!(again[3]["type"], "response.create");
         drop(tx);
+    }
+
+    /// A tapped reply the provider never began is let go, and its input is
+    /// still sent again after a later drop. (Review repro.)
+    #[tokio::test]
+    async fn a_tapped_reply_let_go_keeps_its_input_for_a_later_drop() {
+        let (l, cfg) = listener().await;
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut first = accept(&l).await;
+            next_json(&mut first).await; // session.update
+            say(&mut first, json!({"type": "session.created"})).await;
+            for _ in 0..2 {
+                next_json(&mut first).await; // output, create
+            }
+            // The create is let go; the line stays up (pings answered).
+            tokio::pin!(go_rx);
+            loop {
+                tokio::select! {
+                    _ = &mut go_rx => break,
+                    msg = first.next() => assert!(matches!(msg, Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_)))), "unexpected {msg:?}"),
+                }
+            }
+            drop(first);
+            let mut second = accept(&l).await;
+            let mut again = Vec::new();
+            for _ in 0..3 {
+                again.push(next_json(&mut second).await); // update, output words, marker
+            }
+            (again, second, l)
+        });
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        tx.send(RealtimeCommand::ToolOutput { call_id: "c1".into(), output: "Seat 12A.".into() }).await.unwrap();
+        tx.send(RealtimeCommand::ToolOutputsDone).await.unwrap();
+        tx.send(RealtimeCommand::Interrupt { played_ms: None }).await.unwrap();
+        assert_eq!(ends_until(&mut rx, 1, &mut events).await, [(1, false)], "the create was not let go: {events:?}");
+        go_tx.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tx.send(RealtimeCommand::Text { text: "marker".into(), respond: false }).await.unwrap();
+        let (again, _ws, _l) = tokio::time::timeout(std::time::Duration::from_secs(10), server).await.unwrap().unwrap();
+        assert_eq!(again[0]["type"], "session.update");
+        assert_eq!(again[1]["item"]["content"][0]["text"], "(The result of the task you started earlier: Seat 12A.)", "{again:?}");
+        assert_eq!(again[2]["item"]["content"][0]["text"], "marker", "a reply was asked for the let-go one: {}", again[2]);
+        drop(tx);
+    }
+
+    /// Input held for the next line is bounded like the recap: the newest
+    /// `RECAP_TURNS` within `RECAP_CHARS`, the newest always kept.
+    #[test]
+    fn held_input_keeps_the_newest_within_the_recap_bounds() {
+        let mut state = SessionState::default();
+        for n in 0..RECAP_TURNS + 4 {
+            state.hold(n as u64, Asked::Words(format!("w{n}")));
+        }
+        state.hold(99, Asked::Again);
+        assert_eq!(state.held.len(), RECAP_TURNS);
+        assert_eq!(state.held.first().unwrap().1, Asked::Words("w4".into()));
+        let big = "x".repeat(RECAP_CHARS + 1);
+        state.hold(100, Asked::Outputs(vec![big.clone()]));
+        assert_eq!(state.held, [(100, Asked::Outputs(vec![big]))], "the newest was not kept alone");
+        state.hold(101, Asked::Words("Book the flight.".into()));
+        assert_eq!(state.held, [(101, Asked::Words("Book the flight.".into()))]);
     }
 
     /// A `response.create` the provider drops without a word never wedges
