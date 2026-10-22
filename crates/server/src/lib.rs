@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod a2ui_actions;
 pub mod agents_export;
 pub mod app_lifecycle;
+mod app_grants;
 pub mod backup_ship;
 mod artifact_updates;
 pub mod background;

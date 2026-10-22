@@ -72,7 +72,8 @@ async fn validate_app_token(
     Ok(())
 }
 
-/// Check that the app has `network:{domain}` permission for the target URL.
+/// Check that the app holds `network:{domain}` for the target URL
+/// (`app_grants`): refused when it does not, however it runs.
 async fn check_network_permission(
     state: &AppState,
     agent_id: &str,
@@ -87,22 +88,11 @@ async fn check_network_permission(
             return Err((StatusCode::BAD_REQUEST, "invalid URL").into_response());
         }
     };
-
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(agent_id) {
-        let perm = format!("network:{}", domain);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
-    }
-    Ok(())
+    holds(state, agent_id, &format!("network:{domain}")).await
 }
 
-/// Check that the app has `subagent:{target}` permission to invoke another agent.
+/// Check that the app holds `subagent:{target}` to invoke another agent
+/// (`app_grants`): refused when it does not, however it runs.
 async fn check_subagent_permission(
     state: &AppState,
     app_agent_id: &str,
@@ -112,18 +102,16 @@ async fn check_subagent_permission(
     if app_agent_id == target_agent_id {
         return Ok(());
     }
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(app_agent_id) {
-        let perm = format!("subagent:{}", target_agent_id);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
+    holds(state, app_agent_id, &format!("subagent:{target_agent_id}")).await
+}
+
+/// `Ok` when app `agent_id` holds `perm` now (`app_grants::granted`), else
+/// 403 naming it.
+async fn holds(state: &AppState, agent_id: &str, perm: &str) -> Result<(), Response> {
+    if napp::manifest::permission_covers(&crate::app_grants::granted(state, agent_id).await, perm) {
+        return Ok(());
     }
-    Ok(())
+    Err((StatusCode::FORBIDDEN, format!("app lacks permission: {perm}")).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +163,7 @@ async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, na
 /// and its manifest's permissions. By its id alone, never a name: an app's
 /// pass names its id, so a name that happens to equal another app's id must
 /// never serve that app's page or grants.
-async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
+pub(crate) async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
     state
         .agent_loader
         .list()
@@ -1933,11 +1921,12 @@ fn work_segment(name: &str) -> Option<String> {
 }
 
 /// GET/HEAD /apps/{agent_id}/files/{*path} — `nebo.files.url`: a file of the
-/// owner's workspace (`~/NeboAI`) inside a folder the app's manifest grants
-/// it (`filesystem:read:<folder>`), so a page shows the owner's pictures and
-/// plays his films. It is the app's own route, so its page reaches it
-/// wherever it is open (the desktop window, the browser, the tunnel, an
-/// app-view pass), by the rule every app route admits its caller
+/// owner's workspace (`~/NeboAI`) inside a folder the app holds
+/// (`filesystem:read:<folder>`, `app_grants`: as its manifest asks for an
+/// app built here, once the owner allows it for one from the marketplace),
+/// so a page shows the owner's pictures and plays his films. It is the
+/// app's own route, so its page reaches it wherever it is open, with its
+/// pass, by the rule every app route admits its caller
 /// (`validate_app_token`). Read only. A path no grant covers is 403 naming
 /// the permission; a file that is missing, hidden, or outside the granted
 /// folder once `..` and symlinks are resolved is 404, the same answer, so
@@ -1951,11 +1940,11 @@ pub async fn serve_app_file(
     if let Err(r) = validate_app_token(&state, &agent_id, request.headers()).await {
         return r;
     }
-    let permissions = loaded_app(&state, &agent_id).await.map(|a| a.app_permissions).unwrap_or_default();
+    let permissions = crate::app_grants::granted(&state, &agent_id).await;
     let grants: Vec<&str> = permissions.iter().filter_map(|p| napp::manifest::file_read_folder(p)).collect();
     let Some(grant) = covering_grant(&grants, &path) else {
         let refusal = format!(
-            "{path} is in no folder this app may read: its manifest grants a folder with {}<folder>",
+            "{path} is in no folder this app may read: its manifest asks for a folder with {}<folder>, and an app from the marketplace reads it once the owner allows it",
             napp::manifest::FILESYSTEM_READ
         );
         return (StatusCode::FORBIDDEN, refusal).into_response();

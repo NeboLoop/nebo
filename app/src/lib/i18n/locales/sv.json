@@ -4541,5 +4541,27 @@
 		"tellIt": "Säg vad den ska göra",
 		"sending": "Skickar…",
 		"sendFailed": "Ditt svar skickades inte."
+	},
+	"appPermissions": {
+		"title": "{name} vill göra mer",
+		"intro": "Säg bara ja om du litar på appen. Du kan ändra dig senare i appens inställningar.",
+		"wantsFiles": "{name} vill se filerna i {target}",
+		"wantsWeb": "{name} vill prata med {target}",
+		"wantsWebAny": "{name} vill prata med vilken webbplats som helst",
+		"wantsHelper": "{name} vill be {target} om hjälp",
+		"wantsHelperAny": "{name} vill be någon av dina medarbetare om hjälp",
+		"canFiles": "Se filerna i {target}",
+		"canWeb": "Prata med {target}",
+		"canWebAny": "Prata med vilken webbplats som helst",
+		"canHelper": "Be {target} om hjälp",
+		"canHelperAny": "Be någon av dina medarbetare om hjälp",
+		"allow": "Tillåt",
+		"deny": "Tillåt inte",
+		"off": "Av",
+		"notNow": "Inte nu",
+		"sectionTitle": "Vad den här appen får göra",
+		"sectionHint": "Appen kommer från marketplace. Den får bara göra det du tillåter.",
+		"ownHint": "Du gjorde appen här, så den får göra det den ber om.",
+		"notAnswered": "Inte besvarad"
 	}
 }

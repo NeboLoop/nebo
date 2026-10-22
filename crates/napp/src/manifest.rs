@@ -396,6 +396,22 @@ pub fn file_read_folder(perm: &str) -> Option<&str> {
     named.then_some(folder)
 }
 
+/// Whether `granted` covers `perm`: the same permission, a granted one
+/// ending in `:` that it starts with, or `<prefix>:*` (`network:*`). The
+/// one matching rule for a manifest and for an app's granted permissions.
+pub fn permission_covers(granted: &[String], perm: &str) -> bool {
+    let wildcard = format!("{}:*", perm.split(':').next().unwrap_or(""));
+    granted.iter().any(|p| p == perm || (p.ends_with(':') && perm.starts_with(p.as_str())) || *p == wildcard)
+}
+
+/// The permissions an app installed from the marketplace or shared through
+/// a loop holds only once the owner allows them: reading his files, talking
+/// to another website, asking another of his employees. An app his own
+/// employees build here holds them as its manifest asks.
+pub fn needs_consent(perm: &str) -> bool {
+    ["filesystem:", "network:", "subagent:"].iter().any(|p| perm.starts_with(p))
+}
+
 /// Every permission must carry a known prefix, and a `filesystem:read:`
 /// grant must name a folder inside the workspace ([`file_read_folder`]). The
 /// one check for a manifest's `permissions`, whether it arrives as a file
@@ -499,11 +515,7 @@ impl Manifest {
 
     /// Check if the tool has a specific permission.
     pub fn has_permission(&self, perm: &str) -> bool {
-        self.permissions.iter().any(|p| {
-            p == perm
-                || (p.ends_with(':') && perm.starts_with(p))
-                || p == &format!("{}:*", perm.split(':').next().unwrap_or(""))
-        })
+        permission_covers(&self.permissions, perm)
     }
 
     /// Check if the tool has a permission with a prefix (wildcard support).

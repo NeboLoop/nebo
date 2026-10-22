@@ -82,11 +82,9 @@ impl Unavailable {
 pub struct AppLifecycle {
     agent_id: String,
     supervisor: Supervisor,
-    /// Follows every state change: tools, broadcasts, the last launch. Ends
+    /// Follows every state change: tools and broadcasts. Ends
     /// on `Off`, after unregistering the app's tools.
     follower: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// The most recent launch, for its manifest permissions.
-    latest: Arc<tokio::sync::RwLock<Option<Arc<Launched>>>>,
     skill_loader: Arc<tools::skills::Loader>,
     /// Names of skills loaded for this app (for cleanup on shutdown).
     loaded_skill_names: Vec<String>,
@@ -114,7 +112,6 @@ impl AppLifecycle {
         };
         let runtime = Arc::new(napp::Runtime::new(data_dir));
         let supervisor = Supervisor::start(runtime, tool_dir.clone(), api_port, policy);
-        let latest = Arc::new(tokio::sync::RwLock::new(None));
         let follower = tokio::spawn(follow(
             agent.id.clone(),
             tools::sidecar_tool::app_slug(&agent.name),
@@ -122,14 +119,12 @@ impl AppLifecycle {
             supervisor.subscribe(),
             hub,
             registry,
-            latest.clone(),
         ));
         let loaded_skill_names = skill_loader.load_app_skills(&tool_dir).await;
         Some(Self {
             agent_id: agent.id.clone(),
             supervisor,
             follower: tokio::sync::Mutex::new(Some(follower)),
-            latest,
             skill_loader,
             loaded_skill_names,
         })
@@ -157,22 +152,6 @@ impl AppLifecycle {
             SidecarState::Running(l) => l.app_token.clone(),
             _ => String::new(),
         }
-    }
-
-    /// Check if this app has a specific permission declared in its manifest.
-    ///
-    /// Supports exact match, prefix match, and wildcard (`network:*`).
-    pub async fn has_permission(&self, perm: &str) -> bool {
-        let latest = self.latest.read().await;
-        let Some(launched) = latest.as_ref() else {
-            return false;
-        };
-        let prefix = perm.split(':').next().unwrap_or("");
-        launched.manifest.permissions.iter().any(|p| {
-            p == perm
-                || p == &format!("{}:*", prefix)
-                || (p.ends_with(':') && perm.starts_with(p.as_str()))
-        })
     }
 
     /// The running sidecar, waiting for one that is starting or restarting.
@@ -224,8 +203,8 @@ impl AppLifecycle {
     }
 }
 
-/// Follow a sidecar's state: register its tools each time it runs, remember
-/// the launch, and broadcast every change.
+/// Follow a sidecar's state: register its tools each time it runs, and
+/// broadcast every change.
 async fn follow(
     agent_id: String,
     app: String,
@@ -233,7 +212,6 @@ async fn follow(
     mut rx: tokio::sync::watch::Receiver<SidecarState>,
     hub: Arc<ClientHub>,
     registry: Arc<tools::Registry>,
-    latest: Arc<tokio::sync::RwLock<Option<Arc<Launched>>>>,
 ) {
     let mut launches: u32 = 0;
     let mut was_running = false;
@@ -245,7 +223,6 @@ async fn follow(
         match &state {
             SidecarState::Running(launched) => {
                 launches += 1;
-                *latest.write().await = Some(launched.clone());
                 register_tools(&agent_id, &app, &tool_dir, launched, &registry).await;
                 if launches == 1 {
                     hub.broadcast(

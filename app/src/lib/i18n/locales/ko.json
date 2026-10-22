@@ -4541,5 +4541,27 @@
 		"tellIt": "할 일 알려주기",
 		"sending": "보내는 중…",
 		"sendFailed": "답변을 보내지 못했어요."
+	},
+	"appPermissions": {
+		"title": "{name}이(가) 더 많은 일을 하려고 합니다",
+		"intro": "이 앱을 믿을 때만 허용하세요. 나중에 앱 설정에서 바꿀 수 있습니다.",
+		"wantsFiles": "{name}이(가) {target}의 파일을 보려고 합니다",
+		"wantsWeb": "{name}이(가) {target}와(과) 통신하려고 합니다",
+		"wantsWebAny": "{name}이(가) 모든 웹사이트와 통신하려고 합니다",
+		"wantsHelper": "{name}이(가) {target}에게 도움을 요청하려고 합니다",
+		"wantsHelperAny": "{name}이(가) 모든 직원에게 도움을 요청하려고 합니다",
+		"canFiles": "{target}의 파일 보기",
+		"canWeb": "{target}와(과) 통신하기",
+		"canWebAny": "모든 웹사이트와 통신하기",
+		"canHelper": "{target}에게 도움 요청하기",
+		"canHelperAny": "모든 직원에게 도움 요청하기",
+		"allow": "허용",
+		"deny": "허용 안 함",
+		"off": "끔",
+		"notNow": "나중에",
+		"sectionTitle": "이 앱이 할 수 있는 일",
+		"sectionHint": "이 앱은 마켓플레이스에서 왔습니다. 허용한 일만 할 수 있습니다.",
+		"ownHint": "이 앱은 여기서 만들었으므로 요청한 일을 할 수 있습니다.",
+		"notAnswered": "답하지 않음"
 	}
 }

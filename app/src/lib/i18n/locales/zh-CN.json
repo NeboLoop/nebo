@@ -4541,5 +4541,27 @@
 		"tellIt": "告诉它怎么做",
 		"sending": "正在发送…",
 		"sendFailed": "你的回答没有发送出去。"
+	},
+	"appPermissions": {
+		"title": "{name} 想做更多事",
+		"intro": "只有信任这个应用时才允许。之后可以在应用设置中更改。",
+		"wantsFiles": "{name} 想查看 {target} 中的文件",
+		"wantsWeb": "{name} 想与 {target} 通信",
+		"wantsWebAny": "{name} 想与任何网站通信",
+		"wantsHelper": "{name} 想请 {target} 帮忙",
+		"wantsHelperAny": "{name} 想请你的任何员工帮忙",
+		"canFiles": "查看 {target} 中的文件",
+		"canWeb": "与 {target} 通信",
+		"canWebAny": "与任何网站通信",
+		"canHelper": "请 {target} 帮忙",
+		"canHelperAny": "请你的任何员工帮忙",
+		"allow": "允许",
+		"deny": "不允许",
+		"off": "关闭",
+		"notNow": "以后再说",
+		"sectionTitle": "这个应用可以做什么",
+		"sectionHint": "这个应用来自应用市场，只能做你允许的事。",
+		"ownHint": "这个应用是在这里创建的，所以可以做它请求的事。",
+		"notAnswered": "未回答"
 	}
 }

@@ -4541,5 +4541,27 @@
 		"tellIt": "Tell it what to do",
 		"sending": "Sending…",
 		"sendFailed": "Your answer didn't send."
+	},
+	"appPermissions": {
+		"title": "{name} wants to do more",
+		"intro": "Only say yes if you trust this app. You can change your mind later in the app's settings.",
+		"wantsFiles": "{name} wants to see the files in {target}",
+		"wantsWeb": "{name} wants to talk to {target}",
+		"wantsWebAny": "{name} wants to talk to any website",
+		"wantsHelper": "{name} wants to ask {target} for help",
+		"wantsHelperAny": "{name} wants to ask any of your employees for help",
+		"canFiles": "See the files in {target}",
+		"canWeb": "Talk to {target}",
+		"canWebAny": "Talk to any website",
+		"canHelper": "Ask {target} for help",
+		"canHelperAny": "Ask any of your employees for help",
+		"allow": "Allow",
+		"deny": "Don't allow",
+		"off": "Off",
+		"notNow": "Not now",
+		"sectionTitle": "What this app can do",
+		"sectionHint": "This app came from the marketplace. It can only do what you allow.",
+		"ownHint": "You made this app here, so it can do what it asks for.",
+		"notAnswered": "Not answered"
 	}
 }

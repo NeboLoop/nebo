@@ -7,6 +7,7 @@
 
 import { withBase } from '$lib/nav';
 import { clientId } from '$lib/websocket/origin';
+import { askAppPermissions } from '$lib/apps/consent';
 
 export interface AppWindowConfig {
 	width: number;
@@ -47,6 +48,10 @@ export async function launchApp(
 	config?: Partial<AppWindowConfig>
 ): Promise<void> {
 	const cfg = { ...DEFAULT_CONFIG, ...config, title: config?.title || appName };
+
+	// What an app from the marketplace asks to do beyond its own page, and
+	// the owner has not answered yet: asked first, in plain words.
+	await askAppPermissions(agentId, appName);
 
 	// Tauri desktop — use WebviewWindow if available
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
