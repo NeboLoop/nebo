@@ -328,6 +328,12 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn recover(&self) -> Fut<'_, ()> {
         Box::pin(async move {
+            // The copies still in Nebo's own folder, from before they lived
+            // with the system's temporary files: saved, then moved.
+            let moved = crate::worktree::move_from_data_dir(&self.harness.store).await;
+            if moved > 0 {
+                info!(moved, "moved the working copies out of Nebo's folder");
+            }
             let swept = crate::worktree::cleanup_stale(crate::worktree::STALE_AFTER_SECS).await;
             if !swept.is_empty() {
                 info!(count = swept.len(), "swept stale helper copies");

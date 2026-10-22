@@ -347,6 +347,44 @@ impl Store {
         Ok(())
     }
 
+    /// Point every record of the working copy at `from` at `to`, where it
+    /// is moving: a verification's work folder and copy state, and a
+    /// helper's held copy. A path inside the copy moves with it; a copy
+    /// whose path only starts alike (`v-1` for `v-10`) is not this one.
+    /// Returns how many rows changed.
+    pub fn move_copy_paths(&self, from: &str, to: &str) -> Result<usize, NeboError> {
+        let json = |col: &str| {
+            format!(
+                "{col} = replace(replace({col}, json_quote(?1), json_quote(?2)), \
+                 substr(json_quote(?1), 1, length(json_quote(?1)) - 1) || '/', \
+                 substr(json_quote(?2), 1, length(json_quote(?2)) - 1) || '/')"
+            )
+        };
+        let conn = self.conn()?;
+        let mut changed = conn
+            .execute(
+                &format!(
+                    "UPDATE verifications SET work_dir = CASE WHEN work_dir = ?1 THEN ?2 \
+                     WHEN substr(work_dir, 1, length(?1) + 1) = ?1 || '/' THEN ?2 || substr(work_dir, length(?1) + 1) \
+                     ELSE work_dir END, {} \
+                     WHERE work_dir = ?1 OR substr(work_dir, 1, length(?1) + 1) = ?1 || '/' OR instr(isolation_json, substr(json_quote(?1), 2, length(json_quote(?1)) - 2)) > 0",
+                    json("isolation_json")
+                ),
+                params![from, to],
+            )
+            .db_err("move_copy_paths (verifications)")?;
+        changed += conn
+            .execute(
+                &format!(
+                    "UPDATE engine_runs SET {} WHERE instr(held_copy, substr(json_quote(?1), 2, length(json_quote(?1)) - 2)) > 0",
+                    json("held_copy")
+                ),
+                params![from, to],
+            )
+            .db_err("move_copy_paths (engine_runs)")?;
+        Ok(changed)
+    }
+
     /// Drop a verification that turned out to have nothing to verify (its
     /// work changed nothing), with its steps.
     pub fn delete_verification(&self, id: &str) -> Result<(), NeboError> {
@@ -576,6 +614,33 @@ mod tests {
             base_ref: "abc",
             ..Default::default()
         }
+    }
+
+    /// A copy moving out of Nebo's folder takes its records with it: the
+    /// verification's work folder and copy state, a helper's held copy,
+    /// paths inside it included; a copy whose name only starts alike stays.
+    #[test]
+    fn a_moved_copy_takes_its_records_with_it() {
+        let s = store();
+        let from = "/data/Application Support/worktrees/site/v-1";
+        let to = "/private/tmp/nebo-501/worktrees/site/v-1";
+        let state = serde_json::json!({"Copy": {"path": from, "pending": [{"twin": format!("{from}/a.rs.nebo-owner")}], "root": "/site"}});
+        s.create_verification(&NewVerification { work_dir: from, isolation_state: Some(&state), ..new("v-1", "agent:dev:web", "/site") }, 10).unwrap();
+        let other = format!("{from}0");
+        s.create_verification(&NewVerification { work_dir: &other, ..new("v-10", "agent:dev:web", "/site") }, 10).unwrap();
+        s.engine_create_run(&crate::NewRun { id: "sa-1", kind: "helper", session_key: "k", agent_id: "dev", lane: "main", ..Default::default() }).unwrap();
+        s.engine_set_run_held_copy("sa-1", Some(&serde_json::json!({"iso": state}).to_string())).unwrap();
+
+        assert_eq!(s.move_copy_paths(from, to).unwrap(), 2);
+        let v = s.get_verification("v-1").unwrap().unwrap();
+        assert_eq!(v.work_dir, to);
+        let moved = v.isolation_state.unwrap().to_string();
+        assert!(moved.contains(&format!("\"{to}\"")) && moved.contains(&format!("{to}/a.rs.nebo-owner")) && !moved.contains(from), "{moved}");
+        assert!(moved.contains("\"/site\""), "the owner's project is not the copy");
+        let held = s.engine_runs_holding_copies("helper").unwrap().remove(0).1;
+        assert!(held.contains(to) && !held.contains(from), "{held}");
+        assert_eq!(s.get_verification("v-10").unwrap().unwrap().work_dir, other, "a copy whose name only starts alike");
+        assert_eq!(s.move_copy_paths(from, to).unwrap(), 0, "moved once");
     }
 
     #[test]

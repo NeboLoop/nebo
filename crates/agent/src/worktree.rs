@@ -2247,6 +2247,147 @@ pub async fn cleanup_stale(cutoff_secs: u64) -> Vec<PathBuf> {
     removed
 }
 
+/// Move the working copies out of Nebo's own folder, once, at start.
+///
+/// Before the working copies lived in the system's temporary folder
+/// (`config::copies_dir`) they were in `<data_dir>/worktrees`, which the
+/// guard closes to every employee and helper. Each copy still there is
+/// saved first and the save checked: a worktree's work committed on its
+/// task branch (as Nebo, "Work in progress, saved before the copy moved")
+/// and the worktree then clean, a scratch copy's snapshotted into its shadow
+/// in Nebo's own folder and read back. Then the records naming it (its
+/// verification, a helper's held copy) are pointed at its new place, and
+/// only then is it moved: `git worktree move` for a worktree, a rename for a
+/// scratch copy (made from its saved snapshot where the two folders are on
+/// different disks, the old one removed only once the new one holds the
+/// same). A move cut short is finished at the next start: the records
+/// already point where it goes, and its work was saved. A copy that can't
+/// be saved or moved stays where it is with its work, and the log says
+/// why. The verify loop's old build folders and reviewers' copies, made
+/// again from their sources, are removed. Returns how many copies moved.
+pub async fn move_from_data_dir(store: &db::Store) -> usize {
+    let Ok(data) = config::data_dir() else { return 0 };
+    let verify = data.join("verify");
+    let _ = std::fs::remove_dir_all(verify.join("build"));
+    for v in std::fs::read_dir(&verify).into_iter().flatten().flatten() {
+        for entry in std::fs::read_dir(v.path()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("review-r") {
+                let _ = std::fs::remove_dir_all(entry.path());
+            } else if name.starts_with("round-") && name.ends_with(".patch") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let old = data.join("worktrees");
+    let Ok(projects) = std::fs::read_dir(&old) else { return 0 };
+    let new = match copies_root() {
+        Ok(new) => new,
+        Err(e) => {
+            warn!(error = %e, "the working copies in Nebo's folder could not be moved; they stay where they are");
+            return 0;
+        }
+    };
+    let mut moved = 0;
+    for project in projects.flatten() {
+        let Ok(entries) = std::fs::read_dir(project.path()) else { continue };
+        for entry in entries.flatten() {
+            let from = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(JOURNAL_SUFFIX) {
+                recover_landing(&from);
+                continue;
+            }
+            if !from.is_dir() {
+                continue;
+            }
+            let to = new.join(project.file_name()).join(&name);
+            match move_copy(store, &from, &to).await {
+                Ok(()) => {
+                    moved += 1;
+                    tracing::info!(from = %from.display(), to = %to.display(), "a working copy moved out of Nebo's folder");
+                }
+                Err(e) => warn!(path = %from.display(), error = %e, "a working copy stays in Nebo's folder, its work with it"),
+            }
+        }
+        let _ = std::fs::remove_dir(project.path());
+    }
+    let _ = std::fs::remove_dir(&old);
+    moved
+}
+
+/// Save, re-point and move one copy ([`move_from_data_dir`]).
+async fn move_copy(store: &db::Store, from: &Path, to: &Path) -> Result<(), String> {
+    if to.exists() {
+        return Err(format!("{} is in the way", to.display()));
+    }
+    let parent = to.parent().ok_or("no folder to move into")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let (from_s, to_s) = (from.to_string_lossy(), to.to_string_lossy());
+    if from.join(".git").exists() {
+        let common = git(from, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await?;
+        let root = PathBuf::from(common.trim()).parent().map(Path::to_path_buf).ok_or("the copy's project is gone")?;
+        let wt = Worktree {
+            task_id: String::new(),
+            root: root.clone(),
+            path: from.to_path_buf(),
+            branch: String::new(),
+            start_branch: String::new(),
+            base: String::new(),
+            onto: None,
+            conflicted: Vec::new(),
+        };
+        // Midway through a catch-up its state is the repository's, and
+        // `git worktree move` carries it as it is.
+        if !rebasing(&wt).await {
+            commit_all(&wt, "Work in progress, saved before the copy moved").await?;
+            let unsaved = git(from, &["status", "--porcelain", "--untracked-files=normal"]).await?;
+            if !unsaved.trim().is_empty() {
+                return Err(format!("its work could not all be saved: {}", unsaved.trim()));
+            }
+        }
+        let head = git(from, &["rev-parse", "HEAD"]).await?;
+        return moved(store, from, to, async {
+            git(&root, &["worktree", "move", &from_s, &to_s]).await?;
+            let now = git(to, &["rev-parse", "HEAD"]).await?;
+            if now == head { Ok(()) } else { Err(format!("{} holds {now}, not {head}", to.display())) }
+        })
+        .await;
+    }
+    // A scratch copy: its saved snapshot is the one its new place reads.
+    let shadow = crate::harness::verify::shadow::Shadow::open(&saved_dir(to), from).await?;
+    let snap = shadow.snapshot().await?;
+    shadow.keep(SAVED, &snap).await?;
+    if shadow.kept(SAVED).await.as_ref() != Some(&snap) {
+        return Err("its work could not be saved".into());
+    }
+    moved(store, from, to, async {
+        if std::fs::rename(from, to).is_ok() {
+            return Ok(());
+        }
+        let there = crate::harness::verify::shadow::Shadow::open(&saved_dir(to), to).await?;
+        there.export(&snap, to).await?;
+        if there.snapshot().await? != snap {
+            let _ = std::fs::remove_dir_all(to);
+            return Err(format!("{} does not hold what {} does", to.display(), from.display()));
+        }
+        std::fs::remove_dir_all(from).map_err(|e| format!("remove {}: {e}", from.display()))
+    })
+    .await
+}
+
+/// Point a copy's records at `to`, then move it (`move_it`); a move that
+/// fails points them back at `from`, where the copy still is.
+async fn moved(store: &db::Store, from: &Path, to: &Path, move_it: impl std::future::Future<Output = Result<(), String>>) -> Result<(), String> {
+    let (from_s, to_s) = (from.to_string_lossy(), to.to_string_lossy());
+    store.move_copy_paths(&from_s, &to_s).map_err(|e| e.to_string())?;
+    let done = move_it.await;
+    if done.is_err() && from.exists() {
+        let _ = store.move_copy_paths(&to_s, &from_s);
+    }
+    done
+}
+
 /// The lines the child sees at the top of its prompt.
 pub fn preamble(iso: &Isolation) -> String {
     match iso {
@@ -2468,6 +2609,111 @@ mod tests {
             let unsaved = create_copy(f.path(), "sa-unsaved").unwrap();
             std::fs::remove_dir_all(&unsaved.path).unwrap();
             assert!(reattach(Isolation::Copy(unsaved)).await.unwrap_err().contains("none of its work was saved"));
+        }))
+    }
+
+    /// The copies Nebo kept in its own folder before (closed to every
+    /// employee now) move out at start with their work: a worktree with
+    /// files its builder never committed (as `app-media-studio` had) and a
+    /// scratch copy of a folder that is no repository (as
+    /// `almatuck-ai-scaffold` was). Each is saved first, its records follow
+    /// it, and the old folder is gone only once the new one holds it. A copy
+    /// whose new place is taken stays where it is, its work and records
+    /// untouched. The old build folders and reviewers' copies go; a
+    /// verification's own files stay.
+    #[test]
+    fn the_copies_in_nebos_folder_move_out_with_their_work() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let r = repo().await;
+            let head = git(r.path(), &["rev-parse", "HEAD"]).await.unwrap();
+            let old_wt = home.join("worktrees/site/v-git");
+            std::fs::create_dir_all(old_wt.parent().unwrap()).unwrap();
+            git(r.path(), &["worktree", "add", "-q", "-b", "nebo/v-git", old_wt.to_str().unwrap(), &head]).await.unwrap();
+            std::fs::write(old_wt.join("a.txt"), "edited\n").unwrap();
+            std::fs::write(old_wt.join("new.txt"), "never committed\n").unwrap();
+            let f = folder();
+            let old_copy = home.join("worktrees/folder/v-copy");
+            std::fs::create_dir_all(old_copy.join("src")).unwrap();
+            std::fs::write(old_copy.join("src/a.txt"), "mine\n").unwrap();
+            std::fs::write(old_copy.join("b.txt"), "b0\n").unwrap();
+            let stuck = home.join("worktrees/folder/v-stuck");
+            std::fs::create_dir_all(&stuck).unwrap();
+            std::fs::write(stuck.join("b.txt"), "stuck work\n").unwrap();
+            std::fs::create_dir_all(copies_root().unwrap().join("folder/v-stuck")).unwrap();
+
+            let wt_state = Isolation::Git(Worktree {
+                task_id: "v-git".into(),
+                root: r.path().to_path_buf(),
+                path: old_wt.clone(),
+                branch: "nebo/v-git".into(),
+                start_branch: "main".into(),
+                base: head.clone(),
+                onto: None,
+                conflicted: Vec::new(),
+            });
+            let snapshot: HashMap<PathBuf, u64> =
+                [("src/a.txt", "a0\n"), ("b.txt", "b0\n")].into_iter().map(|(p, b)| (PathBuf::from(p), tools::checkpoint::fingerprint(b.as_bytes()))).collect();
+            let copy_state = |path: &Path| {
+                Isolation::Copy(ScratchCopy { task_id: "v-copy".into(), root: f.path().to_path_buf(), path: path.to_path_buf(), snapshot: snapshot.clone(), skipped: Vec::new(), pending: Vec::new() })
+            };
+            for (id, dir, state) in [
+                ("v-git", &old_wt, serde_json::to_value(&wt_state).unwrap()),
+                ("v-copy", &old_copy, serde_json::to_value(copy_state(&old_copy)).unwrap()),
+                ("v-stuck", &stuck, serde_json::to_value(copy_state(&stuck)).unwrap()),
+            ] {
+                store
+                    .create_verification(
+                        &db::NewVerification { id, session_key: "agent:a:web", work_dir: &dir.to_string_lossy(), isolation: "worktree", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() },
+                        1,
+                    )
+                    .unwrap();
+            }
+            for leftover in ["verify/build/abc/debug/x", "verify/v-git/review-r1/a.rs", "verify/v-git/shadow.git/HEAD"] {
+                std::fs::create_dir_all(home.join(leftover).parent().unwrap()).unwrap();
+                std::fs::write(home.join(leftover), "x").unwrap();
+            }
+            std::fs::write(home.join("verify/v-git/round-1.patch"), "+x").unwrap();
+
+            assert_eq!(move_from_data_dir(&store).await, 2);
+
+            let new_wt = copies_root().unwrap().join("site/v-git");
+            assert_eq!(std::fs::read_to_string(new_wt.join("new.txt")).unwrap(), "never committed\n");
+            assert_eq!(std::fs::read_to_string(new_wt.join("a.txt")).unwrap(), "edited\n");
+            assert!(log(&new_wt).await[0].starts_with("Work in progress, saved before the copy moved|"), "saved on its branch first");
+            assert!(git(r.path(), &["worktree", "list"]).await.unwrap().contains(&*new_wt.to_string_lossy()));
+            let new_copy = copies_root().unwrap().join("folder/v-copy");
+            assert_eq!(std::fs::read_to_string(new_copy.join("src/a.txt")).unwrap(), "mine\n");
+            assert!(!old_wt.exists() && !old_copy.exists());
+            for (id, at) in [("v-git", &new_wt), ("v-copy", &new_copy)] {
+                let v = store.get_verification(id).unwrap().unwrap();
+                assert_eq!(Path::new(&v.work_dir), at.as_path());
+                let iso: Isolation = serde_json::from_value(v.isolation_state.unwrap()).unwrap();
+                assert_eq!(iso.path(), at.as_path());
+            }
+
+            // The copy whose place was taken stays, with its work and records.
+            assert_eq!(std::fs::read_to_string(stuck.join("b.txt")).unwrap(), "stuck work\n");
+            assert_eq!(Path::new(&store.get_verification("v-stuck").unwrap().unwrap().work_dir), stuck.as_path());
+
+            assert!(!home.join("verify/build").exists() && !home.join("verify/v-git/review-r1").exists() && !home.join("verify/v-git/round-1.patch").exists());
+            assert!(home.join("verify/v-git/shadow.git/HEAD").exists(), "a verification's own files stay");
+
+            // Moved, the copies are what any copy is: the system clears
+            // them, they come back from their saved work, and they land.
+            std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
+            let v = store.get_verification("v-copy").unwrap().unwrap();
+            let iso = reattach(serde_json::from_value(v.isolation_state.unwrap()).unwrap()).await.unwrap();
+            assert_eq!(std::fs::read_to_string(new_copy.join("src/a.txt")).unwrap(), "mine\n");
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Mine", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), vec!["src/a.txt".to_string()]);
+            assert_eq!(std::fs::read_to_string(f.path().join("src/a.txt")).unwrap(), "mine\n");
+            let v = store.get_verification("v-git").unwrap().unwrap();
+            let mut isos = [reattach(serde_json::from_value(v.isolation_state.unwrap()).unwrap()).await.unwrap()];
+            let out = merge_all(&mut isos, "Edit a, add new", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), vec!["a.txt".to_string(), "new.txt".to_string()]);
+            assert_eq!(std::fs::read_to_string(r.path().join("new.txt")).unwrap(), "never committed\n");
         }))
     }
 
