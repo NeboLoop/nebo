@@ -60,6 +60,7 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/vite-build.md", include_str!("app-studio/references/vite-build.md")),
     ("app-studio", "references/when-it-breaks.md", include_str!("app-studio/references/when-it-breaks.md")),
     ("app-studio", "references/sidecars.md", include_str!("app-studio/references/sidecars.md")),
+    ("app-studio", "references/the-page.md", include_str!("app-studio/references/the-page.md")),
     ("app-studio", "references/design-depth.md", include_str!("app-studio/references/design-depth.md")),
     ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
     ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),
@@ -361,8 +362,13 @@ mod bundled_skill_tests {
         assert!(content.contains("assign_task(to:"), "another employee hands the app's work to its employee");
         assert!(content.contains("install key"), "nobody asks the owner for the install key");
         // What a confined page does instead of reaching past its app.
+        let (_, _, page) = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|(k, path, _)| *k == "app-studio" && *path == "references/the-page.md")
+            .expect("the page reference ships");
+        assert!(content.contains("references/the-page.md"), "the skill points to it");
         for way in ["files.url(", "plugins.run(", "chat.mount", "filesystem:read:<folder>", "plugin:<slug>", "only once the owner"] {
-            assert!(content.contains(way), "the skill teaches {way}");
+            assert!(page.contains(way), "the skill teaches {way}");
         }
     }
 

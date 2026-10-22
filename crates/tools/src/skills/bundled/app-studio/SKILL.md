@@ -32,57 +32,20 @@ the check passes. When looks matter, Design Depth adds the studio method.
 
 ## How Nebo Runs a Page
 
-Nebo serves `ui/` at several addresses, each with its own prefix:
-
 | Where it opens | Address of `ui/index.html` |
 |---|---|
 | Desktop app window | `neboapp://<id>/index.html` |
-| A browser on this computer | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
-| Mobile app and web, through the hub's tunnel | `https://neboai.com/t/<bot>/k/<pass>/apps/<id>/ui/index.html` |
-| `app_screenshot` and the Verified check | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
+| Mobile app and web (the hub's tunnel) | `https://neboai.com/t/<bot>/k/<pass>/apps/<id>/ui/index.html` |
+| A browser here, `app_screenshot`, the Verified check | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
 
-- **The page is confined to its own app.** It runs sandboxed, in an origin
-  of its own: no cookies, never the owner's sign-in. `/k/<pass>/` is the
-  page's pass: Nebo adds it when the page opens, everything the page loads
-  from its own address carries it, and it opens this app's routes alone.
-- **Files are relative** (`./app.js`, `./assets/hero.webp`): nothing the
-  page loads starts with `/`.
-- **The SDK makes every call to Nebo** (`storage`, `agents`, `janus`,
-  `decide`, `share`, `files`, `plugins`, `chat`, `identity`, `nebo.fetch`):
-  it finds the prefix and the pass itself. Never write an `/api/v1/...` or
-  `api/v1/...` address yourself. An absolute one misses the prefix (the
-  hub's root in the mobile app, refused in a screenshot); a relative one
-  lands inside `ui/` and gets the page back as HTML. Both can work in the
-  desktop window and fail everywhere else.
-- **`localStorage` works, kept by Nebo** in the app's store under the key
-  `localStorage`; `sessionStorage` lasts as long as the page. Records the
-  employee also reads go in `storage`.
-- **A link out opens a new window** (`target="_blank"` or `window.open`);
-  the page can't move the window it is in.
-- **A page reaches only its own app**: its storage, its routes
-  (`/api/v1/apps/<id>/...`) and its socket, which carries its data changes,
-  its cards and its own chat's words, nothing else of the owner's. Never
-  `/api/v1/files`, another app, or any other Nebo API.
-- **The owner's files** reach a page only through `files.url(path)`, inside
-  folders its manifest grants with `filesystem:read:<folder>`
-  (`references/sdk-more.md`). Never copy them into `ui/` or storage.
-- **A plugin's work at once** (a thumbnail, a waveform, a trim):
-  `plugins.run(slug, command, args)` with `plugin:<slug>` in the manifest
-  (`references/sdk-more.md`). Work that needs judgment goes to the employee
-  with `agents.invoke`; the page hears its words and which tools ran, never
-  what a tool gave back.
-- **The page's chat** (`chat.mount`) is drawn in the page and talks only to
-  this app's own employee. Its words are the app's, not the owner's: codes,
-  slash commands, file paths and @mentions are just words.
-- **The owner's OK.** An app built here holds what its manifest asks for.
-  One installed from the marketplace or shared through a loop gets
-  `filesystem:`, `network:`, `subagent:` and `plugin:` only once the owner
-  allows each, and he can take it back. A refused call answers 403 naming
-  the permission: the page says plainly what it can't do yet. Never ask the
-  owner to get around it.
-- **`nebo.fetch('https://...')`** reaches public sites only, with
-  `network:<host>`: never this computer or its network, whatever a granted
-  name points to, and every redirect is held to the granted hosts.
+- **The page is confined to its own app**: sandboxed, an origin of its own,
+  never the owner's sign-in. `/k/<pass>/` is its pass; it opens this app alone.
+- **Files are relative** (`./app.js`): nothing the page loads starts with `/`.
+- **The SDK makes every call to Nebo** and finds the prefix itself.
+  Never write an `/api/v1/...` or `api/v1/...` address yourself: it works in
+  the desktop window and fails everywhere else.
+- A page reaches only its own app: its storage, routes and socket. The rest,
+  and the owner's OK an installed app needs: `references/the-page.md`.
 
 ## Who Does What
 
@@ -185,9 +148,8 @@ create_employee(draft_id: "<the id it returned>")
   and `share_menu` (up to 6 `{label, say}`, sdk-more.md), nothing else.
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt),
-  `filesystem:read:<folder>` (the owner's files) and `plugin:<slug>` (a
-  plugin run at once), both in `references/sdk-more.md`. An app built here
-  holds them as written; an installed one only once the owner allows them.
+  `filesystem:read:<folder>` (the owner's files), `plugin:<slug>` (a plugin
+  run at once): `references/the-page.md`.
 
 The starter page, exactly:
 
@@ -302,14 +264,10 @@ The full Vite lane: `read_skill_file(name: "app-studio", path:
 Then tell the owner in product words: "Your Orbit app is ready. Open it from
 your workforce."
 
-**The Verified badge.** Nebo's own check on app work loads the page fresh,
-in a view of its own, on a phone and a desktop size, in every round: it
-passes only with zero console errors, uncaught exceptions and failed loads
-of the app's own files, and a page that drew something. Another site's
-failures (a CDN, analytics) are listed as notes, never counted. It never
-reloads the owner's open views. Checks of your own go in a `checks/` folder
-in the app folder, outside `ui/`; they run before the live load and are
-never published. Never add project files to `ui/` to earn the badge.
+**The Verified badge.** Each round of app work loads the page fresh, phone
+and desktop size, in a view of its own: Verified only with zero console
+errors and failed loads of its own (another site's are notes). Your own
+checks go in `checks/` beside `ui/`, never in it.
 
 ## Your App's Data
 
@@ -355,8 +313,7 @@ a page never sets them.
 | `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | A relative path goes to the app's sidecar; `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
 | `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. |
 
-The owner's files (`files`), running a plugin (`plugins`), sharing a file,
-streaming, cards and the page's chat (`chat`): `references/sdk-more.md`.
+Files, plugins, sharing, streaming, cards, chat: `references/sdk-more.md`.
 
 ## Version History
 
