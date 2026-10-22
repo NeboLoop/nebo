@@ -84,7 +84,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents
              WHERE is_app = 1
                AND rtrim(trim(app_ui_path, ' ' || char(9) || char(10) || char(13)), '/\\') = ?1
