@@ -1574,7 +1574,10 @@ async fn run_agent_collect(
     while let Some(event) = rx.recv().await {
         match event.event_type {
             ai::StreamEventType::Text => text.push_str(&event.text),
-            ai::StreamEventType::ToolCall | ai::StreamEventType::ToolResult => {
+            // Which tools its employee called, never what they gave back: a
+            // result carries what the employee read, which the page holds
+            // no grant to.
+            ai::StreamEventType::ToolCall => {
                 if let Some(tool_call) = event.tool_call {
                     if let Ok(value) = serde_json::to_value(tool_call) {
                         tools.push(value);
@@ -1603,6 +1606,11 @@ async fn run_agent_sse(
         match start_app_agent_run(&state, &agent_id, &agent_name, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1709,6 +1717,11 @@ async fn run_janus_sse(
         match start_janus_stream(&state, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
