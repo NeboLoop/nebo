@@ -1562,8 +1562,15 @@ struct ReadAloud {
     /// The part being said, and whether its audio has all been made.
     in_flight: Option<usize>,
     made: bool,
-    /// The words said before the reading began are still playing: the first
-    /// part waits for them to end, so two responses never overlap.
+    /// The part before it, and when the client finishes playing it: the
+    /// next part is asked for in its last second, so it may not be all heard.
+    /// A pause runs on any talk-over, a finished reading's too, and reads
+    /// this; the end time it holds is what bounds it: once that has passed
+    /// the part was heard, and it is ignored. A new reading starts from
+    /// default.
+    finishing: Option<(usize, tokio::time::Instant)>,
+    /// The reply before the reading began is not over: the first part waits
+    /// for it to end, so two responses never overlap.
     held: bool,
     /// The owner spoke over it.
     paused: bool,
@@ -1581,7 +1588,7 @@ enum ReadStart {
 }
 
 impl ReadAloud {
-    /// Read `text`; `held` while the reply that asked for it still plays.
+    /// Read `text`; `held` while the reply that asked for it is not over.
     /// The same text, paused, goes on from where it stopped.
     fn start(&mut self, text: &str, held: bool) -> ReadStart {
         if self.active() {
@@ -1601,8 +1608,8 @@ impl ReadAloud {
         !self.paused && (self.in_flight.is_some() || self.next < self.parts.len())
     }
 
-    /// A response's audio has all been made: the part being said, or the
-    /// words that held the reading back.
+    /// The line is free: the part being said has all been made, and the
+    /// reply that held the reading back is over.
     fn played(&mut self) {
         self.held = false;
         if self.in_flight.is_some() {
@@ -1617,11 +1624,12 @@ impl ReadAloud {
         if self.paused || self.held {
             return None;
         }
-        if self.in_flight.is_some() {
+        if let Some(part) = self.in_flight {
             if !self.made || queued > READ_AHEAD {
                 return None;
             }
             self.in_flight = None;
+            self.finishing = Some((part, tokio::time::Instant::now() + queued));
         }
         let part = self.parts.get(self.next)?.clone();
         self.in_flight = Some(self.next);
@@ -1636,10 +1644,16 @@ impl ReadAloud {
         (self.in_flight.is_some() && self.made && !self.paused && queued > READ_AHEAD).then(|| queued - READ_AHEAD)
     }
 
-    /// The owner spoke over it: the part he was hearing is the one asking
-    /// again picks up at.
-    fn pause(&mut self) {
-        if let Some(part) = self.in_flight.take() {
+    /// The owner spoke over it at `now`: asking again picks up at the first
+    /// part he did not hear all of — the one before the part being said
+    /// when it was still playing out, else the part being said.
+    fn pause(&mut self, now: tokio::time::Instant) {
+        let unheard = match self.finishing.take() {
+            Some((part, ends)) if now < ends => Some(part),
+            _ => self.in_flight,
+        };
+        self.in_flight = None;
+        if let Some(part) = unheard {
             self.next = part;
         }
         if !self.parts.is_empty() {
@@ -2232,11 +2246,13 @@ fn said_rows(messages: &[db::models::ChatMessage]) -> Vec<&db::models::ChatMessa
         .collect()
 }
 
-/// Whether `m` is a message the owner himself typed or pasted: it carries
-/// the owner's mark ([`crate::codes::owner_wrote`]). What he said on a call,
-/// a coworker's message and a parent's hand-off never do.
+/// Whether `m` is a message the owner himself typed or pasted, with words
+/// of his own: it carries the owner's mark ([`crate::codes::owner_wrote`]),
+/// which what he said on a call, a coworker's message and a parent's
+/// hand-off never do, and it is more than files. A screenshot dropped after
+/// a pasted post leaves the post his newest message.
 fn typed_by_owner(m: &db::models::ChatMessage) -> bool {
-    m.role == "user" && crate::codes::owner_wrote(m.metadata.as_deref())
+    m.role == "user" && crate::codes::owner_wrote(m.metadata.as_deref()) && crate::attachments::has_words(&m.content)
 }
 
 /// The owner's newest typed message in `messages`, in his own words: each
@@ -2846,25 +2862,8 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         }
     };
 
-    // Phone etiquette: the callee speaks first. Nothing else ever triggers
-    // the model until audio arrives, so a phone caller would sit in silence
-    // until THEY spoke. Kick one response so the employee answers the phone
-    // — the greeting itself comes from its instructions and persona.
-    // The pause first: on a cold call the carrier audio path is still
-    // settling for a beat after connect, and a greeting that starts inside
-    // that window reaches the caller with its head clipped ("...ebo, I'm the
-    // receptionist"). Half a ring of silence is what a human caller expects
-    // anyway.
-    if telephony {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        let _ = rt_tx
-            .send(voice::realtime::RealtimeCommand::Text {
-                text: "(The call has just connected. Answer the phone now.)".to_string(),
-                respond: true,
-            })
-            .await;
-    }
-
+    // A phone call's greeting is the session's first act (it counts every
+    // response it asks for).
     handle_conversation_session(socket, state, q, team, call_tree, rt_tx, rt_rx).await;
 }
 
@@ -3360,14 +3359,49 @@ async fn handle_conversation_session(
     if caller_ctx.is_none() {
         to_say.extend(super::asks::waiting(&state, None).await.iter().filter_map(|w| news_of(&ctx.session_key, &w.card)));
     }
-    // A model response is owed or playing: nothing new is said over it.
+    // A model response is owed or playing: nothing new is said over it. It
+    // is over only when the voice engine says so ([`ConversationEvent::ResponseDone`])
+    // with every response this call asked for counted (`asked`): a tap
+    // before the provider has begun a reply leaves it to play, and nothing
+    // is asked for over it.
     let mut responding = false;
-    // The owner's message being read aloud, part after part, and whether
-    // reply audio is playing now.
+    let mut asked: u64 = 0;
+    // The owner's message being read aloud, part after part.
     let mut reading = ReadAloud::default();
-    let mut playing = false;
     // The provider refused words said as they are: no reading this call.
     let mut say_refused = false;
+    // A hand-off's answer came back while a reading ran: it is asked for
+    // once the reading ends.
+    let mut answer_after_reading = false;
+    // When the client last said the owner cut the reply short. A tap sends
+    // only that; a spoken barge-in sends it too when the phone's own
+    // detector hears him first, and his utterance follows. The held answer
+    // waits [`TALK_OVER_SETTLE`] after it to tell the two apart.
+    let mut interrupted_at: Option<tokio::time::Instant> = None;
+
+    // Phone etiquette: the callee speaks first. Nothing else ever triggers
+    // the model until audio arrives, so a phone caller would sit in silence
+    // until THEY spoke. Kick one response so the employee answers the phone
+    // — the greeting itself comes from its instructions and persona. The
+    // pause first: on a cold call the carrier audio path is still settling
+    // for a beat after connect, and a greeting that starts inside that
+    // window reaches the caller with its head clipped ("...ebo, I'm the
+    // receptionist"). Half a ring of silence is what a human caller expects.
+    if q.telephony.is_some() {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        if rt_tx
+            .send(RealtimeCommand::Text {
+                text: "(The call has just connected. Answer the phone now.)".to_string(),
+                respond: true,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        asked += 1;
+        responding = true;
+    }
     // The model is saying another conversation's notice: heard, never sent
     // to the client as transcript text (live 2026-10-02: Bookkeeper's ask,
     // spoken on Flip-Flap's call, showed in Flip-Flap's chat).
@@ -3404,7 +3438,12 @@ async fn handle_conversation_session(
                         // sent goes, as the client drops what it holds, and
                         // a reading stops where it is.
                         line.cut();
-                        reading.pause();
+                        reading.pause(tokio::time::Instant::now());
+                        // His own turn's reply carries a held hand-off answer:
+                        // it is never asked for a second time. Only an
+                        // utterance that starts drops it.
+                        answer_after_reading = false;
+                        interrupted_at = None;
                         unseen_speech = false;
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
@@ -3427,7 +3466,6 @@ async fn handle_conversation_session(
                     }
                     ConversationEvent::PlaybackStart => {
                         responding = true;
-                        playing = true;
                         quiet_since = tokio::time::Instant::now();
                         ledger.reply_started();
                         Some(serde_json::json!({"type": "playback_start"}))
@@ -3436,15 +3474,14 @@ async fn handle_conversation_session(
                     // utterance or session end): its row is what it said
                     // before any hand-off, written then.
                     ConversationEvent::PlaybackEnd => {
-                        responding = false;
-                        playing = false;
-                        reading.played();
                         quiet_since = tokio::time::Instant::now();
                         // A spoken step is over: the answer it held back goes now.
                         if narrating.take().is_some() && std::mem::take(&mut owe_continuation) {
+                            answer_after_reading = false;
                             if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
                                 break;
                             }
+                            asked += 1;
                             responding = true;
                         }
                         Some(serde_json::json!({"type": "playback_end"}))
@@ -3460,12 +3497,23 @@ async fn handle_conversation_session(
                     // The line could not come back while running work holds
                     // the balance: the same words as a refused connect.
                     ConversationEvent::BalanceReserved => Some(connect_failure_words(&voice::VoiceError::BalanceReserved)),
+                    // A response is over. The line is free once every response
+                    // this call asked for is in the count and none is open.
+                    ConversationEvent::ResponseDone { asked: done, open } => {
+                        if done == asked && !open {
+                            responding = false;
+                            reading.played();
+                        }
+                        None
+                    }
                     // Words said as they are were refused: a reading under
                     // way stops, and the call says plainly that it cannot.
                     ConversationEvent::SayRefused => {
                         say_refused = true;
                         if reading.active() {
                             reading.stop();
+                            // This reply carries any held answer.
+                            answer_after_reading = false;
                             if rt_tx
                                 .send(RealtimeCommand::Text {
                                     text: "(Reading the message out word for word is not available on this call. \
@@ -3478,6 +3526,7 @@ async fn handle_conversation_session(
                             {
                                 break;
                             }
+                            asked += 1;
                             responding = true;
                         }
                         None
@@ -3490,8 +3539,8 @@ async fn handle_conversation_session(
                     }
                     ConversationEvent::ToolCall { call_id, name, arguments } => {
                         // The response became a tool call: its continuation
-                        // is owed when the outputs are in.
-                        responding = false;
+                        // is owed when the outputs are in. The line is free
+                        // when the engine says the response is done.
                         unseen_speech = false;
                         // A hand-off's first step waits a full interval from here.
                         quiet_since = tokio::time::Instant::now();
@@ -3553,58 +3602,6 @@ async fn handle_conversation_session(
                                     serde_json::json!({"ok": true, "content": line}).to_string(),
                                     Vec::new(),
                                     true,
-                                ))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                            continue;
-                        }
-                        if name == "read_aloud" && caller_ctx.is_none() {
-                            pending_tools += 1;
-                            let typed = chat_id
-                                .as_deref()
-                                .and_then(|c| state.store.get_chat_messages(c).ok())
-                                .and_then(|m| newest_typed(&m));
-                            // The parts are said as they are, outside the
-                            // model: its output asks for no words of its own.
-                            let (content, speak) = match typed {
-                                _ if say_refused => (
-                                    "Reading it out word for word is not available on this call. Say so in one short sentence.".to_string(),
-                                    true,
-                                ),
-                                Some(text) => {
-                                    let started = reading.start(&text, playing);
-                                    info!(session_key = %ctx.session_key, chars = text.chars().count(), ?started, "voice read aloud");
-                                    // What the call says from here is the
-                                    // owner's own message: the thread keeps
-                                    // one short line for it, never the text again.
-                                    if !matches!(started, ReadStart::AlreadyReading) {
-                                        let mut rows = ledger.relayed();
-                                        if matches!(started, ReadStart::Started(_)) {
-                                            rows.push(Row::Assistant(READ_ALOUD_ROW.to_string(), chrono::Utc::now().timestamp()));
-                                        }
-                                        sink.write(&state, &line, rows);
-                                        if !line.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())) {
-                                            break;
-                                        }
-                                    }
-                                    let said = match started {
-                                        ReadStart::Started(parts) => format!("Reading it aloud now, word for word, in {parts} part(s). Say nothing while it plays."),
-                                        ReadStart::Resumed(part, parts) => format!("Going on from part {part} of {parts}. Say nothing while it plays."),
-                                        ReadStart::AlreadyReading => "It is being read aloud right now. Say nothing.".to_string(),
-                                    };
-                                    (said, false)
-                                }
-                                None => ("There is no typed message in this conversation to read.".to_string(), true),
-                            };
-                            if tool_done_tx
-                                .send((
-                                    call_id,
-                                    serde_json::json!({"ok": true, "content": content}).to_string(),
-                                    Vec::new(),
-                                    speak,
                                 ))
                                 .await
                                 .is_err()
@@ -3697,17 +3694,73 @@ async fn handle_conversation_session(
                             }
                             continue;
                         }
-                        pending_tools += 1;
-                        // In a team thread the run's rows land in the lead's
-                        // seat, not the thread, so the lead's spoken reply
-                        // stays: it IS the team's record of the answer.
-                        let delegating = name == "nebo" && team.is_none();
-                        if name == "nebo" && ledger.call(delegating) {
-                            held_runs.push((call_id, name, arguments));
+                        if name == "read_aloud" && caller_ctx.is_none() {
+                            // Answered here, its output up at once; the loop
+                            // goes on to say the first part.
+                            let typed = chat_id
+                                .as_deref()
+                                .and_then(|c| state.store.get_chat_messages(c).ok())
+                                .and_then(|m| newest_typed(&m));
+                            // The parts are said as they are, outside the
+                            // model: its output asks for no words of its own.
+                            let (content, speak) = match typed {
+                                _ if say_refused => (
+                                    "Reading it out word for word is not available on this call. Say so in one short sentence.".to_string(),
+                                    true,
+                                ),
+                                Some(text) => {
+                                    let started = reading.start(&text, responding);
+                                    info!(session_key = %ctx.session_key, chars = text.chars().count(), ?started, "voice read aloud");
+                                    // What the call says from here is the
+                                    // owner's own message: the thread keeps
+                                    // one short line for it, never the text again.
+                                    if !matches!(started, ReadStart::AlreadyReading) {
+                                        let mut rows = ledger.relayed();
+                                        if matches!(started, ReadStart::Started(_)) {
+                                            rows.push(Row::Assistant(READ_ALOUD_ROW.to_string(), chrono::Utc::now().timestamp()));
+                                        }
+                                        sink.write(&state, &line, rows);
+                                        if !line.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())) {
+                                            break;
+                                        }
+                                    }
+                                    let said = match started {
+                                        ReadStart::Started(parts) => format!("Reading it aloud now, word for word, in {parts} part(s). Say nothing while it plays."),
+                                        ReadStart::Resumed(part, parts) => format!("Going on from part {part} of {parts}. Say nothing while it plays."),
+                                        ReadStart::AlreadyReading => "It is being read aloud right now. Say nothing.".to_string(),
+                                    };
+                                    (said, false)
+                                }
+                                None => ("There is no typed message in this conversation to read.".to_string(), true),
+                            };
+                            let output = serde_json::json!({"ok": true, "content": content}).to_string();
+                            if speak {
+                                // Nothing is read: the model answers in its
+                                // own words, after every output is in, as
+                                // for any tool.
+                                pending_tools += 1;
+                                if tool_done_tx.send((call_id, output, Vec::new(), true)).await.is_err() {
+                                    break;
+                                }
+                            } else if rt_tx.send(RealtimeCommand::ToolOutput { call_id, output }).await.is_err() {
+                                // A reading: its output goes up now, before
+                                // its first part can, never after it.
+                                break;
+                            }
+                            None
                         } else {
-                            spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
+                            pending_tools += 1;
+                            // In a team thread the run's rows land in the lead's
+                            // seat, not the thread, so the lead's spoken reply
+                            // stays: it IS the team's record of the answer.
+                            let delegating = name == "nebo" && team.is_none();
+                            if name == "nebo" && ledger.call(delegating) {
+                                held_runs.push((call_id, name, arguments));
+                            } else {
+                                spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
+                            }
+                            delegating.then(|| response_not_kept(ledger.speaking_turn()))
                         }
-                        delegating.then(|| response_not_kept(ledger.speaking_turn()))
                     }
                 };
                 if let Some(frame) = frame
@@ -3736,10 +3789,16 @@ async fn handle_conversation_session(
                             // A step is being said: the answer follows it
                             // rather than talking over it.
                             owe_continuation = true;
+                        } else if reading.active() {
+                            // The owner's message is being read: the
+                            // answer follows the reading.
+                            answer_after_reading = true;
                         } else {
+                            answer_after_reading = false;
                             if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
                                 break;
                             }
+                            asked += 1;
                             responding = true;
                         }
                     }
@@ -3751,9 +3810,11 @@ async fn handle_conversation_session(
                 if owe_continuation => {
                 narrating = None;
                 owe_continuation = false;
+                answer_after_reading = false;
                 if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
                     break;
                 }
+                asked += 1;
                 responding = true;
             }
 
@@ -3762,6 +3823,11 @@ async fn handle_conversation_session(
             // that frees the line, never on a timer already past.
             _ = tokio::time::sleep_until(quiet_since + NARRATE_EVERY),
                 if step.is_some() && narrating.is_none() && quiet_since.elapsed() < NARRATE_EVERY => {}
+
+            // A tap's settle time is over: a held answer no utterance
+            // dropped goes now.
+            _ = tokio::time::sleep_until(interrupted_at.unwrap_or_else(tokio::time::Instant::now) + TALK_OVER_SETTLE),
+                if answer_after_reading && interrupted_at.is_some_and(|at| at.elapsed() < TALK_OVER_SETTLE) => {}
 
             // The part being read is near enough its end at the client for
             // the next to be asked for.
@@ -3812,7 +3878,11 @@ async fn handle_conversation_session(
                         ClientFrame::Interrupt { played_ms } => {
                             info!(?played_ms, "conversation interrupt received");
                             line.cut();
-                            reading.pause();
+                            reading.pause(tokio::time::Instant::now());
+                            // A held hand-off answer stays held: a tap stops
+                            // the reading, not the answer. If his words
+                            // follow, they drop it.
+                            interrupted_at = Some(tokio::time::Instant::now());
                             if rt_tx.send(RealtimeCommand::Interrupt { played_ms }).await.is_err() {
                                 break;
                             }
@@ -3825,10 +3895,14 @@ async fn handle_conversation_session(
                         // the query string.
                         ClientFrame::Start => {}
                         ClientFrame::TextInput(t) => {
-                            if let Some(t) = t
-                                && rt_tx.send(RealtimeCommand::Text { text: t, respond: true }).await.is_err()
-                            {
-                                break;
+                            if let Some(t) = t {
+                                // Its response carries any held answer.
+                                answer_after_reading = false;
+                                if rt_tx.send(RealtimeCommand::Text { text: t, respond: true }).await.is_err() {
+                                    break;
+                                }
+                                asked += 1;
+                                responding = true;
                             }
                         }
                         // The client's goodbye, sent before it closes: the call
@@ -3863,6 +3937,7 @@ async fn handle_conversation_session(
         if pending_tools > 0
             && !responding
             && narrating.is_none()
+            && !reading.active()
             && !ledger.open
             && ledger.turn.delegated
             && quiet_since.elapsed() >= NARRATE_EVERY
@@ -3871,17 +3946,19 @@ async fn handle_conversation_session(
             if rt_tx.send(RealtimeCommand::Say(line.clone())).await.is_err() {
                 break;
             }
+            asked += 1;
             step_said = line;
             narrating = Some(tokio::time::Instant::now());
             quiet_since = tokio::time::Instant::now();
         }
 
         // The next part of a reading is said once the part before it is all
-        // but heard: the owner is not speaking and nothing else is owed or
-        // playing. News waits for the reading to end.
+        // but heard: the owner is not speaking and nothing else is owed,
+        // playing or being said. A hand-off still working never holds it
+        // back; its steps and its answer wait for the reading to end.
         if reading.active()
             && !responding
-            && pending_tools == 0
+            && narrating.is_none()
             && held_runs.is_empty()
             && !ledger.open
             && let Some(part) = reading.next(line.queued_audio())
@@ -3889,6 +3966,27 @@ async fn handle_conversation_session(
             if rt_tx.send(RealtimeCommand::Say(part)).await.is_err() {
                 break;
             }
+            asked += 1;
+            responding = true;
+        }
+
+        // A hand-off's answer that waited on a reading goes once it ends (or
+        // the owner stopped it) and the line is free.
+        if answer_after_reading
+            && !reading.active()
+            && !responding
+            && narrating.is_none()
+            && pending_tools == 0
+            && held_runs.is_empty()
+            && !ledger.open
+            && interrupted_at.is_none_or(|at| at.elapsed() >= TALK_OVER_SETTLE)
+        {
+            answer_after_reading = false;
+            interrupted_at = None;
+            if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                break;
+            }
+            asked += 1;
             responding = true;
         }
 
@@ -3918,9 +4016,12 @@ async fn handle_conversation_session(
                 if !line.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())) {
                     break;
                 }
+                // This reply carries any held answer.
+                answer_after_reading = false;
                 if rt_tx.send(RealtimeCommand::Text { text: say, respond: true }).await.is_err() {
                     break;
                 }
+                asked += 1;
                 responding = true;
                 unseen_speech = unseen;
             }
@@ -3987,6 +4088,13 @@ const VOICE_CLIENT_GONE_AFTER: std::time::Duration = std::time::Duration::from_s
 /// call that was working (live 2026-10-21, a long text read aloud: a new
 /// line every 16 s).
 const CLIENT_AUDIO_LEAD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How long after the client says the owner cut a reading short a held
+/// hand-off answer waits for his utterance to start: the phone's detector
+/// sends `interrupt` before the provider hears him. An utterance drops the
+/// answer (his turn's reply carries it); none, and it was a tap, and the
+/// answer is asked for once.
+const TALK_OVER_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How long a call that has ended waits for its last frames to reach the
 /// client before its line is let go.
@@ -4565,7 +4673,7 @@ mod voice_prompt_tests {
         assert_eq!(reading.next(std::time::Duration::ZERO), None, "asking again restarted the reading");
 
         // He talks over part 2: part 2 is what "keep going" says next.
-        reading.pause();
+        reading.pause(tokio::time::Instant::now());
         assert!(!reading.active());
         assert_eq!(reading.next(std::time::Duration::ZERO), None, "a paused reading went on by itself");
         assert_eq!(reading.start(&text, false), ReadStart::Resumed(2, parts));
@@ -4580,6 +4688,424 @@ mod voice_prompt_tests {
         reading.stop();
         assert!(!reading.active());
         assert!(matches!(reading.start(&text, false), ReadStart::Started(_)), "a stopped reading resumed");
+    }
+
+    /// Part 2 is asked for in part 1's last second: the owner talking over
+    /// that second resumes at part 1, which he did not hear all of; talking
+    /// once it has played out resumes at part 2.
+    #[test]
+    fn a_reading_resumes_at_the_first_part_not_all_heard() {
+        let text = "Every word counts here. ".repeat(400);
+        let parts = read_parts(&text, READ_PART_CHARS);
+        for (talks_after, resumes_at) in [(std::time::Duration::ZERO, 1), (std::time::Duration::from_secs(2), 2)] {
+            let mut reading = ReadAloud::default();
+            reading.start(&text, false);
+            reading.next(std::time::Duration::ZERO).unwrap();
+            reading.played();
+            let asked = tokio::time::Instant::now();
+            reading.next(SECOND).expect("part 2 was never asked for");
+            reading.pause(asked + talks_after);
+            assert_eq!(reading.start(&text, false), ReadStart::Resumed(resumes_at, parts.len()));
+            assert_eq!(reading.next(std::time::Duration::ZERO).as_deref(), Some(parts[resumes_at - 1].as_str()));
+        }
+    }
+
+    /// Pasting the post and then dropping a screenshot leaves the post the
+    /// message read aloud and held whole: a message of files only is not
+    /// one he wrote.
+    #[test]
+    fn a_screenshot_after_the_post_leaves_the_post_his_newest_message() {
+        let post = pasted_post(5_500);
+        let shot = crate::attachments::note(crate::attachments::Kind::File, "shot.png", 300_000, "an image, shown above — saved at /u/shot.png");
+        let rows = [row("user", &post, OWNER), row("user", &shot, OWNER)];
+        assert_eq!(newest_typed(&rows).as_deref(), Some(post.as_str()));
+        let history = call_history(&rows, std::path::Path::new("/nonexistent"), NOW);
+        assert!(history.contains(&format!("User (typed): {post}")), "{history}");
+        assert!(history.contains("[Attached: shot.png (292 KB)]"), "{history}");
+    }
+
+    type Cmd = voice::realtime::RealtimeCommand;
+    type Ev = voice::conversation::ConversationEvent;
+    type ClientOut = futures::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::tungstenite::Message,
+    >;
+
+    /// One live owner call on `chat`, driven from both ends: the realtime
+    /// leg's events go in through `events`, what the call sends up comes out
+    /// of `cmds`, and `client` is the phone's side of the socket.
+    struct LiveCall {
+        events: mpsc::Sender<Ev>,
+        cmds: mpsc::Receiver<Cmd>,
+        client: ClientOut,
+        /// Responses the call has asked for, as the voice engine counts them.
+        asked: u64,
+    }
+
+    /// A chat holding the owner's pasted post, and a live call on it.
+    async fn call_on_the_post(state: &AppState) -> (LiveCall, String, Vec<String>) {
+        use axum::extract::WebSocketUpgrade;
+        use futures::StreamExt;
+
+        let chat = uuid::Uuid::new_v4().to_string();
+        let key = format!("agent:assistant:thread:{chat}");
+        state.store.create_chat_for_session(&chat, &key, "Launch post", None).unwrap();
+        let post = pasted_post(5_500);
+        state
+            .store
+            .create_chat_message_for_runner(&uuid::Uuid::new_v4().to_string(), &chat, "user", &post, None, None, None, OWNER, None, None)
+            .unwrap();
+
+        let (rt_tx, cmds) = mpsc::channel::<Cmd>(64);
+        let (events, rt_rx) = mpsc::channel::<Ev>(256);
+        let q: ConversationQuery = serde_json::from_value(serde_json::json!({"agent_id": "assistant", "chat_id": chat})).unwrap();
+        let call = std::sync::Arc::new(std::sync::Mutex::new(Some((state.clone(), q, rt_tx, rt_rx))));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let call = call.lock().unwrap().take();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let (state, q, rt_tx, rt_rx) = call.unwrap();
+                        handle_conversation_session(socket, state, q, None, None, rt_tx, rt_rx).await;
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (client, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/")).await.unwrap();
+        let (client, mut client_in) = client.split();
+        tokio::spawn(async move { while client_in.next().await.is_some() {} });
+        (LiveCall { events, cmds, client, asked: 0 }, key, read_parts(&post, READ_PART_CHARS))
+    }
+
+    impl LiveCall {
+        /// What the call sends up next, within `secs`.
+        async fn next(&mut self, secs: u64) -> Cmd {
+            let cmd = tokio::time::timeout(std::time::Duration::from_secs(secs), self.cmds.recv())
+                .await
+                .expect("the call sent nothing")
+                .unwrap();
+            if matches!(cmd, Cmd::Say(_) | Cmd::ToolOutputsDone | Cmd::Text { respond: true, .. }) {
+                self.asked += 1;
+            }
+            cmd
+        }
+
+        /// The words it says next, as they are.
+        async fn said(&mut self, secs: u64) -> String {
+            match self.next(secs).await {
+                Cmd::Say(text) => text,
+                other => panic!("expected words said as they are, got {other:?}"),
+            }
+        }
+
+        /// Nothing more is sent up for `ms`.
+        async fn quiet(&mut self, ms: u64, why: &str) {
+            let sent = tokio::time::timeout(std::time::Duration::from_millis(ms), self.cmds.recv()).await;
+            assert!(sent.is_err(), "{why}: {sent:?}");
+        }
+
+        async fn event(&self, e: Ev) {
+            self.events.send(e).await.unwrap();
+        }
+
+        /// The model calls `name` with `arguments`.
+        async fn calls(&self, id: &str, name: &str, arguments: &str) {
+            self.event(Ev::ToolCall { call_id: id.into(), name: name.into(), arguments: arguments.into() }).await;
+        }
+
+        /// A response whose audio runs `secs`, made at once, and over.
+        async fn play(&self, secs: usize) {
+            self.event(Ev::PlaybackStart).await;
+            for _ in 0..secs * 10 {
+                self.event(Ev::AudioChunk(axum::body::Bytes::from(vec![0u8; 4800]))).await;
+            }
+            self.event(Ev::PlaybackEnd).await;
+            self.done().await;
+        }
+
+        /// The voice engine says a response is over, every one asked for
+        /// counted and none open.
+        async fn done(&self) {
+            self.event(Ev::ResponseDone { asked: self.asked, open: false }).await;
+        }
+
+        /// The phone's client says the owner talked over the reply.
+        async fn interrupt(&mut self) {
+            use futures::SinkExt;
+            self.client
+                .send(tokio_tungstenite::tungstenite::Message::Text(r#"{"type":"interrupt"}"#.into()))
+                .await
+                .unwrap();
+        }
+
+        /// The model's output for tool call `id`: what it says.
+        async fn output_of(&mut self, id: &str, secs: u64) -> String {
+            match self.next(secs).await {
+                Cmd::ToolOutput { call_id, output } if call_id == id => output,
+                other => panic!("expected the output of {id}, got {other:?}"),
+            }
+        }
+    }
+
+    /// A live call reading the owner's post: the call asks for no part
+    /// while the one before still has more than a second to play; the
+    /// owner talking over it cuts the line's queued audio and pauses it, and
+    /// "keep going" picks up at the part he did not hear, at once, with no
+    /// wait on audio that was dropped; a provider refusing the exact words
+    /// stops it and the call says so plainly. The thread keeps one line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_call_reads_the_post_at_the_pace_it_is_heard() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let (mut call, key, parts) = call_on_the_post(&state).await;
+        let chat = key.rsplit(':').next().unwrap().to_string();
+
+        call.calls("c1", "read_aloud", "{}").await;
+        assert!(call.output_of("c1", 5).await.contains("Reading it aloud now"), "the output went up after the first part");
+        assert_eq!(call.said(5).await, parts[0]);
+
+        // Part 1 is made: three seconds of it to play. Part 2 is not asked
+        // for while more than a second of part 1 is left.
+        call.play(3).await;
+        call.quiet(1_200, "part 2 was asked for with seconds of part 1 still to play").await;
+        assert_eq!(call.said(5).await, parts[1]);
+
+        // Part 2 is made (3 s) and part 1 has played out; then the owner
+        // talks over part 2: the line's queued audio goes, the reading
+        // pauses, and nothing more is said.
+        call.play(3).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+        call.interrupt().await;
+        assert!(matches!(call.next(5).await, Cmd::Interrupt { .. }));
+        call.quiet(800, "a paused reading went on").await;
+
+        // "Keep going": part 2, which he did not hear, at once; with the cut
+        // audio gone, part 3 follows its short playback without a wait.
+        call.calls("c2", "read_aloud", "{}").await;
+        assert!(call.output_of("c2", 5).await.contains("Going on from part 2"));
+        assert_eq!(call.said(5).await, parts[1]);
+        call.play(0).await;
+        let resumed = tokio::time::Instant::now();
+        assert_eq!(call.said(5).await, parts[2]);
+        assert!(resumed.elapsed() < std::time::Duration::from_millis(600), "part 3 waited {:?} on audio that was cut", resumed.elapsed());
+
+        // The provider refuses the exact words: the reading stops, and the
+        // call says plainly that it cannot read it here.
+        call.event(Ev::SayRefused).await;
+        assert!(matches!(call.next(5).await, Cmd::Text { text, respond: true } if text.contains("not available on this call")));
+        call.play(0).await;
+        call.quiet(800, "a refused reading went on").await;
+
+        let rows = state.store.get_chat_messages(&chat).unwrap();
+        let assistant: Vec<&str> = rows.iter().filter(|m| m.role == "assistant").map(|m| m.content.as_str()).collect();
+        assert_eq!(assistant, [READ_ALOUD_ROW], "the thread kept the reading as more than one line");
+    }
+
+    /// A tap before the provider has begun the part being read leaves that
+    /// part to play: the line stays busy, and news waits, until the voice
+    /// engine says the response is over — and a silent response ending
+    /// frees it just the same.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn nothing_is_asked_for_over_a_reply_a_tap_did_not_stop() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let (mut call, key, parts) = call_on_the_post(&state).await;
+        call.calls("c1", "read_aloud", "{}").await;
+        call.output_of("c1", 5).await;
+        assert_eq!(call.said(5).await, parts[0]);
+        // Tapped before any of it was heard; news comes in.
+        call.interrupt().await;
+        assert!(matches!(call.next(5).await, Cmd::Interrupt { .. }));
+        say_on_call(&state.live_calls, &key, "Bookkeeper sent the invoice.");
+        call.quiet(1_000, "news was asked for over a reply the tap did not stop").await;
+        // A response nobody asked for ending (counted short) frees nothing.
+        call.event(Ev::ResponseDone { asked: call.asked - 1, open: false }).await;
+        call.quiet(500, "the line was freed by another response's end").await;
+        // The part's response ends, silent: the news goes, once.
+        call.done().await;
+        assert!(matches!(call.next(5).await, Cmd::Text { respond: true, .. }), "a silent response did not free the line");
+        call.quiet(500, "the news was asked for twice").await;
+        // That reply ends, silent too: the next news goes at once.
+        call.done().await;
+        say_on_call(&state.live_calls, &key, "The coder finished.");
+        assert!(matches!(call.next(5).await, Cmd::Text { respond: true, .. }), "the line stayed busy after a silent reply");
+    }
+
+    /// The employee's model for a hand-off that stays at work until the
+    /// test lets it answer: each work turn waits on `gate`, then says the
+    /// work is done. Anything else (a title, a recap) answers at once.
+    struct HeldHandOff {
+        gate: std::sync::Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait::async_trait]
+    impl ai::Provider for HeldHandOff {
+        fn id(&self) -> &str {
+            "held-hand-off"
+        }
+
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            let (tx, rx) = mpsc::channel(4);
+            let gate = (req.trace.purpose == "agent_turn").then(|| self.gate.clone());
+            tokio::spawn(async move {
+                if let Some(gate) = gate
+                    && let Ok(permit) = gate.acquire().await
+                {
+                    permit.forget();
+                }
+                let _ = tx.send(ai::StreamEvent::text("The deck is done.")).await;
+                let _ = tx.send(ai::StreamEvent::done()).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    /// The shared server's models go back to none when the scenario ends,
+    /// however it ends.
+    struct Models<'a>(&'a AppState);
+
+    impl Drop for Models<'_> {
+        fn drop(&mut self) {
+            futures::executor::block_on(self.0.harness.reload_providers(Vec::new()));
+        }
+    }
+
+    /// The owner has the call read his post while a hand-off works: the
+    /// reading starts at once, the hand-off's steps are not said while it
+    /// plays, and the hand-off's answer is asked for exactly once — when the
+    /// reading ends or when he taps to stop it — and never on its own when
+    /// he talks over the reading (even with the phone's interrupt first) or
+    /// the call says it cannot read it: that reply carries it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reading_during_a_hand_off_holds_its_answer_until_it_ends() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        state.harness.reload_providers(vec![std::sync::Arc::new(HeldHandOff { gate: gate.clone() })]).await;
+        let _models = Models(&state);
+        let (mut call, key, parts) = call_on_the_post(&state).await;
+        let task = r#"{"task":"Tighten the launch deck."}"#;
+
+        // The hand-off works; the reading starts at once, its output first.
+        call.calls("h1", "nebo", task).await;
+        call.calls("r1", "read_aloud", "{}").await;
+        assert!(call.output_of("r1", 5).await.contains("Reading it aloud now"));
+        assert_eq!(call.said(5).await, parts[0]);
+
+        // A step of the hand-off comes in while part 1 plays for 12 s: it
+        // is not said, though the line is quiet past the narration interval;
+        // the next words up are part 2.
+        progress_on_call(&state.live_calls, &key, "Now tightening the deck.");
+        call.play(12).await;
+        assert_eq!(call.said(15).await, parts[1], "a step was said over the reading");
+
+        // The hand-off answers mid-reading: its output goes up, its answer
+        // waits for the reading to end, and is asked for exactly once.
+        gate.add_permits(1);
+        assert!(call.output_of("h1", 30).await.contains("The deck is done"));
+        call.quiet(500, "the answer talked over the reading").await;
+        for part in &parts[2..] {
+            call.play(0).await;
+            assert_eq!(&call.said(5).await, part);
+        }
+        call.play(0).await;
+        assert!(matches!(call.next(5).await, Cmd::ToolOutputsDone), "the held answer was not asked for once the reading ended");
+        call.play(0).await;
+        call.quiet(800, "the held answer was asked for twice").await;
+
+        // Again, but the owner talks over the reading after the hand-off
+        // answered: his turn's reply carries the answer, so it is never
+        // asked for by the call.
+        call.calls("h2", "nebo", task).await;
+        call.calls("r2", "read_aloud", "{}").await;
+        assert!(call.output_of("r2", 5).await.contains("Reading it aloud now"));
+        assert_eq!(call.said(5).await, parts[0]);
+        gate.add_permits(1);
+        assert!(call.output_of("h2", 30).await.contains("The deck is done"));
+        call.event(Ev::TranscriptionStart).await;
+        call.event(Ev::TranscriptionText("Wait, stop.".into())).await;
+        call.event(Ev::TranscriptionEnd).await;
+        call.play(1).await; // the model's reply to him
+        call.quiet(1_000, "the held answer was asked for after he talked over the reading").await;
+
+        // Again, and he taps to stop the reading, saying nothing: the
+        // reading pauses, and the held answer is asked for once.
+        call.calls("h4", "nebo", task).await;
+        call.calls("r4", "read_aloud", "{}").await;
+        assert!(call.output_of("r4", 5).await.contains("Going on from part 1"));
+        assert_eq!(call.said(5).await, parts[0]);
+        call.event(Ev::PlaybackStart).await;
+        gate.add_permits(1);
+        assert!(call.output_of("h4", 30).await.contains("The deck is done"));
+        call.interrupt().await;
+        assert!(matches!(call.next(5).await, Cmd::Interrupt { .. }));
+        call.event(Ev::PlaybackEnd).await; // the cancelled part's end
+        call.done().await;
+        let tapped = tokio::time::Instant::now();
+        assert!(matches!(call.next(5).await, Cmd::ToolOutputsDone), "a tap lost the held answer");
+        assert!(tapped.elapsed() >= std::time::Duration::from_millis(700), "the answer did not wait for words that might follow");
+        call.play(0).await;
+        call.quiet(1_500, "the held answer was asked for twice after a tap").await;
+
+        // Again, and the phone hears him first: its interrupt, then his
+        // utterance. His turn's reply carries the answer: none is asked for.
+        call.calls("h5", "nebo", task).await;
+        call.calls("r5", "read_aloud", "{}").await;
+        assert!(call.output_of("r5", 5).await.contains("Going on from part 1"));
+        assert_eq!(call.said(5).await, parts[0]);
+        call.event(Ev::PlaybackStart).await;
+        gate.add_permits(1);
+        assert!(call.output_of("h5", 30).await.contains("The deck is done"));
+        call.interrupt().await;
+        assert!(matches!(call.next(5).await, Cmd::Interrupt { .. }));
+        call.event(Ev::PlaybackEnd).await;
+        call.done().await;
+        call.event(Ev::TranscriptionStart).await;
+        call.event(Ev::TranscriptionText("Hold on.".into())).await;
+        call.event(Ev::TranscriptionEnd).await;
+        // The provider's own reply to him, with the hand-off's output already
+        // in the conversation: the only response, and the call asks for none.
+        call.play(1).await;
+        call.quiet(1_500, "the held answer was asked for after his words followed the interrupt").await;
+
+        // Again, a tap, and news comes in during the second after it: the
+        // one reply the news asks for carries the held answer too, so that
+        // is the only response asked for.
+        call.calls("h6", "nebo", task).await;
+        call.calls("r6", "read_aloud", "{}").await;
+        assert!(call.output_of("r6", 5).await.contains("Going on from part 1"));
+        assert_eq!(call.said(5).await, parts[0]);
+        call.event(Ev::PlaybackStart).await;
+        gate.add_permits(1);
+        assert!(call.output_of("h6", 30).await.contains("The deck is done"));
+        call.interrupt().await;
+        assert!(matches!(call.next(5).await, Cmd::Interrupt { .. }));
+        call.event(Ev::PlaybackEnd).await;
+        call.done().await;
+        say_on_call(&state.live_calls, &key, "Bookkeeper sent the invoice.");
+        assert!(matches!(call.next(5).await, Cmd::Text { respond: true, .. }), "the news was not said");
+        call.play(1).await;
+        call.quiet(1_800, "a second response was asked for after the news carried the held answer").await;
+
+        // Again, and the provider refuses the exact words: the call's one
+        // reply, that it cannot read it, carries the hand-off's answer too;
+        // nothing more is asked for.
+        call.calls("h3", "nebo", task).await;
+        call.calls("r3", "read_aloud", "{}").await;
+        assert!(call.output_of("r3", 5).await.contains("Going on from part 1"));
+        assert_eq!(call.said(5).await, parts[0]);
+        gate.add_permits(1);
+        assert!(call.output_of("h3", 30).await.contains("The deck is done"));
+        call.event(Ev::SayRefused).await;
+        // The hand-off's output is already in the conversation: the one
+        // reply asked for next is said with it in hand.
+        assert!(matches!(call.next(5).await, Cmd::Text { text, respond: true } if text.contains("not available on this call")));
+        call.play(0).await;
+        call.quiet(1_500, "a second response was asked for after the refusal's reply").await;
     }
 
     /// Parts end where a sentence or a word does — any space, a no-break or

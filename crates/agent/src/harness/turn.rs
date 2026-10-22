@@ -10786,7 +10786,8 @@ mod tests {
             input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
-                self.asked.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                let options: Vec<&str> = input["options"].as_array().map(|a| a.iter().filter_map(|o| o.as_str()).collect()).unwrap_or_default();
+                self.asked.lock().unwrap().push(format!("{} [{}]", input["question"].as_str().unwrap_or(""), options.join(" | ")));
                 if let Some(f) = &self.on_ask {
                     f();
                 }
@@ -10929,6 +10930,213 @@ mod tests {
         })
     }
 
+    /// Review of #1011: a call the owner answered in round 1, raised again
+    /// in round 2 without its choices, still carries his answer: the
+    /// builder is told what he decided, never the reviewer's own fix.
+    #[test]
+    fn a_call_he_answered_raised_again_without_choices_keeps_his_answer() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let bare: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "switch every total to whole dollars"}], "verified_ok": [{"checked": "rounds to cents"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(decision),
+                    Step::Say("Rounded to cents."),
+                    Step::Say(bare),
+                    Step::Say("Already rounded to cents."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(OwnerAnswers { picked: "cents", asked: asked.clone(), on_ask: None })],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let asked = asked.lock().unwrap().clone();
+                assert_eq!(asked.len(), 1, "asked once: {asked:?}");
+                let calls = model.calls();
+                let told = calls[5].messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+                assert!(told.contains("The owner already decided \"Round totals to cents or to dollars\": cents"), "his answer came back: {told}");
+                assert!(!told.contains("switch every total to whole dollars"), "never the reviewer's fix: {told}");
+            })
+        })
+    }
+
+    /// Live 2026-10-21: a reviewer called "Contact form does nothing on
+    /// static site" the owner's decision with no choices, and his card had
+    /// only Skip. A decision without choices goes to the builder as a defect
+    /// and never reaches the owner; a real one is asked with the recommended
+    /// choice first.
+    #[test]
+    fn a_decision_without_choices_goes_to_the_builder_and_a_real_one_to_the_owner() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let review: &'static str = r#"{"findings": [
+                    {"severity": "major", "kind": "decision", "title": "Contact form does nothing on static site", "evidence": "total.py:1", "repro": "submit the form", "impact": "messages are lost", "fix": "post it to a form endpoint"},
+                    {"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "dollars"}
+                ], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(review),
+                    Step::Say("Posted the form; rounded to dollars."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "the form posts"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(OwnerAnswers { picked: "dollars", asked: asked.clone(), on_ask: None })],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars [dollars | cents]"], "only the real call, recommended first");
+                let calls = model.calls();
+                let brief = calls[3].messages.iter().rev().find(|m| m.content.contains("Independent reviewers")).expect("the builder's findings");
+                assert!(brief.content.contains("Contact form does nothing on static site") && brief.content.contains("Fix: post it to a form endpoint"), "{}", brief.content);
+            })
+        })
+    }
+
+
+    /// The owner's replies to the loop's questions, in order, as the
+    /// ask_owner tool returns them; each question asked is kept.
+    struct OwnerReplies {
+        replies: Mutex<std::collections::VecDeque<serde_json::Value>>,
+        asked: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl tools::registry::DynTool for OwnerReplies {
+        fn name(&self) -> &str {
+            "ask_owner"
+        }
+        fn description(&self) -> String {
+            "asks the owner".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.asked.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                let reply = self.replies.lock().unwrap().pop_front().expect("a question the test did not expect");
+                tools::ToolResult::ok(reply.to_string())
+            })
+        }
+    }
+
+    /// The same blocker, every round: a review that never gets fewer.
+    const SAME_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "kind": "defect", "title": "total() drops cents", "evidence": "total.py:1", "repro": "total(0.1, 0.2)", "impact": "invoices are wrong", "fix": "add exactly"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+
+    /// A verifying harness whose owner answers with `replies`.
+    async fn stalling_harness(model: &Arc<Scripted>, replies: Vec<serde_json::Value>) -> (Harness, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let h = harness_with(
+            model,
+            vec![
+                Box::new(FileWriter),
+                Box::new(Checks(Arc::new(Mutex::new(Vec::new())))),
+                Box::new(OwnerReplies { replies: Mutex::new(replies.into()), asked: asked.clone() }),
+            ],
+        )
+        .await;
+        let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+        h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+        (h, asked)
+    }
+
+    /// Review of #998: the owner's own words to a stalled loop replaced its
+    /// findings, and the builder heard only his words. They go on top of
+    /// the round's findings, in the same brief.
+    #[test]
+    fn his_words_to_a_stalled_loop_go_on_top_of_its_findings() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried again."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Used Decimal."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                ]);
+                let replies = vec![serde_json::json!({"own_words": "use Decimal for the total"}), serde_json::json!({"picked": "Stop here"})];
+                let (h, asked) = stalling_harness(&model, replies).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(asked.lock().unwrap().len(), 2, "{:?}", asked.lock().unwrap());
+                let calls = model.calls();
+                let told = calls
+                    .iter()
+                    .flat_map(|c| c.messages.iter())
+                    .find(|m| m.content.contains("use Decimal for the total"))
+                    .expect("the builder heard his words");
+                assert!(told.content.contains("Independent reviewers checked your change"), "the findings brief stays: {}", told.content);
+                assert!(told.content.contains("total() drops cents"), "with its findings: {}", told.content);
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert!(v.reason.contains("stopped_by_owner"), "{v:?}");
+            })
+        })
+    }
+
+    /// Review of #998: a stalled loop the owner kept sending on asked him
+    /// again every round, without end. After he has sent it on three
+    /// times in a turn and it stalls again, it stops as stalled, said so,
+    /// with no fourth question.
+    #[test]
+    fn a_stalled_loop_he_keeps_sending_on_stops_after_three_tries() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let mut steps = vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                ];
+                for _ in 0..5 {
+                    steps.push(Step::Say(SAME_BLOCKER));
+                    steps.push(Step::Say("Tried."));
+                }
+                steps.push(Step::Say(SAME_BLOCKER));
+                steps.push(Step::Say("Stopped: it kept finding the same problem."));
+                let model = Scripted::new(steps);
+                let replies = vec![serde_json::json!({"picked": "Keep going"}); 4];
+                let (h, asked) = stalling_harness(&model, replies).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let asked = asked.lock().unwrap().clone();
+                assert_eq!(asked.len(), 3, "asked three times, never a fourth: {asked:?}");
+                assert!(asked.iter().all(|q| q.contains("keeps finding problems")), "{asked:?}");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "not_verified", "{v:?}");
+                assert!(v.reason.contains(r#""code":"stalled""#), "said as stalled: {}", v.reason);
+                assert_eq!(model.calls().len(), 14, "it stopped at the sixth review");
+            })
+        })
+    }
     /// Review round 3 M5: work that kept changing after it was reported is
     /// checked again over the change: the old verdict is no longer what its
     /// badge says, and the new one is reported.

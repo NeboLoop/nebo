@@ -49,6 +49,15 @@ pub enum ConversationEvent {
     /// The upstream conversation id (xAI resumption) — reconnect with it to
     /// resume history within its 30-minute expiry window.
     ConversationId(String),
+    /// A response is over (done, silent, cancelled or refused), or the line
+    /// that carried it dropped. `asked` is how many responses the call's
+    /// commands have asked for so far ([`crate::realtime::RealtimeCommand::Text`]
+    /// with `respond`, `ToolOutputsDone`, `Say`), and `open` whether one is
+    /// still in flight or not yet begun. The line is free for a new response
+    /// when `asked` is every one the handler asked for and nothing is open:
+    /// a tap before the provider has begun a reply leaves that reply to
+    /// play, and the line stays busy until it is done.
+    ResponseDone { asked: u64, open: bool },
     /// The provider refused words to be said as they are
     /// ([`crate::realtime::RealtimeCommand::Say`]): none are said this call.
     /// Told once, at the refusal; the call itself carries on.
