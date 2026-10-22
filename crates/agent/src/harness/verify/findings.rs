@@ -7,7 +7,8 @@
 //! (a product or business decision, not a defect) says so, with at least two
 //! options and a recommended one: the loop asks the owner, never the builder.
 //! A "decision" without them is no question anyone can answer, and is read
-//! as a defect for the builder ([`Review::settled`]).
+//! as a defect for the builder ([`settle`]), unless the owner already made
+//! that call.
 
 use std::collections::BTreeSet;
 
@@ -241,17 +242,17 @@ pub struct Review {
     pub prior: Vec<Prior>,
 }
 
-impl Review {
-    /// The answer as the loop acts on it: a "decision" that is no owner's
-    /// call ([`Finding::is_owner_call`]) is a defect, which the builder
-    /// fixes. The owner is never asked a question with nothing to pick.
-    pub fn settled(mut self) -> Self {
-        for f in &mut self.findings {
-            if f.kind == Kind::Decision && !f.is_owner_call() {
-                f.kind = Kind::Defect;
-            }
+/// The findings as the loop acts on them: a "decision" that is no owner's
+/// call ([`Finding::is_owner_call`]) is a defect, which the builder fixes,
+/// unless it is a call the owner already made (`answered`, matched by
+/// [`Finding::same_call`]): that one stays his, and carries his answer, so
+/// a reviewer raising it again without its choices never overrides him.
+/// The owner is never asked a question with nothing to pick.
+pub fn settle(findings: &mut [Finding], answered: &[Finding]) {
+    for f in findings {
+        if f.kind == Kind::Decision && !f.is_owner_call() && !answered.iter().any(|a| a.same_call(f)) {
+            f.kind = Kind::Defect;
         }
-        self
     }
 }
 
@@ -478,10 +479,15 @@ mod tests {
         real.title = "Which plan is the default?".into();
         real.options = vec!["Monthly".into(), "Yearly".into()];
         real.recommended = Some("Yearly".into());
-        let review = Review { findings: vec![bare, one, unrecommended, blank, real], ..Default::default() }.settled();
-        let kinds: Vec<Kind> = review.findings.iter().map(|f| f.kind).collect();
+        let mut all = vec![bare.clone(), one, unrecommended, blank, real];
+        settle(&mut all, &[]);
+        let kinds: Vec<Kind> = all.iter().map(|f| f.kind).collect();
         assert_eq!(kinds, [Kind::Defect, Kind::Defect, Kind::Defect, Kind::Defect, Kind::Decision]);
-        assert_eq!(review.findings[4].choices(), ["Yearly", "Monthly"], "the recommended one first, each once");
+        assert_eq!(all[4].choices(), ["Yearly", "Monthly"], "the recommended one first, each once");
+        // A call he already made, raised again without its choices, stays his.
+        let mut again = vec![bare.clone()];
+        settle(&mut again, &[bare]);
+        assert_eq!(again[0].kind, Kind::Decision);
     }
 
     #[test]

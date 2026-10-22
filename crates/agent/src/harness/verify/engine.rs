@@ -961,6 +961,21 @@ impl VerifyCheck {
             held.extend(r.verified_ok.iter().cloned());
             priors.extend(r.prior.iter().cloned());
         }
+        // Progress, against the best so far.
+        let earlier = store.verification_rounds(&v.id).unwrap_or_default();
+        // The owner's calls already made, by the finding that asked each: the
+        // same call is never asked twice, and one that keeps coming back
+        // counts against progress.
+        let asked_before: Vec<(Finding, String)> = earlier
+            .iter()
+            .filter(|r| r.round < at)
+            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
+            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
+            .collect();
+        // Settled only now, against the calls he already made: one raised
+        // again without its choices still carries his answer.
+        let answered: Vec<Finding> = asked_before.iter().map(|(f, _)| f.clone()).collect();
+        findings::settle(&mut new, &answered);
         let (decisions, defects): (Vec<Finding>, Vec<Finding>) =
             new.iter().cloned().partition(|f| f.kind == Kind::Decision);
         let open = findings::open_after(&prior_open, &priors, &defects);
@@ -973,17 +988,6 @@ impl VerifyCheck {
         let checks_failed = runs.iter().filter(|r| !r.passed).count();
         let blocking_now = findings::blocking(&open) + checks_failed;
 
-        // Progress, against the best so far.
-        let earlier = store.verification_rounds(&v.id).unwrap_or_default();
-        // The owner's calls already made, by the finding that asked each: the
-        // same call is never asked twice, and one that keeps coming back
-        // counts against progress.
-        let asked_before: Vec<(Finding, String)> = earlier
-            .iter()
-            .filter(|r| r.round < at)
-            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
-            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
-            .collect();
         let mut calls: Vec<Finding> = Vec::new();
         for d in decisions {
             if !calls.iter().any(|c| c.same_call(&d)) {

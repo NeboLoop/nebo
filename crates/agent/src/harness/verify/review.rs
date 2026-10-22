@@ -107,7 +107,7 @@ pub async fn run_round(
             // A check named with no words is no check.
             let review = review.map(|mut r| {
                 r.verified_ok.retain(|h| !h.checked.trim().is_empty());
-                r.settled()
+                r
             });
             let review = review.and_then(|r| match r.findings.is_empty() && r.verified_ok.is_empty() {
                 true => Err("it found nothing and named nothing it checked".to_string()),

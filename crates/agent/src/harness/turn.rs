@@ -10930,6 +10930,46 @@ mod tests {
         })
     }
 
+    /// Review of #1011: a call the owner answered in round 1, raised again
+    /// in round 2 without its choices, still carries his answer: the
+    /// builder is told what he decided, never the reviewer's own fix.
+    #[test]
+    fn a_call_he_answered_raised_again_without_choices_keeps_his_answer() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let bare: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "switch every total to whole dollars"}], "verified_ok": [{"checked": "rounds to cents"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(decision),
+                    Step::Say("Rounded to cents."),
+                    Step::Say(bare),
+                    Step::Say("Already rounded to cents."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(OwnerAnswers { picked: "cents", asked: asked.clone(), on_ask: None })],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let asked = asked.lock().unwrap().clone();
+                assert_eq!(asked.len(), 1, "asked once: {asked:?}");
+                let calls = model.calls();
+                let told = calls[5].messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+                assert!(told.contains("The owner already decided \"Round totals to cents or to dollars\": cents"), "his answer came back: {told}");
+                assert!(!told.contains("switch every total to whole dollars"), "never the reviewer's fix: {told}");
+            })
+        })
+    }
+
     /// Live 2026-10-21: a reviewer called "Contact form does nothing on
     /// static site" the owner's decision with no choices, and his card had
     /// only Skip. A decision without choices goes to the builder as a defect
