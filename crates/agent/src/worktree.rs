@@ -627,17 +627,24 @@ pub async fn save(iso: &Isolation) -> Result<(), String> {
             if !c.path.is_dir() {
                 return Ok(());
             }
-            let shadow = saved_shadow(&c.path).await?;
-            let now = shadow.snapshot().await?;
-            // What the snapshot could not hold, for a copy made again from
-            // it ([`present`]).
-            let held: std::collections::HashSet<String> = shadow.paths(&now).await?.into_iter().collect();
-            let (files, _) = walk(&c.path)?;
-            let left_out: Vec<String> = files.iter().map(|(rel, _)| rel_str(rel)).filter(|rel| !held.contains(rel)).collect();
-            write_paths(&saved_dir(&c.path).join(LEFT_OUT), &left_out)?;
-            shadow.keep(SAVED, &now).await
+            save_scratch(&c.path, &c.path).await.map(|_| ())
         }
     }
+}
+
+/// Snapshot the scratch copy in `folder` into the saved work of the copy
+/// at `at` (its own place, or where it is moving), with what the snapshot
+/// could not hold for a copy made again from it ([`present`]). Returns the
+/// snapshot kept.
+async fn save_scratch(folder: &Path, at: &Path) -> Result<crate::harness::verify::shadow::Snapshot, String> {
+    let shadow = crate::harness::verify::shadow::Shadow::open(&saved_dir(at), folder).await?;
+    let now = shadow.snapshot().await?;
+    let held: std::collections::HashSet<String> = shadow.paths(&now).await?.into_iter().collect();
+    let (files, _) = walk(folder)?;
+    let left_out: Vec<String> = files.iter().map(|(rel, _)| rel_str(rel)).filter(|rel| !held.contains(rel)).collect();
+    write_paths(&saved_dir(at).join(LEFT_OUT), &left_out)?;
+    shadow.keep(SAVED, &now).await?;
+    Ok(now)
 }
 
 /// Commit everything a worktree holds on its task branch, as Nebo.
@@ -2419,17 +2426,27 @@ async fn move_copy(store: &db::Store, from: &Path, to: &Path) -> Result<(), Stri
             }
         }
         let head = git(from, &["rev-parse", "HEAD"]).await?;
+        let catching_up = rebasing(&wt).await;
+        let branch = git(from, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await.unwrap_or_default();
         return moved(store, from, to, async {
-            git(&root, &["worktree", "move", &from_s, &to_s]).await?;
+            if let Err(e) = git(&root, &["worktree", "move", &from_s, &to_s]).await {
+                // `git worktree move` renames, which can't cross disks. Its
+                // work is committed on its branch: the copy is checked out
+                // again at its new place from it. A catch-up in progress
+                // lives only in the copy, so that copy stays.
+                if catching_up || branch.is_empty() {
+                    return Err(e);
+                }
+                check_out_at(Worktree { branch, ..wt }, to).await?;
+            }
             let now = git(to, &["rev-parse", "HEAD"]).await?;
             if now == head { Ok(()) } else { Err(format!("{} holds {now}, not {head}", to.display())) }
         })
         .await;
     }
     // A scratch copy: its saved snapshot is the one its new place reads.
+    let snap = save_scratch(from, to).await?;
     let shadow = crate::harness::verify::shadow::Shadow::open(&saved_dir(to), from).await?;
-    let snap = shadow.snapshot().await?;
-    shadow.keep(SAVED, &snap).await?;
     if shadow.kept(SAVED).await.as_ref() != Some(&snap) {
         return Err("its work could not be saved".into());
     }
@@ -2437,15 +2454,80 @@ async fn move_copy(store: &db::Store, from: &Path, to: &Path) -> Result<(), Stri
         if std::fs::rename(from, to).is_ok() {
             return Ok(());
         }
-        let there = crate::harness::verify::shadow::Shadow::open(&saved_dir(to), to).await?;
-        there.export(&snap, to).await?;
-        if there.snapshot().await? != snap {
-            let _ = std::fs::remove_dir_all(to);
-            return Err(format!("{} does not hold what {} does", to.display(), from.display()));
-        }
-        std::fs::remove_dir_all(from).map_err(|e| format!("remove {}: {e}", from.display()))
+        copy_folder(from, to)
     })
     .await
+}
+
+/// Check a worktree whose work is all committed on its branch out again at
+/// `to`, and remove it where it was: `git worktree move` across disks. One
+/// that can't be checked out at `to` is checked out again where it was.
+async fn check_out_at(wt: Worktree, to: &Path) -> Result<(), String> {
+    remove(&wt, true).await?;
+    let from = wt.path.clone();
+    let there = Worktree { path: to.to_path_buf(), ..wt };
+    if let Err(e) = reattach_worktree(there.clone()).await {
+        let _ = std::fs::remove_dir_all(to);
+        let _ = git(&there.root, &["worktree", "prune"]).await;
+        if let Err(back) = reattach_worktree(Worktree { path: from, ..there.clone() }).await {
+            warn!(branch = %there.branch, error = %e, back = %back, "a worktree that could not move is on its branch only; it is checked out again when it is next used");
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Copy the folder `from` to `to` (made new) file by file, its folders,
+/// links and files' permissions with it, and remove `from` only once every
+/// file at `to` is what it is at `from`, compared by fingerprint: a rename
+/// across disks. A copy that differs is removed and `from` kept.
+fn copy_folder(from: &Path, to: &Path) -> Result<(), String> {
+    let copied = copy_tree(from, to).and_then(|()| {
+        let (files, mut links) = walk(from)?;
+        let (there, mut there_links) = walk(to)?;
+        links.sort();
+        there_links.sort();
+        let same = files == there
+            && links == there_links
+            && files.iter().all(|(rel, _)| fingerprint_file(&from.join(rel)).is_some_and(|fp| fingerprint_file(&to.join(rel)) == Some(fp)))
+            && links.iter().all(|rel| std::fs::read_link(from.join(rel)).ok() == std::fs::read_link(to.join(rel)).ok());
+        if same { Ok(()) } else { Err(format!("{} does not hold what {} does", to.display(), from.display())) }
+    });
+    if let Err(e) = copied {
+        let _ = std::fs::remove_dir_all(to);
+        return Err(e);
+    }
+    std::fs::remove_dir_all(from).map_err(|e| format!("remove {}: {e}", from.display()))
+}
+
+/// Copy every folder, file (its permissions with it) and link under `from`
+/// to `to`; a link is copied as the link it is, never followed.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| format!("create {}: {e}", to.display()))?;
+    for entry in std::fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| format!("read {}: {e}", from.display()))?;
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type().map_err(|e| format!("stat {}: {e}", src.display()))?;
+        if kind.is_symlink() {
+            let target = std::fs::read_link(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dst).map_err(|e| format!("link {}: {e}", dst.display()))?;
+            #[cfg(windows)]
+            {
+                let made = if std::fs::metadata(&src).is_ok_and(|m| m.is_dir()) {
+                    std::os::windows::fs::symlink_dir(&target, &dst)
+                } else {
+                    std::os::windows::fs::symlink_file(&target, &dst)
+                };
+                made.map_err(|e| format!("link {}: {e}", dst.display()))?;
+            }
+        } else if kind.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst).map_err(|e| format!("copy {}: {e}", src.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Point a copy's records at `to`, then move it (`move_it`); a move that
@@ -2693,6 +2775,75 @@ mod tests {
     /// whose new place is taken stays where it is, its work and records
     /// untouched. The old build folders and reviewers' copies go; a
     /// verification's own files stay.
+    /// Review of #1016: across disks, where a rename can't go, a scratch
+    /// copy moves file by file, every file with it, what no snapshot holds
+    /// (build output, an ignored file) included, its links as links and
+    /// its executables still executable; the old folder goes only once
+    /// each file there is the same.
+    #[test]
+    fn a_scratch_copy_moved_across_disks_takes_every_file_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (from, to) = (d.path().join("old/v-copy"), d.path().join("new/v-copy"));
+        for (rel, body) in [("src/a.txt", "mine\n"), ("node_modules/pkg/index.js", "module.exports = 1;\n"), (".gitignore", "secret.env\n"), ("secret.env", "KEY=1\n"), ("run.sh", "#!/bin/sh\n")] {
+            std::fs::create_dir_all(from.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(from.join(rel), body).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(from.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink("src/a.txt", from.join("link.txt")).unwrap();
+        }
+        let before = walk(&from).unwrap();
+        copy_folder(&from, &to).unwrap();
+        assert!(!from.exists(), "the old folder went once the new one held it");
+        assert_eq!(walk(&to).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(to.join("secret.env")).unwrap(), "KEY=1\n");
+        assert_eq!(std::fs::read_to_string(to.join("node_modules/pkg/index.js")).unwrap(), "module.exports = 1;\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(to.join("run.sh")).unwrap().permissions().mode() & 0o777, 0o755);
+            assert_eq!(std::fs::read_link(to.join("link.txt")).unwrap(), Path::new("src/a.txt"));
+        }
+    }
+
+    /// Review of #1016: `git worktree move` can't cross disks. A worktree
+    /// whose work is committed on its branch is checked out again at its
+    /// new place from it, and removed where it was.
+    #[test]
+    fn a_worktree_moved_across_disks_is_checked_out_again_from_its_branch() {
+        with_home(|home| rt().block_on(async {
+            let r = repo().await;
+            let head = git(r.path(), &["rev-parse", "HEAD"]).await.unwrap();
+            let from = home.join("worktrees/site/v-git");
+            std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+            git(r.path(), &["worktree", "add", "-q", "-b", "nebo/v-git", from.to_str().unwrap(), &head]).await.unwrap();
+            std::fs::write(from.join("new.txt"), "work\n").unwrap();
+            let wt = Worktree {
+                task_id: "v-git".into(),
+                root: r.path().to_path_buf(),
+                path: from.clone(),
+                branch: "nebo/v-git".into(),
+                start_branch: "main".into(),
+                base: head,
+                onto: None,
+                conflicted: Vec::new(),
+            };
+            commit_all(&wt, "Work in progress, saved before the copy moved").await.unwrap();
+            let saved = git(&from, &["rev-parse", "HEAD"]).await.unwrap();
+            let to = copies_root().unwrap().join("site/v-git");
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+
+            check_out_at(wt, &to).await.unwrap();
+            assert!(!from.exists());
+            assert_eq!(git(&to, &["rev-parse", "HEAD"]).await.unwrap(), saved);
+            assert_eq!(std::fs::read_to_string(to.join("new.txt")).unwrap(), "work\n");
+            let list = git(r.path(), &["worktree", "list"]).await.unwrap();
+            assert!(list.contains(&*to.to_string_lossy()) && !list.contains(&*from.to_string_lossy()), "{list}");
+        }))
+    }
+
     #[test]
     fn the_copies_in_nebos_folder_move_out_with_their_work() {
         with_home(|home| rt().block_on(async {
