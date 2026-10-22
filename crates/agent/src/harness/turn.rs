@@ -319,6 +319,10 @@ pub enum TurnExit {
     GoalPaused(goal::Pause),
 }
 
+/// How a run that panicked ended, as [`Harness::turn_ended`] tells it
+/// (there is no [`TurnExit`] for it: the run never reached one).
+pub const PANICKED: &str = "panicked";
+
 impl TurnExit {
     /// The word stored on the run's usage row and read by the workflow
     /// engine and `test runs`.
@@ -666,6 +670,10 @@ async fn run(
                 use super::verify::engine::Closed;
                 close_verifications(&h, &verify, Closed::Ended(super::verify::Why::new("turn_ended"))).await;
             }
+            // Its end is still told, freed first, as any end is: what waits
+            // on this turn (a schedule's answer) is not left waiting.
+            drop(guard);
+            h.turn_ended(&session_key, PANICKED);
             std::panic::resume_unwind(panic)
         }
     };
@@ -679,6 +687,7 @@ async fn run(
         )
         .await;
     drop(guard);
+    h.turn_ended(&session_key, &exit.label());
     if carried > 0 {
         match h.answer_thread() {
             Some(answer) => {
@@ -5353,6 +5362,50 @@ mod tests {
         let tab = seen.iter().find(|r| !r.is_command).and_then(|r| r.session_id.clone()).expect("the run opened a tab");
         let closes: Vec<Option<String>> = seen.iter().filter(|r| r.tool == "close_session_tabs").map(|r| r.session_id.clone()).collect();
         assert_eq!(closes, vec![Some(tab)], "the panicked run's tab closes");
+    }
+
+    /// A run that panics still tells its end, so nothing waiting on the
+    /// turn (a schedule's answer) waits forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_panics_still_tells_its_end() {
+        struct Boom;
+        impl tools::registry::DynTool for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            fn description(&self) -> String {
+                "fails hard".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move { panic!("the tool broke") })
+            }
+        }
+        let model = Scripted::new(vec![Step::Call("boom", serde_json::json!({}))]);
+        let h = harness_with(&model, vec![Box::new(Boom)]).await;
+        let ends = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let told = ends.clone();
+        h.bind(crate::harness::Outlets {
+            turn_ended: Some(Arc::new(move |key: &str, exit: &str| told.lock().unwrap().push((key.to_string(), exit.to_string())))),
+            ..Default::default()
+        });
+        let req = owner("Do the thing");
+        let key = req.session_key.clone();
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        assert_eq!(*ends.lock().unwrap(), vec![(key, PANICKED.to_string())]);
     }
 
     /// A tab the run left open for the owner stays open when it ends.
@@ -11548,6 +11601,39 @@ mod tests {
                 assert!(!heard.contains(&v.work_dir), "never the builder's copy");
                 assert!(calls[3].messages.iter().any(|m| m.content.contains("changed files in your working copy while this round ran")));
                 assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it landed");
+            })
+        })
+    }
+
+    /// A round whose reviewers' copy could not be made ends unreviewed, and
+    /// its record names each reviewer as failed, never "no issues".
+    #[test]
+    fn a_round_nobody_could_review_records_each_reviewer_failed() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                // The reviewers' folder can't be made: a file sits where it goes.
+                let reviewers = config::copies_dir().unwrap().join("verify");
+                let _ = std::fs::remove_dir_all(&reviewers);
+                std::fs::write(&reviewers, "").unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say("It could not be reviewed, so it isn't verified."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                std::fs::remove_file(&reviewers).unwrap();
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#), "{v:?}");
+                assert!(v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].kind, "review");
+                assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
+                assert_eq!(rounds[0].detail["reviewers"], serde_json::json!({ "correctness": "failed" }));
+                assert!(!model.calls().iter().any(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))), "no reviewer ran");
             })
         })
     }

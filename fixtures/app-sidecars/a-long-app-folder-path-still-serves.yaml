@@ -1,0 +1,9 @@
+id: a-long-app-folder-path-still-serves
+name: "A long app folder path still serves"
+description: |
+  Apps made on a Mac could not start: the sidecar listened on a socket file in
+  the app's folder, and macOS caps a socket path at 103 bytes. An app folder
+  as deep as a real one serves like any other, on a loopback address.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_long_app_folder_path_still_serves
+conversation: []

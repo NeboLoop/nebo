@@ -198,13 +198,16 @@ async fn a_one_time_watch_fires_once_reports_and_disappears() {
     let store = server.db_store();
 
     say(&server, &planner, "MARK-WATCH tell me when the Rivera order ships").await;
-    let watch = eventually(60, "the watch", async || workflows(&server, &planner).await.get("rivera-shipped").cloned()).await;
+    // Listed from its first row on; its lifetime is recorded after that row,
+    // so it is read once the turn that saved it is over.
+    eventually(60, "the watch", async || workflows(&server, &planner).await.get("rivera-shipped").cloned()).await;
+    replied(&server, &planner).await;
+    let watch = workflows(&server, &planner).await["rivera-shipped"].clone();
     assert_eq!(watch["temporary"], true, "{watch}");
     assert_eq!(watch["trigger"]["type"], "event", "{watch}");
     assert!(store.list_workflow_runs(&format!("agent:{planner}"), 10, 0).unwrap().is_empty(), "nothing runs until the event");
 
     // The order ships: the watch fires once, reports, and is gone.
-    replied(&server, &planner).await;
     say(&server, &planner, "MARK-SHIP the order went out").await;
     eventually(90, "the watch to report and leave the list", async || {
         workflows(&server, &planner).await.get("rivera-shipped").is_none().then_some(())

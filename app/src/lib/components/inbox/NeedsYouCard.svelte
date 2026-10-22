@@ -37,6 +37,7 @@
   import { t } from 'svelte-i18n';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { formatRelative } from '$lib/time';
+  import { plainText } from '$lib/markdown';
   import { notifications } from '$lib/stores/notifications';
   import { addToast } from '$lib/stores/toast';
   import {
@@ -115,7 +116,7 @@
     <span class="shrink-0">· {formatRelative(current.createdAt, 'short')}</span>
   </div>
   <div class="inbox-card-title">{current.title}</div>
-  {#if current.body}<p class="inbox-card-body">{current.body}</p>{/if}
+  {#if current.body}<p class="inbox-card-body">{plainText(current.body)}</p>{/if}
 
   {#if offer && proposal}
     <dl class="inbox-facts">

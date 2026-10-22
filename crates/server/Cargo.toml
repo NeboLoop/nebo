@@ -60,7 +60,6 @@ notify = "7"
 semver = { workspace = true }
 workflow = { workspace = true }
 tonic = "0.12"
-hyper-util = "0.1"
 proto = { workspace = true }
 sandbox-runtime = { workspace = true }
 a2ui-types = { workspace = true }

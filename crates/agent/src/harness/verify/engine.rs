@@ -610,9 +610,13 @@ impl VerifyCheck {
 
     /// A round whose reviewers could not be given what they read ends the
     /// verification unreviewed: nothing passes on a review that didn't
-    /// happen.
-    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, error: &str) -> RoundEnd {
+    /// happen. No reviewer could read it, so each one failed, never "no
+    /// issues".
+    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, lenses: &[Lens], error: &str) -> RoundEnd {
         tracing::warn!(verification = %v.id, error = %error, "the reviewers' copy could not be made");
+        for lens in lenses {
+            row.detail["reviewers"][lens.as_str()] = json!("failed");
+        }
         row.outcome = Why::new("review_incomplete").text();
         row.finished_at = Some(Self::now());
         let _ = self.store().put_verification_round(row);
@@ -977,7 +981,7 @@ impl VerifyCheck {
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
         let build = match checks::build_cache(&work.project_root) {
             Ok(build) => build,
-            Err(e) => return self.review_incomplete(v, &mut row, &e),
+            Err(e) => return self.review_incomplete(v, &mut row, lenses, &e),
         };
         let mut runs: Vec<CheckRun> = Vec::with_capacity(checks.len());
         for check in &checks {
@@ -999,7 +1003,7 @@ impl VerifyCheck {
         // change the builder's copy, the one that lands.
         let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
             Ok(scratch) => scratch,
-            Err(e) => return self.review_incomplete(v, &mut row, &e),
+            Err(e) => return self.review_incomplete(v, &mut row, lenses, &e),
         };
         let round_dir = review::round_dir(&scratch, round);
         let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
@@ -1713,14 +1717,7 @@ impl VerifyCheck {
     /// (`live_unavailable`). `Err` is why it did not check out.
     async fn live_check_app(&self, work: &Work, v: &db::Verification) -> Result<(), Why> {
         let store = self.store();
-        let app = store
-            .list_agents(1_000, 0)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|a| {
-                tools::app_dev::served_dir(a)
-                    .is_some_and(|d| std::path::Path::new(d) == work.work_dir)
-            });
+        let app = store.app_served_from(&work.work_dir.to_string_lossy()).ok().flatten();
         let ctx = self.tool_ctx();
         let Some(app) = app else {
             self.record_live(v, Why::new("live_failed"), json!({ "problem": "no app is served from these pages" }));
@@ -1763,8 +1760,6 @@ impl VerifyCheck {
     }
 }
 
-/// The rules a review read, as a hash kept on its step: a review is skipped
-/// on unchanged work only under the same rules.
 /// `items` (a JSON array) added to the end of the array `into`.
 fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     let mut all = into.as_array().cloned().unwrap_or_default();
@@ -1772,6 +1767,8 @@ fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     *into = serde_json::Value::Array(all);
 }
 
+/// The rules a review read, as a hash kept on its step: a review is skipped
+/// on unchanged work only under the same rules.
 fn rules_hash(rules: &str) -> String {
     format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }

@@ -132,7 +132,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; shape?: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, focusMessageId = '', readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -162,6 +162,9 @@
     /** Starter text for the composer (prefill, don't send). */
     composerPrefill?: string;
     onprefilled?: () => void;
+    /** The message this conversation was opened at (an Inbox item's
+     *  `?message=`): scrolled into view and marked once it has rendered. */
+    focusMessageId?: string;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -1274,6 +1277,7 @@
           requestAnimationFrame(() => {
             scrollingProgrammatically = false;
             programmaticUntil = 0;
+            revealFocused();
           });
           return;
         }
@@ -1281,6 +1285,30 @@
       };
       requestAnimationFrame(pin);
     }
+  });
+
+  // The message the conversation was opened at: brought into view once,
+  // after the opening scroll has settled at the end, and again when another
+  // one is asked for while the conversation is open. Follow stays on only
+  // when it sits at the end anyway.
+  let revealedMessageId = '';
+  function revealFocused() {
+    const id = focusMessageId;
+    const scroller = messagesContainer;
+    if (!id || id === revealedMessageId || !scroller || !messagesContent) return;
+    const el = messagesContent.querySelector<HTMLElement>(`[data-message-ids~="${CSS.escape(id)}"]`);
+    if (!el) return;
+    revealedMessageId = id;
+    scrollingProgrammatically = true;
+    scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - TURN_TOP_PAD;
+    lastScrollTop = scroller.scrollTop;
+    autoScrollEnabled = distanceFromBottom(scroller) <= NEAR_BOTTOM_PX;
+    requestAnimationFrame(() => { scrollingProgrammatically = false; });
+  }
+  $effect(() => {
+    void focusMessageId;
+    void groupedMessages.length;
+    if (initialScrollDone) requestAnimationFrame(revealFocused);
   });
 
   // Follow ("sticky") is an INTENT bit:
@@ -2329,7 +2357,8 @@
           {@const blocks = blocksOf(segs, keyId, isTurnEnd)}
           {@const answer = turnText(blocks)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
-          <div class="max-w-[640px] mt-3">
+          {@const segIds = segs.flatMap((sg) => (sg.id ? [sg.id] : []))}
+          <div class="max-w-[640px] mt-3 {focusMessageId && segIds.includes(focusMessageId) ? 'chat-turn-focus' : ''}" data-message-ids={segIds.join(' ')}>
             {#if msg.delegateAgentName}
               {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
               <div class="flex items-center gap-1.5 mb-1">

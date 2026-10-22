@@ -79,6 +79,7 @@ impl Owner {
             action_url: Some(&link),
             agent_id: Some(&agent),
             link_label: Some(link_label),
+            made_in: Some(&ctx.session_key),
             latest: true,
             ..Default::default()
         };
@@ -144,6 +145,7 @@ impl Owner {
             options: &options,
             link_label: input["link_label"].as_str().map(str::trim).filter(|l| !l.is_empty()),
             reply_to: asks.then_some(ctx.session_key.as_str()),
+            made_in: Some(&ctx.session_key),
             latest: briefing.is_some(),
         };
         let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
@@ -585,6 +587,11 @@ mod tests {
         let chat = ToolContext { session_key: "agent:assistant:web".into(), ..Default::default() };
         assert!(!tool("push_notification").execute_dyn(&chat, json!({ "message": "Sheet synced." })).await.is_error);
         assert_eq!(items().len(), 4, "a question and an update from chat are their own items");
+        // Each is known by the session it was posted from.
+        for session in ["agent:assistant:cron:hourly-calendar-check", "agent:ops:workflow:run-1:pull-orders:0", "agent:assistant:web"] {
+            assert!(store.posted_from_session(session, 0).unwrap(), "{session}");
+        }
+        assert!(!store.posted_from_session("agent:assistant:thread:other", 0).unwrap());
 
         let chats = store.list_chats(100, 0).unwrap();
         assert!(chats.is_empty(), "no chat was written: {chats:#?}");

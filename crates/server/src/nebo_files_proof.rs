@@ -421,6 +421,7 @@ fn scheduled(agent: &str, name: &str, command: String) -> db::models::CronJob {
         created_by: "owner".to_string(),
         created_by_run: None,
         created_in: None,
+        created_in_chat: None,
         reason: String::new(),
     }
 }
@@ -927,7 +928,7 @@ async fn an_employee_command_is_refused_by_nebo_own_api() {
     #[cfg(unix)]
     {
         let id = format!("pa{}", &uuid::Uuid::new_v4().simple().to_string()[..4]);
-        let world = crate::sidecar_proof::World::new(&id, crate::sidecar_proof::quick(), |_| {}).await;
+        let world = crate::sidecar_proof::World::new(napp::test_sidecar::TestApp::new(&id), crate::sidecar_proof::quick(), |_| {}).await;
         world.until(20, |s| matches!(s, napp::supervisor::SidecarState::Running(_))).await;
         nebo.state.app_lifecycles.write().await.insert(id.clone(), world.lifecycle.clone());
         let token = world.lifecycle.app_token().await;

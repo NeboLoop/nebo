@@ -18,7 +18,7 @@ pub mod sandbox;
 pub mod sealed;
 pub mod signing;
 pub mod supervisor;
-#[cfg(all(unix, any(test, feature = "test-sidecar")))]
+#[cfg(any(test, feature = "test-sidecar"))]
 pub mod test_sidecar;
 #[cfg(any(test, feature = "test-signing"))]
 pub mod test_signing;

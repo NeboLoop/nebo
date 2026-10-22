@@ -193,6 +193,19 @@ impl Store {
         .db_err("notifications")
     }
 
+    /// Whether a run on `session_key` posted an item to the Inbox itself
+    /// (`made_in`) at or after `since`: brought there anew, or a briefing it
+    /// restated, which comes back with a new time.
+    pub fn posted_from_session(&self, session_key: &str, since: i64) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM notifications WHERE made_in = ?1 AND created_at >= ?2)",
+            params![session_key, since],
+            |row| row.get(0),
+        )
+        .db_err("notifications")
+    }
+
     /// Insert an item unless one with the same `id` exists (ids are
     /// deterministic for retryable events). One the owner put away comes
     /// back fresh and unread when it is told again, as a new one would.
@@ -204,14 +217,14 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO notifications (id, user_id, type, title, body, action_url, agent_id,
-                                        needs_you, options, link_label, reply_to, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%s', 'now'))
+                                        needs_you, options, link_label, reply_to, made_in, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, strftime('%s', 'now'))
              ON CONFLICT(id) DO UPDATE SET
                archived_at = NULL, read_at = NULL, created_at = excluded.created_at
              WHERE notifications.archived_at IS NOT NULL",
             params![
                 n.id, n.user_id, n.notification_type, n.title, n.body, n.action_url, n.agent_id,
-                n.needs_you as i64, options, n.link_label, n.reply_to
+                n.needs_you as i64, options, n.link_label, n.reply_to, n.made_in
             ],
         )
         .db_err("notifications")?;

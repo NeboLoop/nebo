@@ -1,0 +1,9 @@
+id: a-call-without-the-token-is-refused
+name: "A call without the token is refused"
+description: |
+  Nothing listens unauthenticated. A call to the sidecar's loopback address
+  without this launch's NEBO_APP_TOKEN, or with another token, is refused;
+  Nebo's own calls carry it and are answered.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_call_without_the_token_is_refused
+conversation: []
