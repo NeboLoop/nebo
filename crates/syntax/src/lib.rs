@@ -512,6 +512,16 @@ pub struct ShellCommand {
     pub assigns: bool,
     pub words: Vec<Option<String>>,
     pub writes: bool,
+    /// The files its redirects, and those of the statements around it,
+    /// read or write (`< in`, `> out`, `2>> log`), `None` for one only known
+    /// when the script runs. A descriptor (`>&2`) is not a file.
+    pub redirects: Vec<Option<String>>,
+    /// Its words and redirect targets that are filename patterns, as the
+    /// `glob` crate writes one: a quoted or escaped character in brackets
+    /// (`[*]`), a run of `*` as one, and an unquoted `{a,b}` kept for its
+    /// reader to expand. A pattern that also holds a variable or a command
+    /// substitution is left out: only running the script knows it.
+    pub patterns: Vec<String>,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -591,17 +601,53 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         writes |= redirects_to_a_file(n, script);
         around = n.parent();
     }
-    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes };
+    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes, redirects: Vec::new(), patterns: Vec::new() };
+    let mut around = Some(node);
+    while let Some(n) = around {
+        for target in redirect_targets(n, script) {
+            let word = shell_word(target, script);
+            if word.is_none() {
+                command.patterns.extend(shell_pattern(target, script));
+            }
+            command.redirects.push(word);
+        }
+        around = n.parent();
+    }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "variable_assignment" => command.assigns = true,
-            "command_name" => command.words.push(child.named_child(0).and_then(|w| shell_word(w, script))),
-            kind if kind.ends_with("redirect") => {}
-            _ => command.words.push(shell_word(child, script)),
+        let word = match child.kind() {
+            "variable_assignment" => {
+                command.assigns = true;
+                continue;
+            }
+            "command_name" => child.named_child(0),
+            kind if kind.ends_with("redirect") => continue,
+            _ => Some(child),
+        };
+        let value = word.and_then(|w| shell_word(w, script));
+        if value.is_none() {
+            command.patterns.extend(word.and_then(|w| shell_pattern(w, script)));
         }
+        command.words.push(value);
     }
     command
+}
+
+/// The files `node`'s own redirects read or write: every `file_redirect`'s
+/// target but a descriptor's (`>&2`, `<&-`).
+fn redirect_targets<'t>(node: Node<'t>, script: &str) -> Vec<Node<'t>> {
+    let mut cursor = node.walk();
+    let redirects: Vec<Node> = node.named_children(&mut cursor).filter(|c| c.kind() == "file_redirect").collect();
+    redirects
+        .into_iter()
+        .filter_map(|redirect| {
+            let target = redirect.child_by_field_name("destination")?;
+            let mut cursor = redirect.walk();
+            let duplicates = redirect.children(&mut cursor).any(|c| !c.is_named() && matches!(node_text(c, script), ">&" | "<&"));
+            let descriptor = |t: &str| t == "-" || t.chars().all(|c| c.is_ascii_digit());
+            (!duplicates || !shell_word(target, script).is_some_and(|t| descriptor(&t))).then_some(target)
+        })
+        .collect()
 }
 
 /// Whether one of `node`'s own redirects writes a file: `>`, `>>`, `>|`,
@@ -625,6 +671,97 @@ fn redirects_to_a_file(node: Node, script: &str) -> bool {
             _ => false,
         }
     })
+}
+
+/// The filename pattern a word is, as `ShellCommand::patterns` writes one;
+/// `None` when it holds no pattern, or holds a value only running the
+/// script knows.
+fn shell_pattern(node: Node, script: &str) -> Option<String> {
+    let mut chars = Vec::new();
+    pattern_chars(node, script, &mut chars)?;
+    let literal = |c: char, out: &mut String| {
+        if PATTERN_SPECIAL.contains(&c) {
+            out.extend(['[', c, ']']);
+        } else {
+            out.push(c);
+        }
+    };
+    let mut out = String::new();
+    let mut globbed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let (c, quoted) = chars[i];
+        i += 1;
+        if quoted {
+            literal(c, &mut out);
+            continue;
+        }
+        match c {
+            '*' => {
+                globbed = true;
+                // `**` is `*` to the shell; to `glob` it would walk every
+                // folder below.
+                if !out.ends_with('*') || out.ends_with("[*]") {
+                    out.push('*');
+                }
+            }
+            '?' | '{' => {
+                globbed = true;
+                out.push(c);
+            }
+            '[' => {
+                // A class runs to its `]`, one right after `[` or `[!` being
+                // its own; without one `[` is itself.
+                let negated = matches!(chars.get(i), Some(('!' | '^', false)));
+                let from = i + usize::from(negated);
+                match (from + 1..chars.len()).find(|&j| chars[j] == (']', false)) {
+                    Some(end) => {
+                        globbed = true;
+                        out.push('[');
+                        if negated {
+                            out.push('!');
+                        }
+                        out.extend(chars[from..end].iter().map(|&(c, _)| c));
+                        out.push(']');
+                        i = end + 1;
+                    }
+                    None => literal('[', &mut out),
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    globbed.then_some(out)
+}
+
+/// The characters a pattern keeps in brackets when they stand for
+/// themselves.
+const PATTERN_SPECIAL: &[char] = &['*', '?', '[', ']', '{', '}', ',', '~'];
+
+/// Append `node`'s characters to `out`, each with whether it is quoted or
+/// escaped (and so stands for itself); `None` for a part only running the
+/// script knows.
+fn pattern_chars(node: Node, script: &str, out: &mut Vec<(char, bool)>) -> Option<()> {
+    match node.kind() {
+        "word" | "number" => {
+            let mut chars = node_text(node, script).chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next().filter(|&n| n != '\n').map(|n| (n, true))),
+                    c => out.push((c, false)),
+                }
+            }
+        }
+        "raw_string" | "string" => out.extend(shell_word(node, script)?.chars().map(|c| (c, true))),
+        "concatenation" => {
+            let mut cursor = node.walk();
+            for part in node.named_children(&mut cursor) {
+                pattern_chars(part, script, out)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 /// The value of one word, or `None` when only running the script knows it.

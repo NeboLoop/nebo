@@ -12,6 +12,10 @@ pub struct Subcommand {
     words: Vec<Option<String>>,
     /// An output redirect sends to a file.
     writes: bool,
+    /// The files its redirects read or write (`syntax::ShellCommand::redirects`).
+    redirects: Vec<Option<String>>,
+    /// Its filename patterns (`syntax::ShellCommand::patterns`).
+    patterns: Vec<String>,
 }
 
 /// Shells whose `-c` argument is itself a script.
@@ -46,13 +50,35 @@ fn looks_like_subcommand(word: &str) -> bool {
 impl Subcommand {
     /// A command that can't be read: it may be anything.
     fn unknown() -> Self {
-        Subcommand { assigns: false, words: vec![None], writes: false }
+        Subcommand { words: vec![None], ..Self::none() }
+    }
+
+    /// A command that runs nothing.
+    fn none() -> Self {
+        Subcommand { assigns: false, words: Vec::new(), writes: false, redirects: Vec::new(), patterns: Vec::new() }
+    }
+
+    fn of(command: syntax::ShellCommand) -> Self {
+        let syntax::ShellCommand { assigns, words, writes, redirects, patterns } = command;
+        Subcommand { assigns, words, writes, redirects, patterns }
     }
 
     /// The command's words, the program first: quoting removed,
     /// redirections left out, and `None` for one only known when it runs.
     pub fn words(&self) -> &[Option<String>] {
         &self.words
+    }
+
+    /// The files its redirects read or write, `None` for one only known
+    /// when it runs.
+    pub fn redirects(&self) -> &[Option<String>] {
+        &self.redirects
+    }
+
+    /// Its words and redirect targets that are filename patterns, written
+    /// as `syntax::ShellCommand::patterns` says.
+    pub fn patterns(&self) -> &[String] {
+        &self.patterns
     }
 
     /// Whether every word of the command is known before it runs.
@@ -112,7 +138,7 @@ pub fn subcommands(cmd: &str) -> Vec<Subcommand> {
     let mut out = Vec::new();
     collect_subcommands(cmd, 0, &mut out);
     if out.is_empty() {
-        out.push(Subcommand { assigns: false, words: Vec::new(), writes: false });
+        out.push(Subcommand::none());
     }
     out
 }
@@ -124,7 +150,7 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
         return;
     };
     for command in commands {
-        let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes };
+        let mut sub = Subcommand::of(command);
         unwrap_wrappers(&mut sub);
         match inline_script(&sub.words) {
             Some(Some(inner)) => collect_subcommands(&inner, depth + 1, out),
@@ -142,7 +168,7 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
 /// anything but a simple command.
 pub fn exit_command(cmd: &str) -> Option<(Subcommand, Option<String>)> {
     let (command, operator) = syntax::shell_exit_command(cmd)?;
-    let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes };
+    let mut sub = Subcommand::of(command);
     unwrap_wrappers(&mut sub);
     Some((sub, operator))
 }
@@ -260,6 +286,57 @@ pub fn is_read_only(cmd: &str) -> bool {
     })
 }
 
+/// Every command a shell call runs ([`subcommands`]), each with the folder
+/// it runs in: `cwd` (an empty path, the run's own folder, when `None`),
+/// followed through the call's `cd`, `pushd` and `popd`; `None` once one
+/// goes where only running the command knows (`cd "$DIR"`, `cd -`). A move
+/// inside a subshell is followed past the subshell's end.
+pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<(Option<std::path::PathBuf>, Subcommand)> {
+    use std::path::PathBuf;
+    let mut here: Option<PathBuf> = Some(cwd.map(types::pathres::expand).unwrap_or_default());
+    let mut pushed: Vec<Option<PathBuf>> = Vec::new();
+    let mut out = Vec::new();
+    for sub in subcommands(cmd) {
+        let before = here.clone();
+        if let Some(Some(program)) = sub.words.first() {
+            // The folder named, past `cd`'s options (`-P`, `-L`, `--`).
+            let mut args = sub.words[1..].iter().skip_while(|w| {
+                w.as_deref().is_some_and(|w| w.len() > 1 && w.starts_with('-') && w[1..].chars().all(|c| "LPe@".contains(c)))
+            });
+            let mut named = args.next();
+            if named.is_some_and(|w| w.as_deref() == Some("--")) {
+                named = args.next();
+            }
+            let moved = |here: &Option<PathBuf>| match named {
+                None => Some(types::pathres::expand("~")),
+                Some(Some(d)) if d != "-" && !d.starts_with(['+', '-']) => reached(here.as_deref(), d),
+                _ => None,
+            };
+            match program.as_str() {
+                "cd" => here = moved(&here),
+                // `pushd` alone swaps the top two folders.
+                "pushd" if named.is_none() => here = None,
+                "pushd" => {
+                    pushed.push(here.clone());
+                    here = moved(&here);
+                }
+                "popd" => here = if named.is_none() { pushed.pop().flatten() } else { None },
+                _ => {}
+            }
+        }
+        out.push((before, sub));
+    }
+    out
+}
+
+/// Where a command standing in `here` reaches `path`: `~` expanded, a
+/// relative path taken from `here`; `None` when `here` is unknown and the
+/// path relative.
+pub fn reached(here: Option<&std::path::Path>, path: &str) -> Option<std::path::PathBuf> {
+    let path = types::pathres::expand(path);
+    if path.is_absolute() { Some(path) } else { here.map(|h| h.join(path)) }
+}
+
 /// What a shell command removes, rewrites and brings into being, named the
 /// way the employee's created ledger keeps them (`file:<path>`), so the
 /// permission check's case 3 sees a shell delete the way it sees any other.
@@ -272,15 +349,8 @@ pub fn is_read_only(cmd: &str) -> bool {
 pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEffects {
     use std::path::{Path, PathBuf};
 
-    // Where the command stands: a folder (relative to the run's when not
-    // absolute), or unknown after a `cd` it can't read.
-    let mut here: Option<PathBuf> = Some(PathBuf::from(cwd.map(types::pathres::expand).unwrap_or_default()));
     let mut fx = types::permissions::CallEffects::unknown();
-    let file = |here: &Option<PathBuf>, p: &str| -> Option<String> {
-        let p = types::pathres::expand(p);
-        let full = if p.is_absolute() { p } else { here.as_ref()?.join(p) };
-        Some(format!("file:{}", full.display()))
-    };
+    let file = |here: &Option<PathBuf>, p: &str| -> Option<String> { reached(here.as_deref(), p).map(|full| format!("file:{}", full.display())) };
     let unread = |sub: &Subcommand| {
         let words: Vec<&str> = sub.words.iter().map(|w| w.as_deref().unwrap_or("…")).collect();
         format!("command:{}", words.join(" "))
@@ -313,17 +383,10 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         out
     };
 
-    for sub in subcommands(cmd) {
+    for (here, sub) in located(cmd, cwd) {
         let Some(Some(program)) = sub.words.first() else { continue };
         let args = &sub.words[1..];
         match program.as_str() {
-            "cd" | "pushd" => {
-                here = match args.first() {
-                    None => Some(types::pathres::expand("~")),
-                    Some(Some(d)) if d != "-" => file(&here, d).map(|f| PathBuf::from(&f["file:".len()..])),
-                    _ => None,
-                };
-            }
             "rm" | "rmdir" | "unlink" => {
                 for operand in operands(args, &[]) {
                     match operand.and_then(|p| file(&here, &p)) {
@@ -344,7 +407,7 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                 while let Some(Some(a)) = args.get(i) {
                     match a.as_str() {
                         "-C" => {
-                            repo = args.get(i + 1).cloned().flatten().and_then(|d| file(&here, &d)).map(|f| PathBuf::from(&f["file:".len()..]));
+                            repo = args.get(i + 1).cloned().flatten().and_then(|d| reached(here.as_deref(), &d));
                             i += 2;
                         }
                         "-c" | "--git-dir" | "--work-tree" | "--namespace" => i += 2,
@@ -789,7 +852,7 @@ mod tests {
 
     #[test]
     fn an_allow_is_strict_and_a_deny_reads_the_unknown_as_unread() {
-        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws, writes: false };
+        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws, ..Subcommand::none() };
         let git_push = sub(lit(&["git", "push", "origin"]), false);
         assert_eq!(git_push.covered_by("git", true), Cover::Yes);
         assert_eq!(git_push.covered_by("git push", true), Cover::Yes);
@@ -1003,6 +1066,28 @@ mod tests {
         assert_eq!(shell_effects("git worktree add -b fix ../wt", Some("/w/r")).creates, vec!["file:/w/r/../wt"]);
         assert_eq!(shell_effects("mkdir -p -m 755 out/a", Some("/w")).creates, vec!["file:/w/out/a"]);
         assert_eq!(shell_effects("ls -la", None), types::permissions::CallEffects::unknown());
+    }
+
+    /// Each command with the folder it runs in: moves read past `cd`'s
+    /// options, `pushd` and `popd` kept as a stack, an unreadable move
+    /// unknown; and the files a redirect names, and the patterns.
+    #[test]
+    fn commands_are_located_where_they_run() {
+        let folders = |cmd: &str| -> Vec<Option<String>> {
+            located(cmd, Some("/w")).into_iter().map(|(here, _)| here.map(|h| h.to_string_lossy().into_owned())).collect()
+        };
+        let at = |p: &str| Some(p.to_string());
+        assert_eq!(folders("cd -P a && ls"), vec![at("/w"), at("/w/a")]);
+        assert_eq!(folders("pushd a && pushd /b && popd && ls"), vec![at("/w"), at("/w/a"), at("/b"), at("/w/a")]);
+        assert_eq!(folders("cd \"$D\" && ls && cd /x && ls"), vec![at("/w"), None, None, at("/x")]);
+        assert_eq!(folders("cd - && ls"), vec![at("/w"), None]);
+        let subs = subcommands("cat < in.txt > out/*.log 2>&1 && cat {a,b} x*");
+        assert_eq!(subs[0].redirects(), [Some("in.txt".to_string()), None]);
+        assert_eq!(subs[0].patterns(), ["out/*.log"]);
+        assert_eq!(subs[1].patterns(), ["{a,b}", "x*"]);
+        assert_eq!(subcommands("ls \"a*\"*")[0].patterns(), ["a[*]*"], "a quoted star is itself");
+        assert_eq!(subcommands("cat a.js[o]n")[0].words(), [Some("cat".to_string()), None]);
+        assert_eq!(subcommands("cat a.js[o]n")[0].patterns(), ["a.js[o]n"]);
     }
 
     #[test]

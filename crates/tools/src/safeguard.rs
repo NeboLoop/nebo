@@ -334,6 +334,11 @@ fn check_shell_safeguard(input: &serde_json::Value, run: &Run<'_>) -> Option<Str
 
     let cmd = command.trim();
 
+    // The command runs in the call's own folder when it names one, else in
+    // the run's (`ShellTool`).
+    let call_cwd = input.get("cwd").and_then(|v| v.as_str()).filter(|c| !c.is_empty()).map(Path::new);
+    let run = &Run { fence: run.fence, cwd: call_cwd.or(run.cwd), cloud: run.cloud };
+
     // A cloud bot's package installer, as a command of its own, is the one
     // command that runs through sudo (`system_packages`). Its grammar
     // leaves nothing else in the command to check.
@@ -365,11 +370,13 @@ fn check_shell_safeguard(input: &serde_json::Value, run: &Run<'_>) -> Option<Str
 /// hard-safety pattern is present.
 fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
     // Shell is the easy way around the file tools' fence (sqlite3, cat,
-    // grep, …): a command that names one of Nebo's own files is refused
-    // before it runs. The command itself runs confined as well (`confine`),
-    // so a path spelled another way still can't be read.
+    // grep, …): a command that names one of Nebo's own files, or reaches
+    // one through a relative path, a `cd`, a link or a pattern, is refused
+    // before it runs. Under Full access this is the only fence; otherwise
+    // the command itself runs confined as well (`confine`), so a path only
+    // known when it runs still can't be read.
     if let Some(fence) = run.fence
-        && let Some(path) = fence.named_in(text, run.cwd)
+        && let Some(path) = fence.named_in(text, run.cwd).or_else(|| fence.reached_by(text, run.cwd))
     {
         return Some(nebo_file_refusal(&path, fence));
     }
@@ -884,6 +891,121 @@ mod tests {
         assert!(check_shell_safeguard(&serde_json::json!({ "command": format!("cat '{guide}'") }), &run).is_none());
         let r = check_shell_safeguard(&serde_json::json!({ "command": format!("cat {theirs}") }), &run);
         assert!(r.is_some(), "a command naming another Nebo's settings");
+    }
+
+    /// Under Full access the command's text is the only fence: a path that
+    /// reaches Nebo's own files however it is spelled is refused, relative
+    /// to the call's folder, after a `cd`, through a link, through a
+    /// pattern or a redirect, and so is a link made to one. Ordinary work in
+    /// a project, links pnpm and git make included, is not.
+    #[test]
+    fn a_command_reaching_nebo_files_by_any_path_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nebo-home");
+        let skill = root.join("nebo/plugins/ledger/0.1.0/skills/ledger-bills");
+        for d in ["files/notes", "logs", "data"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "---\nname: ledger-bills\n---\n").unwrap();
+        std::fs::write(root.join("settings.json"), "{\"accessSecret\": \"s\"}").unwrap();
+        std::fs::write(root.join("logs/nebo.log"), "log").unwrap();
+        let proj = dir.path().join("proj");
+        std::fs::create_dir_all(proj.join("sub")).unwrap();
+        std::fs::write(proj.join("README.md"), "hi").unwrap();
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let run = Run { fence: Some(&fence), cwd: Some(&proj), cloud: false };
+        let check = |command: &str, cwd: Option<&Path>| {
+            let mut input = serde_json::json!({ "command": command });
+            if let Some(cwd) = cwd {
+                input["cwd"] = serde_json::json!(cwd);
+            }
+            check_shell_safeguard(&input, &run)
+        };
+        let refused = |command: &str, cwd: Option<&Path>| {
+            let r = check(command, cwd);
+            assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "{command:?} in {cwd:?} must be refused: {r:?}");
+        };
+        let workspace = root.join("files");
+
+        // A relative path, from the call's folder and from the run's.
+        refused("cat ../settings.json", Some(&workspace));
+        refused("cat ../nebo-home/settings.json", None);
+        refused("grep -r secret ../nebo-home", None);
+        // A `cd` earlier in the command, a subshell's included.
+        refused("cd ../nebo-home/files && cat ../settings.json", None);
+        refused("(cd notes) && tail ../../logs/nebo.log", Some(&workspace));
+        refused("cd -P .. && sqlite3 data/nebo.db .dump", Some(&workspace));
+        refused("pushd notes && popd && cat ../settings.json", Some(&workspace));
+        // The call's own folder inside the closed part.
+        refused("ls", Some(&root.join("logs")));
+        refused("cat nebo.log", Some(&root.join("logs")));
+        // A redirect, an option's value, a pattern, a brace.
+        refused("wc -l < ../nebo-home/logs/nebo.log", None);
+        refused("echo x > ../nebo-home/logs/planted", None);
+        refused("tar --file=../nebo-home/data/x.tar -c .", None);
+        refused("cat ../nebo-home/sett*", None);
+        refused("cat ../nebo-home/{readme,settings.json}", None);
+        refused("cat ../nebo-home/settings.js[o]n", None);
+        refused("cat \"../nebo-home/\"settings.*", None);
+        // A read through a link that already exists.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("settings.json"), proj.join("config.json")).unwrap();
+            refused("cat config.json", None);
+            std::os::unix::fs::symlink(&root, proj.join("home")).unwrap();
+            refused("cat home/logs/nebo.log", None);
+            // `..` after a link leaves what the link leads to.
+            std::fs::create_dir_all(dir.path().join("other")).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("other"), proj.join("elsewhere")).unwrap();
+            refused("cat elsewhere/../nebo-home/settings.json", None);
+            std::fs::remove_file(proj.join("config.json")).unwrap();
+            std::fs::remove_file(proj.join("home")).unwrap();
+            std::fs::remove_file(proj.join("elsewhere")).unwrap();
+        }
+        // A link made earlier in the same command, then gone through, and
+        // a link to a folder above Nebo's.
+        refused("ln -s ../other x && cat x/../nebo-home/settings.json", None);
+        refused("ln -s ../other x && cd x && cat ../nebo-home/logs/nebo.log", None);
+        refused("ln -s .. up && cat up/nebo-home/settings.json", None);
+        // A symbolic link whose relative target is taken from where the link
+        // is made: from `proj` this target is outside, from `proj/sub` it
+        // is Nebo's settings.
+        refused("ln -s ../../nebo-home/settings.json sub/link", None);
+        refused("ln -sf ../../nebo-home/logs sub", None);
+        refused("ln -s -t sub ../../nebo-home/settings.json", None);
+        refused("cd sub && ln -s ../../nebo-home/settings.json", None);
+        // A hard link to a Nebo file, a plugin's skill (read freely, never
+        // changed) included.
+        refused("ln ../nebo-home/settings.json copy.json", None);
+        refused("link ../nebo-home/logs/nebo.log copy.log", None);
+        let guide = skill.join("SKILL.md");
+        assert!(check(&format!("cat '{}'", guide.display()), None).is_none(), "a plugin's skill is read");
+        let rel_guide = "../nebo-home/nebo/plugins/ledger/0.1.0/skills/ledger-bills/SKILL.md";
+        assert!(check(&format!("cat {rel_guide}"), None).is_none(), "a plugin's skill by a relative path");
+        refused(&format!("ln {rel_guide} mine.md"), None);
+
+        // Ordinary work stays allowed.
+        std::fs::write(proj.join("sub/a.txt"), "a").unwrap();
+        std::fs::hard_link(proj.join("sub/a.txt"), proj.join("sub/b.txt")).unwrap();
+        for ok in [
+            "pnpm install && pnpm build",
+            "pnpm --dir sub test -- --run",
+            "git status && git add -A && git commit -m \"fix: the thing\"",
+            "git log HEAD~3..HEAD --oneline",
+            "ls -la && cat README.md sub/*.txt",
+            "cat sub/b.txt",
+            "cd sub && ls .. && cat ../README.md",
+            "ln -s ../README.md sub/readme",
+            "ln sub/a.txt sub/c.txt",
+            "find . -name '*.md' | xargs grep hi",
+            "cat ../nebo-home/files/notes/today.md",
+            "echo hi > ../nebo-home/files/notes/today.md",
+        ] {
+            let r = check(ok, None);
+            assert!(r.is_none(), "{ok:?} must be allowed: {r:?}");
+        }
+        assert!(check("ls && cat today.md", Some(&workspace.join("notes"))).is_none(), "the workspace as the call's folder");
     }
 
     #[test]

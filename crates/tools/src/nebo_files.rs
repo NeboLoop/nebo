@@ -21,9 +21,9 @@
 //!
 //! Three doors apply this one fence: the file tools (the safeguard refuses a
 //! path it closes), the text of a command (the safeguard refuses one that
-//! names such a path), and the command itself (`confine` runs it where those
-//! paths can't be read or changed at all, and the plugins' skills can't be
-//! changed).
+//! names or reaches such a path), and the command itself (`confine` runs it
+//! where those paths can't be read or changed at all, and the plugins'
+//! skills can't be changed).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -176,12 +176,22 @@ impl NeboFiles {
 
     /// Whether `path` (relative ones against `cwd`), reached for `access`,
     /// is one of Nebo's own files: inside a Nebo folder, outside every part
-    /// open to it, however it is spelled (`..`, a link, `/tmp` for
-    /// `/private/tmp`).
+    /// open to it, however it is spelled (`..`, a link, `..` after a link as
+    /// the system walks it, `/tmp` for `/private/tmp`).
     pub fn closes(&self, path: &Path, cwd: Option<&Path>, access: Access) -> bool {
-        let named = lexical(&absolute(path, cwd));
+        let full = absolute(path, cwd);
+        let named = lexical(&full);
         let landed = resolved(&named);
-        [&named, &landed].into_iter().any(|p| self.closed(p, access))
+        let walked = physical(&full);
+        [&named, &landed, &walked].into_iter().any(|p| self.closed(p, access))
+    }
+
+    /// Whether `path` is a Nebo folder or a folder above one, as named or
+    /// as resolved: a second name for it (a link) reaches every file in it.
+    fn above(&self, path: &Path) -> bool {
+        let named = lexical(path);
+        let walked = physical(path);
+        self.fenced().any(|root| root.starts_with(&named) || root.starts_with(&walked))
     }
 
     fn closed(&self, path: &Path, access: Access) -> bool {
@@ -277,6 +287,346 @@ impl NeboFiles {
         }
         None
     }
+
+    /// The first of Nebo's own files a command reaches, run from `cwd` (the
+    /// process's folder when `None`), however it spells the path: the
+    /// folders it stands in, its words (an option's value included) and the
+    /// files it redirects, each taken from every folder it stands in
+    /// (`policy::located`: a subshell's `cd` is followed past its end), the
+    /// files its filename patterns match, and what a link it makes (`ln`,
+    /// `link`) leads to. Each meets the one test (`closes`), links followed.
+    /// The words can't say whether the command reads or writes, so a
+    /// plugin's skill is reached freely, but a hard link to one is refused:
+    /// it is a second name for the file that every fence misses. What only
+    /// running the command knows (`$X`, `$(…)`) is left to `confine`.
+    pub fn reached_by(&self, cmd: &str, cwd: Option<&Path>) -> Option<String> {
+        let start = lexical(&absolute(cwd.unwrap_or(Path::new(".")), None));
+        let located = crate::policy::located(cmd, Some(&start.to_string_lossy()));
+        let mut folders = vec![start];
+        for here in located.iter().filter_map(|(here, _)| here.as_deref()) {
+            let here = lexical(here);
+            if !folders.contains(&here) {
+                folders.push(here);
+            }
+        }
+        // The links the command makes, each refused when it leads to one of
+        // Nebo's own files or (a symbolic one) to a folder above one; a path
+        // through one made earlier in the command goes on from where it leads.
+        let links: Vec<Link> = located.iter().flat_map(|(_, sub)| links(sub.words(), &folders)).collect();
+        for link in &links {
+            let access = if link.symbolic { Access::Read } else { Access::Write };
+            if through(&link.to, &links).iter().any(|to| self.closes(to, None, access) || (link.symbolic && self.above(to))) {
+                return Some(link.target.clone());
+            }
+        }
+        let reaches = |path: &Path| through(path, &links).iter().any(|p| self.closes(p, None, Access::Read));
+        if let Some(folder) = folders.iter().find(|f| reaches(f)) {
+            return Some(folder.to_string_lossy().into_owned());
+        }
+        for (_, sub) in &located {
+            for word in sub.words().iter().chain(sub.redirects()).flatten() {
+                let found = path_words(word)
+                    .into_iter()
+                    .find(|w| folders.iter().filter_map(|f| crate::policy::reached(Some(f.as_path()), w)).any(|p| reaches(&p)));
+                if let Some(named) = found {
+                    return Some(named.to_string());
+                }
+            }
+            for pattern in sub.patterns() {
+                if let Some(found) = folders.iter().find_map(|f| self.matched(pattern, f)) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    /// The first of Nebo's own files the filename pattern `pattern`
+    /// (`syntax::ShellCommand::patterns`), standing in `folder`, matches, or
+    /// names as written when it matches nothing (the shell then passes it
+    /// as it is).
+    fn matched(&self, pattern: &str, folder: &Path) -> Option<String> {
+        for word in braces(pattern) {
+            let anchored = match word.strip_prefix('~').filter(|rest| rest.is_empty() || rest.starts_with('/')) {
+                Some(rest) => format!("{}{rest}", glob::Pattern::escape(&dirs::home_dir()?.to_string_lossy())),
+                None if Path::new(&word).is_absolute() => word.clone(),
+                None => format!("{}/{word}", glob::Pattern::escape(&folder.to_string_lossy())),
+            };
+            let written = PathBuf::from(unbracket(&anchored));
+            if self.closes(&written, None, Access::Read) {
+                return Some(written.to_string_lossy().into_owned());
+            }
+            let Ok(found) = glob::glob(&anchored) else { continue };
+            if let Some(hit) = found.flatten().find(|p| self.closes(p, None, Access::Read)) {
+                return Some(hit.to_string_lossy().into_owned());
+            }
+        }
+        None
+    }
+}
+
+/// A link a command makes.
+struct Link {
+    /// Where the link is, made absolute.
+    at: PathBuf,
+    /// What it leads to, made absolute.
+    to: PathBuf,
+    /// The target as the command writes it.
+    target: String,
+    /// A symbolic link, not a hard one.
+    symbolic: bool,
+}
+
+/// The links the command `words` makes, standing in each of `folders`:
+/// `ln` and `link`, a symbolic link's relative target taken from the folder
+/// the link is made in (`-r` takes it from where the command stands, as a
+/// hard link's is). The last operand may be the folder the link goes in or
+/// the link itself; both are taken.
+fn links(words: &[Option<String>], folders: &[PathBuf]) -> Vec<Link> {
+    let mut out = Vec::new();
+    let Some(words) = words.iter().map(Option::as_deref).collect::<Option<Vec<&str>>>() else { return out };
+    let Some((program, args)) = words.split_first() else { return out };
+    let program = Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if !matches!(program, "ln" | "gln" | "link") {
+        return out;
+    }
+    let (mut symbolic, mut relative) = (false, false);
+    let mut into: Option<&str> = None;
+    let mut operands: Vec<&str> = Vec::new();
+    let mut args = args.iter().copied();
+    let mut options = program != "link";
+    while let Some(arg) = args.next() {
+        match arg {
+            "--" if options => options = false,
+            "--symbolic" if options => symbolic = true,
+            "--relative" if options => relative = true,
+            "--target-directory" | "--suffix" if options => {
+                let value = args.next();
+                if arg == "--target-directory" {
+                    into = value;
+                }
+            }
+            a if options && a.starts_with("--") => {
+                if let Some(dir) = a.strip_prefix("--target-directory=") {
+                    into = Some(dir);
+                }
+            }
+            a if options && a.starts_with('-') && a.len() > 1 => {
+                for (i, c) in a.char_indices().skip(1) {
+                    match c {
+                        's' => symbolic = true,
+                        'r' => relative = true,
+                        't' | 'S' => {
+                            let value = if a.len() > i + 1 { Some(&a[i + 1..]) } else { args.next() };
+                            if c == 't' {
+                                into = value;
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            a => operands.push(a),
+        }
+    }
+    // Each place: the folder the link goes in, or the link itself.
+    let (targets, places): (&[&str], Vec<(PathBuf, bool)>) = match (into, operands.as_slice()) {
+        (Some(dir), all) => (all, vec![(PathBuf::from(dir), true)]),
+        (None, [one]) => (std::slice::from_ref(one), vec![(PathBuf::from("."), true)]),
+        (None, [targets @ .., last]) => (targets, vec![(PathBuf::from(last), true), (PathBuf::from(last), false)]),
+        (None, []) => return out,
+    };
+    for folder in folders {
+        for (place, inside) in &places {
+            let Some(place) = crate::policy::reached(Some(folder.as_path()), &place.to_string_lossy()) else { continue };
+            let place = lexical(&place);
+            for target in targets {
+                let at = if *inside {
+                    place.join(Path::new(target).file_name().unwrap_or_default())
+                } else {
+                    place.clone()
+                };
+                let from = if symbolic && !relative { at.parent().map(Path::to_path_buf).unwrap_or_default() } else { folder.clone() };
+                if let Some(to) = crate::policy::reached(Some(from.as_path()), target) {
+                    out.push(Link { at, to, target: target.to_string(), symbolic });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every path `path` may be, through the links a command makes before it
+/// reaches it: past a link, a path goes on from what the link leads to.
+fn through(path: &Path, links: &[Link]) -> Vec<PathBuf> {
+    let mut out = vec![path.to_path_buf()];
+    let mut i = 0;
+    while i < out.len() && out.len() <= links.len() * 4 {
+        let current = out[i].clone();
+        let parts: Vec<Component> = current.components().collect();
+        for link in links {
+            let mut prefix = PathBuf::new();
+            for (n, part) in parts.iter().enumerate() {
+                prefix.push(part.as_os_str());
+                if lexical(&prefix) == link.at {
+                    let mut next = link.to.clone();
+                    next.extend(parts[n + 1..].iter().map(|p| p.as_os_str()));
+                    if !out.contains(&next) {
+                        out.push(next);
+                    }
+                    break;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The ways one word of a command may name a path: the word, an option's
+/// value (`--file=x`, `-Ix`), and (not on Windows, where `:` follows a
+/// drive) each part of a `:` list (`PATH=a:b`, `-v src:dst`).
+fn path_words(word: &str) -> Vec<&str> {
+    let mut out = vec![word];
+    if let Some((_, value)) = word.split_once('=') {
+        out.push(value);
+    }
+    if word.len() > 2 && word.starts_with('-') && !word.starts_with("--") && word.is_char_boundary(2) {
+        out.push(&word[2..]);
+    }
+    if !cfg!(windows) {
+        let parts: Vec<&str> = out.iter().flat_map(|w| w.split(':')).collect();
+        out.extend(parts);
+    }
+    out.retain(|w| !w.is_empty());
+    out.dedup();
+    out
+}
+
+/// How many words one pattern's braces may stand for before the rest is
+/// left unexpanded.
+const MAX_BRACE_WORDS: usize = 1024;
+
+/// The words a pattern's unquoted braces stand for, as the shell expands
+/// them: `{a,b}` each of its parts, `{1..3}` and `{a..c}` each of the
+/// sequence. A bracketed character (`[{]`) is itself.
+fn braces(pattern: &str) -> Vec<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '[' => i = class_end(&chars, i).unwrap_or(i) + 1,
+            '{' => {
+                if let Some((end, parts)) = brace_parts(&chars, i) {
+                    let prefix: String = chars[..i].iter().collect();
+                    let suffix: String = chars[end + 1..].iter().collect();
+                    let mut out = Vec::new();
+                    for part in parts {
+                        for word in braces(&format!("{prefix}{part}{suffix}")) {
+                            if out.len() == MAX_BRACE_WORDS {
+                                return out;
+                            }
+                            out.push(word);
+                        }
+                    }
+                    return out;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    vec![pattern.to_string()]
+}
+
+/// Where the bracket class opening at `chars[at]` closes: a `]` right after
+/// `[` or `[!` is its own.
+fn class_end(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    if chars.get(i) == Some(&'!') {
+        i += 1;
+    }
+    (i + 1..chars.len()).find(|&j| chars[j] == ']')
+}
+
+/// The parts the brace opening at `chars[at]` stands for, with where it
+/// closes: `None` when it is no brace expansion (no `,` or `..` in it).
+fn brace_parts(chars: &[char], at: usize) -> Option<(usize, Vec<String>)> {
+    let mut depth = 0;
+    let mut commas = Vec::new();
+    let mut i = at;
+    while i < chars.len() {
+        match chars[i] {
+            '[' => {
+                i = class_end(chars, i).unwrap_or(i);
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner: String = chars[at + 1..i].iter().collect();
+                    if commas.is_empty() {
+                        return sequence(&inner).map(|parts| (i, parts));
+                    }
+                    let mut parts = Vec::new();
+                    let mut from = at + 1;
+                    for &c in commas.iter().chain(std::iter::once(&i)) {
+                        parts.push(chars[from..c].iter().collect());
+                        from = c + 1;
+                    }
+                    return Some((i, parts));
+                }
+            }
+            ',' if depth == 1 => commas.push(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The words of a sequence brace (`1..3`, `a..c`, with an optional
+/// `..step`), as the shell counts them.
+fn sequence(inner: &str) -> Option<Vec<String>> {
+    let parts: Vec<&str> = inner.split("..").collect();
+    let (from, to, step) = match parts.as_slice() {
+        [from, to] => (*from, *to, 1),
+        [from, to, step] => (*from, *to, step.parse::<i64>().ok()?.unsigned_abs().max(1) as usize),
+        _ => return None,
+    };
+    let words: Vec<String> = if let (Ok(a), Ok(b)) = (from.parse::<i64>(), to.parse::<i64>()) {
+        let width = if from.starts_with('0') || to.starts_with('0') { from.len().max(to.len()) } else { 0 };
+        let range: Box<dyn Iterator<Item = i64>> = if a <= b { Box::new(a..=b) } else { Box::new((b..=a).rev()) };
+        range.step_by(step).take(MAX_BRACE_WORDS).map(|n| format!("{n:0width$}")).collect()
+    } else {
+        let (Ok(a), Ok(b)) = (from.parse::<char>(), to.parse::<char>()) else { return None };
+        if !a.is_ascii_alphabetic() || !b.is_ascii_alphabetic() {
+            return None;
+        }
+        let (a, b) = (a as u8, b as u8);
+        let range: Vec<u8> = if a <= b { (a..=b).collect() } else { (b..=a).rev().collect() };
+        range.into_iter().step_by(step).map(|c| (c as char).to_string()).collect()
+    };
+    Some(words)
+}
+
+/// A pattern as the path it names when it matches nothing: each
+/// bracketed single character (`[*]`) is itself.
+fn unbracket(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' && chars.get(i + 2) == Some(&']') {
+            out.push(chars[i + 1]);
+            i += 3;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Every entry under `dir` that is closed, top-most first: an entry in a
@@ -381,6 +731,28 @@ fn lexical(path: &Path) -> PathBuf {
                 out.pop();
             }
             other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `path` as the system walks it: each part that exists resolved before
+/// the next is taken, so a `..` after a link leaves what the link leads to;
+/// the parts that don't exist kept as written.
+fn physical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => {
+                out.push(other.as_os_str());
+                if let Ok(real) = std::fs::canonicalize(&out) {
+                    out = real;
+                }
+            }
         }
     }
     out
