@@ -645,6 +645,7 @@ export interface CronJob {
 	createdBy: string
 	createdByRun?: string
 	createdIn?: string
+	createdInChat?: string
 	reason: string
 }
 

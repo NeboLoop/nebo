@@ -1405,10 +1405,13 @@ async fn a_learned_rule_acts_only_inside_its_conditions_and_keeps_its_consent_an
     let offer_row = nebo.store().get_pending_write(offer.id.strip_prefix("learn:").unwrap()).unwrap().unwrap();
     assert_eq!((offer_row.status.as_str(), offer_row.resolved_via.as_deref()), ("approved", Some("mobile")));
 
+    // Each call he allowed this once runs when the engine delivers his
+    // answer, on its own clock: all three have, before the next is counted.
+    nebo.wait_until(10, "the three calls he allowed once ran", || ran.load(Ordering::SeqCst) == 3).await;
+
     // Inside: runs, handled for him, with Undo.
-    let before = ran.load(Ordering::SeqCst);
     assert!(buy(&nebo, &emp, &tool, 31_200).await.is_none(), "under $500: it runs");
-    assert_eq!(ran.load(Ordering::SeqCst), before + 1);
+    assert_eq!(ran.load(Ordering::SeqCst), 4);
     let handled: Vec<_> = inbox(&nebo, db::models::InboxView::Updates)
         .into_iter()
         .filter(|n| n.id.starts_with(&format!("handled:{}:", rule.id)))
