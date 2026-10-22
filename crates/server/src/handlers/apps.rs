@@ -1970,8 +1970,9 @@ pub async fn share_file(
         }
     };
     let _ = fs::remove_dir_all(&staging).await;
-    let Some(artifact) = kept else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    let artifact: String = match kept {
+        Some(artifact) => artifact,
+        None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
     axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
