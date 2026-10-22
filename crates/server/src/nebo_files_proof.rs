@@ -703,9 +703,10 @@ async fn a_full_access_employee_runs_unconfined() {
     std::fs::write(home.join("logs/full-access-proof.log"), "FULL-ACCESS-canary").unwrap();
     let files = home.join("files").to_string_lossy().into_owned();
     let run = |command: String| json!({ "command": command, "description": "Build the project" });
-    // Reaches a closed path by a spelling the command's text check can't
-    // follow: only the operating system's confinement stops it.
-    let read_log = run(format!("cd '{files}' && cat ../logs/full-access-proof.log"));
+    // Reaches a closed path through a value only running the command knows
+    // (a command substitution), which the text check can't follow: only the
+    // operating system's confinement stops it.
+    let read_log = run(format!("cd '{files}' && cat \"$(printf %s ../logs)/full-access-proof.log\""));
     let reads = |r: &tools::ToolResult| r.content.contains("FULL-ACCESS-canary");
     // A program that starts a sandbox of its own, as Chrome and `swift
     // build` do. macOS allows none inside another.
