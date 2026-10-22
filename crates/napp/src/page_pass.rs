@@ -27,7 +27,8 @@ pub enum Scope {
     /// One app, by its id.
     App(String),
     /// Reading the owner's files in one folder (a path relative to the
-    /// files route, `/`-separated; empty for the top) and below it.
+    /// files route, `/`-separated) and below it. The top of the workspace
+    /// (an empty folder) is never one: it opens nothing.
     Folder(String),
 }
 
@@ -45,7 +46,7 @@ impl Scope {
                     return false;
                 }
                 let folder: Vec<&str> = folder.split('/').filter(|p| !p.is_empty()).collect();
-                parts.len() > folder.len() && parts[..folder.len()] == folder[..]
+                !folder.is_empty() && parts.len() > folder.len() && parts[..folder.len()] == folder[..]
             }
             _ => false,
         }
@@ -165,8 +166,7 @@ mod tests {
         assert!(!admits(&pass, &app("Reports")));
         revoke(&pass);
         let top = grant(Scope::Folder(String::new()), Duration::from_secs(60));
-        assert!(admits(&top, &file("deck.html")) && admits(&top, &file("img/a.png")));
-        assert!(!admits(&top, &file("../x")));
+        assert!(!admits(&top, &file("deck.html")) && !admits(&top, &file("img/a.png")), "the top opens nothing");
         revoke(&top);
     }
 }

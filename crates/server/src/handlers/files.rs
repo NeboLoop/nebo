@@ -455,7 +455,10 @@ pub async fn serve_file(
     // owner opening a link): opened again under one. It runs sandboxed
     // (`middleware::api_security_headers`), so the pictures and styles it
     // loads from beside it carry that pass, and nothing else of the owner's.
-    if content_type_for(&canonical).starts_with("text/html") && !opened_with_pass(&request, &file_path) {
+    if content_type_for(&canonical).starts_with("text/html")
+        && document_folder(&file_path).is_some()
+        && !opened_with_pass(&request, &file_path)
+    {
         return Ok(with_folder_pass(&request, &file_path));
     }
 
@@ -482,12 +485,21 @@ fn opened_with_pass(request: &axum::extract::Request, rel: &str) -> bool {
         .is_some_and(|c| napp::page_pass::admits(&c.0, &napp::page_pass::Scope::Folder(rel.to_string())))
 }
 
+/// The folder a document's pass may read beside it: the folder `rel` is in,
+/// when that is one of the owner's own folders. A document at the top of the
+/// workspace, or in anything private to it (`config::workspace_private`: the
+/// store's uploads and kept files, hidden or agent folders), gets no pass:
+/// it opens sandboxed and loads nothing of the owner's beside it.
+fn document_folder(rel: &str) -> Option<&str> {
+    rel.rsplit_once('/').map(|(f, _)| f).filter(|f| !f.is_empty() && !config::workspace_private(f))
+}
+
 /// A `303` to the document `rel` under a pass for its folder
 /// (`/k/<pass>/api/v1/files/<rel>`), relative to where it was asked for, so
 /// the tunnel's `/t/<bot>` stays; a credential the address carried (a pass
 /// gone with a restart) is replaced.
 fn with_folder_pass(request: &axum::extract::Request, rel: &str) -> axum::response::Response {
-    let folder = rel.rsplit_once('/').map(|(f, _)| f).unwrap_or("").to_string();
+    let folder = document_folder(rel).unwrap_or_default().to_string();
     let pass = napp::page_pass::grant(napp::page_pass::Scope::Folder(folder), DOCUMENT_PASS_TTL);
     let uri = request
         .extensions()

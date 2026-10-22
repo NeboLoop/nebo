@@ -30,6 +30,12 @@ async fn the_owners_files_answer_only_a_caller_that_proves_itself() {
     .unwrap();
     std::fs::write(workspace.join("Reports/q3/img/chart.png"), b"png").unwrap();
     std::fs::write(workspace.join("Reports/q3/captions.vtt"), b"WEBVTT").unwrap();
+    // A page at the top of the workspace, and one in the store's own uploads.
+    std::fs::write(workspace.join("top.html"), "<html><body><img src=\"Finance/taxes.txt\"></body></html>").unwrap();
+    let uploads = config::data_dir().unwrap().join("files/uploads/u1");
+    std::fs::create_dir_all(&uploads).unwrap();
+    std::fs::write(uploads.join("page.html"), "<html></html>").unwrap();
+    std::fs::write(uploads.join("other.txt"), b"another upload").unwrap();
 
     let server = TestServer::boot().await;
     let base = format!("http://127.0.0.1:{}", server.port);
@@ -74,6 +80,19 @@ async fn the_owners_files_answer_only_a_caller_that_proves_itself() {
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "a document's pass opens nothing of the owner's");
     let up = http.post(format!("{base}/k/{pass}/api/v1/files/upload")).send().await.unwrap();
     assert_eq!(up.status(), StatusCode::UNAUTHORIZED, "and writes nothing");
+
+    // A page at the top of the workspace, or in the store's own uploads,
+    // opens sandboxed with no pass: nothing beside it is the page's.
+    for doc in ["top.html", "uploads/u1/page.html"] {
+        let r = http.get(keyed(doc)).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{doc}");
+        let csp = r.headers()["content-security-policy"].to_str().unwrap().to_string();
+        assert!(csp.starts_with("sandbox allow-scripts"), "{doc}: {csp}");
+    }
+    let private = napp::page_pass::grant(napp::page_pass::Scope::Folder("uploads/u1".into()), std::time::Duration::from_secs(60));
+    let r = http.get(format!("{base}/k/{private}/api/v1/files/uploads/u1/other.txt")).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "a pass never reads the store's own files");
+    napp::page_pass::revoke(&private);
 
     // An image needs no pass from the owner's browser on Nebo's own page.
     let cookie = format!("{}={}", nebo_server::local_access::COOKIE, nebo_server::local_access::session_for(&server.key));

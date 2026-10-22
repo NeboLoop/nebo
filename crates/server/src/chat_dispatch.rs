@@ -2389,7 +2389,7 @@ pub(crate) const SHARED_DIR: &str = ".shared";
 /// `shared_files` leaves it). A file already kept this way, or a versioned
 /// work blob, is answered as it is. URLs an older message carries (a flat
 /// `/api/v1/files/<name>`) are untouched and still served.
-fn keep_shared_file(files_dir: &std::path::Path, path: &std::path::Path) -> Option<String> {
+pub(crate) fn keep_shared_file(files_dir: &std::path::Path, path: &std::path::Path) -> Option<String> {
     let filename = path.file_name()?.to_string_lossy().to_string();
     if let Ok(rel) = path.strip_prefix(files_dir) {
         let rel = rel.to_string_lossy().replace('\\', "/");

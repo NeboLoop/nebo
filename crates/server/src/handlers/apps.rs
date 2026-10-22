@@ -1907,22 +1907,22 @@ fn share_requested_event(agent_id: &str, req: &ShareRequest, artifact: &str, tit
     origin.stamp(serde_json::json!({ "agentId": agent_id, "chatId": req.thread, "artifact": artifact, "title": title }))
 }
 
-/// A file or folder name an app may write into Work: one plain segment,
-/// no separators, not hidden, at most 120 characters. The file needs an
-/// extension so it opens in the right viewer.
-fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
+/// A file name an app may hand the owner: one plain segment, no
+/// separators, not hidden, at most 120 characters, with an extension so it
+/// opens in the right viewer.
+fn work_segment(name: &str) -> Option<String> {
     let name = name.trim();
     let ok = !name.is_empty()
         && name.chars().count() <= 120
         && !name.starts_with('.')
         && !name.contains(['/', '\\', '\0'])
-        && (!needs_ext || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty()));
+        && name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
     ok.then(|| name.to_string())
 }
 
 /// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
-/// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
-/// replaced when shared again), and the owner's open chat shows the one
+/// a file to share. The file is kept like every file handed to him
+/// (`.shared/<content hash>/<name>`), and the owner's open chat shows the one
 /// Share dialog on it. The page never calls the share API: who can open the
 /// link, and until when, is his choice there.
 pub async fn share_file(
@@ -1934,11 +1934,10 @@ pub async fn share_file(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let app_name = match validate_app_agent(&state.store, &agent_id, None) {
-        Ok((_, name)) => name,
-        Err(e) => return to_error_response(e).into_response(),
-    };
-    let Some(name) = work_segment(&body.name, true) else {
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let Some(name) = work_segment(&body.name) else {
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
             "error": "name must be a file name with an extension, like \"Launch deck.html\""
         }))).into_response();
@@ -1946,21 +1945,33 @@ pub async fn share_file(
     if body.content.is_empty() {
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "content is empty" }))).into_response();
     }
-    let folder = work_segment(&app_name, false).unwrap_or_else(|| agent_id.clone());
-    let dir = match config::files_dir() {
-        Ok(d) => d.join(&folder),
-        Err(e) => return to_error_response(e).into_response(),
+    // Kept the way every file handed to the owner is
+    // (`chat_dispatch::keep_shared_file`): `.shared/<content hash>/<name>`,
+    // in the store, never a folder of the owner's that shares the app's
+    // name, and never over another file. Its page opens sandboxed with no
+    // folder pass (`files::document_folder`).
+    let Ok(files_dir) = config::data_dir().map(|d| d.join("files")) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if let Err(e) = fs::create_dir_all(&dir).await {
-        warn!(error = %e, "app share: cannot make the Work folder");
+    let staging = std::env::temp_dir().join(format!("nebo-app-share-{}", uuid::Uuid::new_v4()));
+    let staged = staging.join(&name);
+    let kept = match fs::create_dir_all(&staging).await {
+        Ok(()) => match fs::write(&staged, body.content.as_bytes()).await {
+            Ok(()) => crate::chat_dispatch::keep_shared_file(&files_dir, &staged),
+            Err(e) => {
+                warn!(error = %e, "app share: cannot write the file");
+                None
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, "app share: cannot stage the file");
+            None
+        }
+    };
+    let _ = fs::remove_dir_all(&staging).await;
+    let Some(artifact) = kept else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    if let Err(e) = fs::write(dir.join(&name), body.content.as_bytes()).await {
-        warn!(error = %e, "app share: cannot write the file");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    // The same unencoded reference a run's own Work files carry.
-    let artifact = format!("/api/v1/files/{folder}/{name}");
+    };
     state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
     axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }
@@ -3174,16 +3185,15 @@ mod developer_console_tests {
 mod share_tests {
     use super::*;
 
-    /// `nebo.share` writes one plain file into the app's Work folder:
-    /// nothing that climbs out of it, hides, or has no extension.
+    /// `nebo.share` hands the owner one plain named file: nothing that
+    /// climbs out of its folder, hides, or has no extension.
     #[test]
     fn a_shared_file_is_one_plain_named_file() {
-        assert_eq!(work_segment("  Launch deck.html ", true).as_deref(), Some("Launch deck.html"));
-        assert_eq!(work_segment("Design Studio", false).as_deref(), Some("Design Studio"));
-        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html"] {
-            assert_eq!(work_segment(bad, true), None, "{bad:?}");
+        assert_eq!(work_segment("  Launch deck.html ").as_deref(), Some("Launch deck.html"));
+        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html", "Design Studio"] {
+            assert_eq!(work_segment(bad), None, "{bad:?}");
         }
-        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120)), true), None);
+        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120))), None);
     }
 
     fn asked(client: &str) -> ShareRequest {

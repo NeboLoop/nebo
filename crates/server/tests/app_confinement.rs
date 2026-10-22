@@ -145,6 +145,28 @@ async fn an_app_page_reaches_its_own_app_alone() {
     let data = http.get(own(&format!("/api/v1/apps/{APP}/storage"))).send().await.unwrap();
     assert!(data.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox "));
 
+    // What it hands the owner (`nebo.share`) is kept with every file handed
+    // to him, never in a folder of his named like the app; opened, it runs
+    // sandboxed with no pass to anything beside it.
+    let workspace = config::workspace_dir().unwrap();
+    std::fs::create_dir_all(workspace.join("CRM")).unwrap();
+    std::fs::write(workspace.join("CRM/clients.txt"), b"the owner's own").unwrap();
+    let shared: serde_json::Value = http
+        .post(own(&format!("/api/v1/apps/{APP}/share")))
+        .header("origin", "null")
+        .json(&serde_json::json!({ "name": "Deck.html", "content": "<img src=\"../../CRM/clients.txt\">", "thread": "", "client": "" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let artifact = shared["artifact"].as_str().unwrap().to_string();
+    assert!(artifact.starts_with("/api/v1/files/.shared/") && artifact.ends_with("/Deck.html"), "{artifact}");
+    let opened = http.get(format!("{base}/k/{}{artifact}", server.key)).send().await.unwrap();
+    assert_eq!(opened.status(), StatusCode::OK, "no pass to mint: {artifact}");
+    assert!(opened.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox allow-scripts"));
+
     // The owner's signed-in browser session, carried by a page of opaque
     // origin (`Origin: null`), opens nothing, even with Fetch Metadata that
     // says otherwise.

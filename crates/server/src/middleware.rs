@@ -477,7 +477,12 @@ fn page_pass_reaches(path_credential: Option<&str>, method: &axum::http::Method,
         return napp::page_pass::admits(pass, &napp::page_pass::Scope::App(app.to_string()));
     }
     matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
-        && files_rel(path).is_some_and(|rel| napp::page_pass::admits(pass, &napp::page_pass::Scope::Folder(rel)))
+        && files_rel(path).is_some_and(|rel| {
+            // Nothing private to the workspace (`config::workspace_private`:
+            // the store's own uploads and kept files, hidden or agent
+            // folders) is ever read with a document's pass.
+            !config::workspace_private(&rel) && napp::page_pass::admits(pass, &napp::page_pass::Scope::Folder(rel))
+        })
 }
 
 /// The file a `/api/v1/files/<path>` request names, as the route reads it
