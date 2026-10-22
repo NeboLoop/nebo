@@ -78,13 +78,23 @@ pub struct Work {
 }
 
 impl Work {
-    /// Where a verification keeps its own files (its shadow, the diffs its
-    /// reviewers read): `<data_dir>/verify/<id>`.
+    /// Where a verification keeps its own files (its shadow):
+    /// `<data_dir>/verify/<id>`. Nothing an employee or a reviewer reads is
+    /// here: that is in [`Work::copies`].
     pub fn home(id: &str) -> PathBuf {
         config::data_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join("verify")
             .join(id)
+    }
+
+    /// Where a verification keeps what its reviewers work in, with the
+    /// working copies (`config::copies_dir`): each round's read-only copy of
+    /// the change and its patch, and the one build folder its reviewers
+    /// share (`review::build_dir`).
+    /// `<copies>/verify/<id>`.
+    pub fn copies(id: &str) -> Result<PathBuf, String> {
+        config::copies_dir().map(|root| root.join("verify").join(id)).map_err(|e| e.to_string())
     }
 
     /// The shadow repository a work snapshots its folder with: its own, or
@@ -102,15 +112,30 @@ impl Work {
         }
     }
 
-    /// Remove the verification's own files. The copy itself is the
-    /// landing's to remove.
+    /// Remove the verification's own files and its reviewers'. The copy
+    /// itself is the landing's to remove.
     pub fn clean_up(&self) {
-        let home = Self::home(&self.id);
-        if let Err(e) = std::fs::remove_dir_all(&home)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %home.display(), error = %e, "verification files not removed");
+        remove_files(&Self::home(&self.id));
+        Self::clean_up_reviewers(&self.id);
+    }
+
+    /// Remove what the verification's reviewers work in ([`Work::copies`]):
+    /// the rounds' copies and the build folder they share. Done the moment
+    /// the verification ends, whatever its verdict, so a build's gigabytes
+    /// never wait for the sweep; one checked again builds anew.
+    pub fn clean_up_reviewers(id: &str) {
+        if let Ok(dir) = Self::copies(id) {
+            remove_files(&dir);
         }
+    }
+}
+
+/// Remove a verification's folder `dir`, a failure logged.
+fn remove_files(dir: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(dir)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %dir.display(), error = %e, "verification files not removed");
     }
 }
 
@@ -670,7 +695,7 @@ pub const BUILD_CAP_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 /// first: run before checks write into them, so the cap holds as they are
 /// written, not only at the daily sweep. Returns how many it removed.
 pub fn cap_builds() -> usize {
-    let root = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("verify").join("build");
+    let Some(root) = super::checks::builds_root() else { return 0 };
     let mut builds: Vec<(std::time::SystemTime, u64, PathBuf)> = std::fs::read_dir(&root)
         .into_iter()
         .flatten()
@@ -704,10 +729,13 @@ pub fn cap_builds() -> usize {
 /// Returns how many folders it removed.
 pub async fn sweep(store: &db::Store, now: i64) -> usize {
     let root = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("verify");
-    let Ok(entries) = std::fs::read_dir(&root) else { return 0 };
+    // A verification's own files, and its reviewers' with the working copies.
+    let reviewers = config::copies_dir().ok().map(|c| c.join("verify"));
+    let entries: Vec<std::fs::DirEntry> =
+        std::iter::once(&root).chain(reviewers.as_ref()).flat_map(|dir| std::fs::read_dir(dir).into_iter().flatten().flatten()).collect();
     let old = |at: i64| now.saturating_sub(at) as u64 > KEEP_FINISHED_SECS;
     let mut removed = 0;
-    for entry in entries.flatten() {
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("v-") {
             continue;
@@ -745,8 +773,8 @@ pub async fn sweep(store: &db::Store, now: i64) -> usize {
     let unused = |p: &Path| {
         std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age.as_secs() > KEEP_FINISHED_SECS)
     };
-    for dir in ["folders", "build"] {
-        for entry in std::fs::read_dir(root.join(dir)).into_iter().flatten().flatten() {
+    for dir in std::iter::once(root.join("folders")).chain(super::checks::builds_root()) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             if unused(&entry.path()) && std::fs::remove_dir_all(entry.path()).is_ok() {
                 removed += 1;
             }
@@ -801,7 +829,25 @@ mod tests {
         assert_eq!(mapped("/work/sitemap", "/work/site", "/c"), None);
     }
 
-    fn rt() -> tokio::runtime::Runtime {
+    /// The build folder a verification's reviewers share goes when it ends,
+    /// with their copies; its own files (the shadow) stay for the landing.
+    #[test]
+    fn an_ended_verification_leaves_no_build_behind() {
+        crate::test_home::with_home(|_| {
+            let scratch = Work::copies("v-ended").unwrap();
+            let build = crate::harness::verify::review::build_dir(&scratch);
+            std::fs::create_dir_all(build.join("debug/deps")).unwrap();
+            std::fs::create_dir_all(scratch.join("round-1/project")).unwrap();
+            std::fs::create_dir_all(Work::home("v-ended")).unwrap();
+            Work::clean_up_reviewers("v-ended");
+            assert!(!scratch.exists(), "{}", scratch.display());
+            assert!(Work::home("v-ended").is_dir());
+            // Ended again (nothing left): nothing to do.
+            Work::clean_up_reviewers("v-ended");
+        })
+    }
+
+    fn rt()-> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

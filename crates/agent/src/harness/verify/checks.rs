@@ -87,15 +87,17 @@ pub fn detect(root: &Path, changed: &[String]) -> Vec<Check> {
 }
 
 /// The build folder every verification of the project at `root` shares:
-/// `<data_dir>/verify/build/<hash of the project's path>`.
-pub fn build_cache(root: &Path) -> PathBuf {
+/// `<copies>/build/<hash of the project's path>` ([`builds_root`]).
+pub fn build_cache(root: &Path) -> Result<PathBuf, String> {
     use sha2::Digest;
     let hash = hex::encode(&sha2::Sha256::digest(root.to_string_lossy().as_bytes())[..8]);
-    config::data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("verify")
-        .join("build")
-        .join(hash)
+    builds_root().map(|b| b.join(hash)).ok_or_else(|| "no folder for the build: the working-copy folder could not be made".to_string())
+}
+
+/// Where the projects' build folders are: with the working copies
+/// (`config::copies_dir`), where every command that builds may write.
+pub fn builds_root() -> Option<PathBuf> {
+    config::copies_dir().ok().map(|c| c.join("build"))
 }
 
 /// What one check did in a round.
@@ -492,10 +494,14 @@ mod tests {
     #[test]
     fn every_verification_of_a_project_shares_one_build_folder() {
         crate::test_home::with_home(|home| {
-            let a = build_cache(Path::new("/work/site"));
-            assert_eq!(a, build_cache(Path::new("/work/site")));
-            assert_ne!(a, build_cache(Path::new("/work/other")));
-            assert!(a.starts_with(home.join("verify/build")));
+            let a = build_cache(Path::new("/work/site")).unwrap();
+            assert_eq!(a, build_cache(Path::new("/work/site")).unwrap());
+            assert_ne!(a, build_cache(Path::new("/work/other")).unwrap());
+            // With the working copies, where a command may write; never in
+            // Nebo's own folder, which is closed to every command.
+            assert!(a.starts_with(config::copies_dir().unwrap().join("build")), "{}", a.display());
+            assert!(!a.starts_with(home));
+            let _ = std::fs::remove_dir_all(config::copies_dir().unwrap());
         })
     }
 
