@@ -293,11 +293,12 @@ pub async fn serve_app_ui(
     serve_app_ui_inner(&state, &agent_id, &path, &uri, &headers).await
 }
 
-/// How long an app page's pass lasts (`napp::page_pass`): longer than a page
-/// stays open between reloads. Each open gets a new one, and a reload of a
-/// page whose pass is gone (the bot restarted) gets a new one too
+/// How long an app page's pass (`napp::page_pass`) outlives its last use:
+/// the page's requests keep it, and so does its open socket
+/// (`ws::handle_app_ws`). Each open gets a new one, and a reload of a page
+/// whose pass is gone (left unused, or the bot restarted) gets a new one too
 /// ([`with_pass`]).
-pub const PAGE_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+pub const PAGE_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// The Content-Security-Policy every file of an app's page goes out with:
 /// a sandbox without `allow-same-origin`, so the page runs in an origin of
@@ -346,7 +347,7 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, uri: &
     // the owner's sign-in, and everything it asks for proves itself with
     // the pass.
     if is_html(&target) && !crate::middleware::app_view_admits(headers, agent_id) {
-        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_TTL);
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_IDLE);
         let mut r = Response::new(Body::empty());
         *r.status_mut() = StatusCode::SEE_OTHER;
         let replacing = crate::middleware::carried_path_credential(headers);
@@ -445,7 +446,7 @@ struct DesktopApp {
     /// folder scan alone never finds it (live 2026-10-05: "App not found"
     /// for Design Studio on the desktop).
     ui_dir: Option<PathBuf>,
-    /// The app's pass (`napp::page_pass`, [`PAGE_PASS_TTL`]): the one
+    /// The app's pass (`napp::page_pass`, [`PAGE_PASS_IDLE`]): the one
     /// credential the window's requests carry. The shell's proxy sends the
     /// page's calls on with it, never the install key, and the page reaches
     /// this server with it directly (its socket, a film it streams). Empty
@@ -466,7 +467,7 @@ pub async fn desktop_app(
     let store = &state.store;
     let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
     let is_app = matches!(store.get_agent(&agent_id), Ok(Some(a)) if a.is_app.unwrap_or(0) != 0);
-    let pass = if is_app { napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_TTL) } else { String::new() };
+    let pass = if is_app { napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_IDLE) } else { String::new() };
     axum::Json(DesktopApp {
         offers_publish: developer && store.app_developer_mode() && own_app(store, &agent_id).is_some(),
         developer_script: desktop_script(store, state.config.port, &agent_id, &pass),

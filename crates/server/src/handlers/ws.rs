@@ -224,7 +224,11 @@ pub async fn app_ws_handler(
     }
     match state.store.get_agent(&agent_id) {
         Ok(Some(agent)) if agent.is_app.unwrap_or(0) != 0 => {
-            ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state))
+            let pass = headers
+                .get(crate::middleware::APP_VIEW_PASS)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state, pass))
         }
         Ok(_) | Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
     }
@@ -278,7 +282,13 @@ pub(crate) fn is_app_session(agent_id: &str, key: &str) -> bool {
     key == page || key.strip_prefix(&page).is_some_and(|r| r.starts_with(':')) || key.strip_prefix(&format!("app:{agent_id}:")).is_some()
 }
 
-async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
+/// How often an open app socket keeps its page's pass
+/// (`apps::PAGE_PASS_IDLE`): well inside it.
+const APP_PASS_KEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// `pass`: the page's pass the socket opened with, kept while it is open;
+/// once it is gone (revoked), the socket closes.
+async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState, pass: Option<String>) {
     info!(agent = %agent_id, "app ws client connected");
     // Open while this page is: `app_reload` tells its employee whether a
     // view is there to reload.
@@ -300,8 +310,18 @@ async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
         return;
     }
 
+    let mut keep = tokio::time::interval(APP_PASS_KEEP_EVERY);
+    keep.tick().await;
     loop {
         tokio::select! {
+            _ = keep.tick() => {
+                if let Some(pass) = &pass
+                    && !napp::page_pass::admits(pass, &napp::page_pass::Scope::App(agent_id.clone()))
+                {
+                    debug!(agent = %agent_id, "app ws: its page's pass is gone");
+                    break;
+                }
+            }
             result = hub_rx.recv() => {
                 match result {
                     Ok(event) => {

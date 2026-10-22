@@ -15,7 +15,10 @@
 //!   workspace and below (`/api/v1/files/<folder>/…`): a document opened
 //!   from his files, which loads its pictures and styles from beside it.
 //!
-//! A pass lasts as long as it was minted for and is dropped when revoked.
+//! A pass lives while it is used: each request it opens keeps it for
+//! another `idle` (what it was minted with), so a page stays open as long
+//! as the owner uses it, and a pass left in a history or a log dies once its
+//! page is left. It is dropped at once when revoked.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -53,14 +56,21 @@ impl Scope {
     }
 }
 
-fn passes() -> &'static Mutex<HashMap<String, (Scope, Instant)>> {
-    static PASSES: std::sync::OnceLock<Mutex<HashMap<String, (Scope, Instant)>>> =
-        std::sync::OnceLock::new();
+/// A live pass: what it opens, until when, and how long each use keeps it.
+struct Held {
+    scope: Scope,
+    until: Instant,
+    idle: Duration,
+}
+
+fn passes() -> &'static Mutex<HashMap<String, Held>> {
+    static PASSES: std::sync::OnceLock<Mutex<HashMap<String, Held>>> = std::sync::OnceLock::new();
     PASSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// A pass that opens `scope` for `ttl`.
-pub fn grant(scope: Scope, ttl: Duration) -> String {
+/// A pass that opens `scope`, kept while it is used: it dies `idle` after
+/// the last request it opened.
+pub fn grant(scope: Scope, idle: Duration) -> String {
     let pass = format!(
         "av{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -68,16 +78,23 @@ pub fn grant(scope: Scope, ttl: Duration) -> String {
     );
     let mut map = passes().lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
-    map.retain(|_, (_, until)| *until > now);
-    map.insert(pass.clone(), (scope, now + ttl));
+    map.retain(|_, held| held.until > now);
+    map.insert(pass.clone(), Held { scope, until: now + idle, idle });
     pass
 }
 
-/// Whether `pass` is live and opens `asked`.
+/// Whether `pass` is live and opens `asked`; a pass that does is kept for
+/// another of its `idle`.
 pub fn admits(pass: &str, asked: &Scope) -> bool {
-    let map = passes().lock().unwrap_or_else(|p| p.into_inner());
-    map.get(pass)
-        .is_some_and(|(scope, until)| *until > Instant::now() && scope.opens(asked))
+    let mut map = passes().lock().unwrap_or_else(|p| p.into_inner());
+    let now = Instant::now();
+    match map.get_mut(pass) {
+        Some(held) if held.until > now && held.scope.opens(asked) => {
+            held.until = now + held.idle;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Drop a pass before it runs out.
@@ -132,6 +149,15 @@ mod tests {
         assert!(!admits(&pass, &app("app-1")));
         let brief = grant(app("app-1"), Duration::from_millis(0));
         assert!(!admits(&brief, &app("app-1")), "an expired pass admits nothing");
+
+        // Each use keeps it for another idle; left unused, it dies.
+        let used = grant(app("app-1"), Duration::from_millis(300));
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(admits(&used, &app("app-1")), "kept while used");
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!admits(&used, &app("app-1")), "left unused, it dies");
 
         assert_eq!(app_of_path("/apps/app-1/ui/index.html"), Some("app-1"));
         assert_eq!(app_of_path("/api/v1/apps/app-1/storage/k"), Some("app-1"));

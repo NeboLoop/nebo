@@ -474,8 +474,9 @@ pub async fn serve_file(
     Ok(stream_file(&canonical, content_type_for(&canonical), request).await)
 }
 
-/// How long a document's folder pass lasts: as long as a page stays open.
-const DOCUMENT_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+/// How long a document's folder pass outlives its last use: its page loads
+/// what is beside it as it opens, and a reload gets a new one.
+const DOCUMENT_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Whether the request carried a live pass for the folder `rel` is in.
 fn opened_with_pass(request: &axum::extract::Request, rel: &str) -> bool {
@@ -500,7 +501,7 @@ fn document_folder(rel: &str) -> Option<&str> {
 /// gone with a restart) is replaced.
 fn with_folder_pass(request: &axum::extract::Request, rel: &str) -> axum::response::Response {
     let folder = document_folder(rel).unwrap_or_default().to_string();
-    let pass = napp::page_pass::grant(napp::page_pass::Scope::Folder(folder), DOCUMENT_PASS_TTL);
+    let pass = napp::page_pass::grant(napp::page_pass::Scope::Folder(folder), DOCUMENT_PASS_IDLE);
     let uri = request
         .extensions()
         .get::<axum::extract::OriginalUri>()
