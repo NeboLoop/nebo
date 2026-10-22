@@ -161,7 +161,7 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     // runs with an opaque origin and cannot reach the API or storage.
     let is_served_file = request.uri().path().starts_with("/files/")
         || request.uri().path().starts_with("/api/v1/files/");
-    let app_route = app_route_rest(request.uri().path());
+    let app_route = app_route_rest(request.uri().path()).map(str::to_string);
     let mut response = next.run(request).await;
 
     let is_html = response
@@ -180,7 +180,7 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| ["text/html", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/xml"].iter().any(|t| v.starts_with(t)));
 
-    let csp = if app_route.is_some_and(|rest| rest.starts_with("files/")) {
+    let csp = if app_route.as_deref().is_some_and(|rest| rest.starts_with("files/")) {
         // An owner's file an app page reads (`nebo.files`): a picture or a
         // film it shows. Opened as a page (an HTML or SVG file), it runs in
         // a sandbox, an origin of its own: never Nebo's, never the app's.
