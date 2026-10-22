@@ -108,13 +108,17 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     let picture = home.join("secret.png");
     std::fs::write(&picture, PNG).unwrap();
 
-    let script: Script = Arc::new(|purpose, messages| {
+    // The tool the employee calls for MARK-TOOL: one it was offered.
+    let tool: Arc<Mutex<String>> = Arc::default();
+    let offered = tool.clone();
+    let script: Script = Arc::new(move |purpose, messages| {
         if !main_call(purpose) {
             return Reply::Text("ok");
         }
         let last = messages.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
         if last.contains("MARK-TOOL") && !has_result(messages) {
-            Reply::Call(vec![("bot", json!({ "resource": "memory", "action": "search", "query": "deals" }))])
+            let name: &'static str = Box::leak(offered.lock().unwrap().clone().into_boxed_str());
+            Reply::Call(vec![(name, json!({}))])
         } else if last.contains("MARK-SLOW") {
             std::thread::sleep(std::time::Duration::from_secs(4));
             Reply::Text("SLOW-REPLY")
@@ -147,6 +151,7 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
     });
 
     // An employee the owner turned off stays off: the page can't turn it on.
+    assert_eq!(server.post_json(&format!("/agents/{APP}/deactivate"), &json!({})).await.status(), 200);
     let (status, body) = page.say(APP, json!({ "message": "hi" })).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(body.contains("turned off"), "{body}");
@@ -207,10 +212,28 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
 
     // What the employee does on the way (a tool call and its result) stays
     // with the owner: the page hears the words alone.
+    let first_tool = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(p, _)| main_call(p))
+        .and_then(|(_, b)| b["tools"].as_array()?.first()?["function"]["name"].as_str().map(str::to_string))
+        .expect("the employee is offered a tool");
+    *tool.lock().unwrap() = first_tool;
     let before = page.replies(APP, None, 1).await.len();
     assert_eq!(page.say(APP, json!({ "message": "MARK-TOOL look it up" })).await.0, StatusCode::OK);
     page.replies(APP, None, before + 1).await;
-    assert!(calls.lock().unwrap().iter().any(|(_, b)| has_result(b["messages"].as_array().map(Vec::as_slice).unwrap_or(&[]))), "the tool ran");
+    let tool_ran = calls.lock().unwrap().iter().any(|(p, b)| main_call(p) && has_result(b["messages"].as_array().map(Vec::as_slice).unwrap_or(&[])));
+    let last_roles: Vec<String> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .take(3)
+        .map(|(p, b)| format!("{p}: {}", b["messages"].as_array().map(|m| m.iter().map(|x| x["role"].as_str().unwrap_or("?").to_string()).collect::<Vec<_>>().join(",")).unwrap_or_default()))
+        .collect();
+    assert!(tool_ran, "the tool ran: {last_roles:?}");
 
     // One message at a time: while a turn runs, another send and starting
     // over are refused, never queued without their own context.
