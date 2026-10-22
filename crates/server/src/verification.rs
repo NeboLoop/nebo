@@ -60,9 +60,7 @@ fn phase(v: &db::Verification, rounds: &[db::VerificationRound]) -> &'static str
 /// name, any other folder by its own.
 fn project(store: &db::Store, v: &db::Verification) -> String {
     if v.work_kind == "app_pages"
-        && let Some(app) = store.list_agents(1_000, 0).unwrap_or_default().into_iter().find(|a| {
-            tools::app_dev::served_dir(a).is_some_and(|dir| std::path::Path::new(dir) == std::path::Path::new(&v.project_root))
-        })
+        && let Ok(Some(app)) = store.app_served_from(&v.project_root)
     {
         return app.name;
     }
@@ -504,5 +502,44 @@ mod tests {
         let v = view(&s, s.get_verification("v-old").unwrap().unwrap());
         let states: Vec<&str> = v.history[0].reviewers.iter().map(|r| r.state.as_str()).collect();
         assert_eq!(states, ["clean", "found", "failed"]);
+    }
+
+    /// A round that could not be reviewed at all (its reviewers' copy could
+    /// not be made) shows each reviewer as failed, as the engine records
+    /// them, never "no issues".
+    #[test]
+    fn a_round_nobody_could_review_shows_each_reviewer_failed() {
+        let s = store();
+        s.create_verification(&db::NewVerification { id: "v-none", session_key: "agent:dev:web", isolation: "none", ..Default::default() }, 1).unwrap();
+        s.put_verification_round(&db::VerificationRound {
+            verification_id: "v-none".into(),
+            round: 1,
+            kind: "review".into(),
+            lenses: serde_json::json!(["correctness", "security"]),
+            outcome: r#"{"code":"review_incomplete"}"#.into(),
+            detail: serde_json::json!({ "reviewers": { "correctness": "failed", "security": "failed" } }),
+            started_at: 2,
+            finished_at: Some(3),
+            ..Default::default()
+        })
+        .unwrap();
+        let v = view(&s, s.get_verification("v-none").unwrap().unwrap());
+        let states: Vec<&str> = v.history[0].reviewers.iter().map(|r| r.state.as_str()).collect();
+        assert_eq!(states, ["failed", "failed"]);
+    }
+
+    /// An app's pages go by the app's name, found by the folder they are
+    /// served from.
+    #[test]
+    fn an_apps_pages_go_by_the_apps_name() {
+        let s = store();
+        s.create_agent("app-1", None, "Media Studio", "", "", "", None, None).unwrap();
+        s.set_agent_app_fields("app-1", true, Some("/agents/Media Studio/ui"), None, None).unwrap();
+        s.create_verification(
+            &db::NewVerification { id: "v-app", session_key: "agent:dev:web", work_kind: "app_pages", isolation: "none", project_root: "/agents/Media Studio/ui", ..Default::default() },
+            1,
+        )
+        .unwrap();
+        assert_eq!(view(&s, s.get_verification("v-app").unwrap().unwrap()).badge.project, "Media Studio");
     }
 }
