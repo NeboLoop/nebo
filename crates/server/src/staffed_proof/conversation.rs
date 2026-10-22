@@ -4359,6 +4359,9 @@ async fn a_conversation_runs_in_the_mode_picked_for_it() {
 
     rig.owner_writes(&key, &clerk, None, "MARK-CM0 hello").await;
     assert_eq!(mode_seen(&rig, &seen, "MARK-CM0", "Proof CM Clerk").await, "Automatic", "no pick: the employee's own");
+    // Input that lands while a turn runs is heard by that turn, in its mode:
+    // each turn here starts once the one before it is over.
+    rig.until(20, "the turn is over", || !rig.busy(&key)).await;
     let sessions = nebo.state.harness.sessions();
     let chat_id = sessions.active_chat_id(&sessions.resolve_session_id_by_key(&key).unwrap());
     let view = nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await;
@@ -4387,6 +4390,7 @@ async fn a_conversation_runs_in_the_mode_picked_for_it() {
     assert_eq!(nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await["mode"], "plan", "a fresh read finds it");
     rig.owner_writes(&key, &clerk, None, "MARK-CM1 plan this").await;
     assert_eq!(mode_seen(&rig, &seen, "MARK-CM1", "Proof CM Clerk").await, "Plan");
+    rig.until(20, "the turn is over", || !rig.busy(&key)).await;
 
     // A turn the conversation did not start runs in the employee's own mode.
     let heartbeat = crate::chat_dispatch::ChatConfig {
@@ -4423,11 +4427,13 @@ async fn a_conversation_runs_in_the_mode_picked_for_it() {
     };
     crate::chat_dispatch::run_chat(&nebo.state, heartbeat).await;
     assert_eq!(mode_seen(&rig, &seen, "MARK-CM2", "Proof CM Clerk").await, "Automatic", "unattended work ignores the conversation's mode");
+    rig.until(20, "the turn is over", || !rig.busy(&key)).await;
 
     // Full Access, looser than the employee's own, holds this conversation.
     nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "full_access" })).await;
     rig.owner_writes(&key, &clerk, None, "MARK-CM3 go").await;
     assert_eq!(mode_seen(&rig, &seen, "MARK-CM3", "Proof CM Clerk").await, "Full Access");
+    rig.until(20, "the turn is over", || !rig.busy(&key)).await;
 
     // None picked: the employee's own again. Its own setting never moved.
     let cleared = nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": null })).await;
