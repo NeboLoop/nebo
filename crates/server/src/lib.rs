@@ -2484,7 +2484,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // old file as deleted.
     if let (Ok(dir), Ok(workspace), Ok(files)) = (config::data_dir(), config::workspace_dir(), config::files_dir()) {
         harness = harness.with_workspace_history(workspace.clone(), files.clone());
-        let moved_mark = dir.join(".workspace-moved");
+        let moved_mark = dir.join(migration::WORKSPACE_MOVED_MARK);
         if workspace != files && !moved_mark.exists() {
             let (store, files, workspace) = (store.clone(), files.clone(), workspace.clone());
             match tokio::task::spawn_blocking(move || tools::workspace_history::move_workspace(&store, &files, &workspace).map(|m| (m, workspace))).await {

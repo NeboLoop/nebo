@@ -86,7 +86,13 @@ pub fn move_media_projects(store: &db::Store, workspace: &Path, studio: &Path, h
     // that something has taken since is chosen again.
     let mut plan: Vec<(String, String)> =
         std::fs::read(&journal).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    plan.retain(|(from, to)| !(names.contains(from) && taken(&studio.join(to))));
+    // A link this move already made there (cut short before the old one
+    // went) is its own, not a taken name.
+    let ours = |from: &str, to: &str| {
+        std::fs::read_link(studio.join(to)).is_ok()
+            && std::fs::canonicalize(studio.join(to)).ok().is_some_and(|t| std::fs::canonicalize(old.join(from)).ok() == Some(t))
+    };
+    plan.retain(|(from, to)| !(names.contains(from) && taken(&studio.join(to)) && !ours(from, to)));
     let unplanned: Vec<String> = names.iter().filter(|n| !plan.iter().any(|(f, _)| f == *n)).cloned().collect();
     for name in &unplanned {
         let is_dir = old.join(name).is_dir();
@@ -150,6 +156,10 @@ fn move_entry(from: &Path, to: &Path) -> bool {
     if let Ok(target) = std::fs::read_link(from)
         && target.is_relative()
     {
+        // Made already by a move cut short: only the old link is left to go.
+        if std::fs::read_link(to).is_ok() && std::fs::canonicalize(to).ok().is_some_and(|t| std::fs::canonicalize(from).ok() == Some(t)) {
+            return std::fs::remove_file(from).is_ok();
+        }
         let Some(parent) = from.parent() else { return false };
         // Where it points, as a full path that needs nothing of the old
         // folder (which goes): resolved, or spelled out when it dangles.
@@ -473,6 +483,25 @@ mod tests {
         let done = h.run();
         assert_eq!(done.moved, vec![("shoot".into(), "shoot".into())]);
         assert!(h.studio.join("shoot/project.json").exists(), "the link still reaches the project");
+        assert!(!h.old.exists());
+    }
+
+    /// A linked project's move cut short after its new link was made: the
+    /// next start only removes the old link, never keeps a second copy.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_project_cut_short_is_not_doubled() {
+        let h = Home::new();
+        fs::create_dir_all(h.home.join("Footage/shoot")).unwrap();
+        fs::create_dir_all(&h.old).unwrap();
+        fs::create_dir_all(&h.studio).unwrap();
+        std::os::unix::fs::symlink("../../../Footage/shoot", h.old.join("shoot")).unwrap();
+        fs::write(h.old.join(JOURNAL), serde_json::to_vec(&vec![("shoot", "shoot")]).unwrap()).unwrap();
+        std::os::unix::fs::symlink(h.home.join("Footage/shoot"), h.studio.join("shoot")).unwrap();
+
+        let done = h.run();
+        assert_eq!(done.moved, vec![("shoot".into(), "shoot".into())]);
+        assert_eq!(fs::read_dir(&h.studio).unwrap().count(), 1, "no shoot-2");
         assert!(!h.old.exists());
     }
 

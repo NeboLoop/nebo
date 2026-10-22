@@ -1063,25 +1063,39 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// writing new work back into the old folder.
 const MEDIA_STUDIO_READER: semver::Version = semver::Version::new(0, 6, 1);
 
+/// Written in the Nebo root once the owner's work has been copied out of the
+/// file store into his workspace (`tools::workspace_history::move_workspace`).
+pub const WORKSPACE_MOVED_MARK: &str = ".workspace-moved";
+
 /// The owner's Nebo Media projects into the Media Studio folder
-/// (`tools::workspace_history::move_media_projects`), once the Nebo Media
-/// installed here reads them there, or none is installed (the next one
-/// installed is current). Called at startup and whenever Nebo Media is
-/// installed or updated; once the old folder is gone it does nothing.
+/// (`tools::workspace_history::move_media_projects`), once:
+/// - the Nebo Media here reads them there, or none is installed (the next
+///   one installed is current); one installed whose version can't be read
+///   holds the move;
+/// - the workspace move out of the file store is done, so no project is
+///   copied back into `Media/Projects` after it.
+///
+/// Called at startup and whenever Nebo Media is installed or updated; once
+/// the old folder is gone it does nothing.
 pub fn move_media_projects(store: &db::Store, plugins: &napp::plugin::PluginStore) {
-    if let Some(m) = plugins.get_manifest(tools::media_tool::MEDIA_PLUGIN) {
-        match semver::Version::parse(&m.version) {
-            Ok(v) if v >= MEDIA_STUDIO_READER => {}
-            _ => {
-                debug!(version = %m.version, "Nebo Media still reads Media/Projects; its projects stay until it updates");
-                return;
-            }
+    let slug = tools::media_tool::MEDIA_PLUGIN;
+    let installed = plugins.plugins_dir().join(slug).exists() || plugins.user_plugins_dir().join(slug).exists();
+    if installed {
+        let version = plugins.get_manifest(slug).and_then(|m| semver::Version::parse(&m.version).ok());
+        if !version.as_ref().is_some_and(|v| *v >= MEDIA_STUDIO_READER) {
+            debug!(?version, "Nebo Media does not read the Media Studio folder yet; its projects stay until it updates");
+            return;
         }
     }
     let studio = config::WorkspaceFolder::MediaStudio;
-    let (Ok(workspace), Ok(to)) = (config::workspace_dir(), config::workspace_folder(studio)) else {
+    let (Ok(dir), Ok(workspace), Ok(files), Ok(to)) =
+        (config::data_dir(), config::workspace_dir(), config::files_dir(), config::workspace_folder(studio))
+    else {
         return;
     };
+    if workspace != files && !dir.join(WORKSPACE_MOVED_MARK).exists() {
+        return;
+    }
     let done = tools::workspace_history::move_media_projects(store, &workspace, &to, dirs::home_dir().as_deref());
     for (from, to_name) in &done.moved {
         if from == to_name {
@@ -1383,4 +1397,3 @@ mod tests {
         assert_eq!(text(&old.join("token.json")), "secret", "the plugin keeps its file");
     }
 }
-
