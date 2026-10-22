@@ -19,11 +19,19 @@
 //! this one's employees' (2026-09-27: a run whose `NEBO_HOME` was fenced
 //! read a second Nebo's `settings.json` under `~/.local/share/nebo`).
 //!
+//! The working copies (`config::copies_dir`) are not Nebo's folder: an
+//! employee's own turn works in any of them. A fenced run (an isolated
+//! helper in its copy, a reviewer in its verification's folder,
+//! `Grant::run_fence`) reaches only its own there: its fence's folders, and
+//! read and never changed, what its grant says it only reads (a reviewer's
+//! copy of the change and its patch). Another helper's copy and another
+//! verification's folder are closed to it like Nebo's own files.
+//!
 //! Three doors apply this one fence: the file tools (the safeguard refuses a
 //! path it closes), the text of a command (the safeguard refuses one that
 //! names such a path), and the command itself (`confine` runs it where those
-//! paths can't be read or changed at all, and the plugins' skills can't be
-//! changed).
+//! paths can't be read or changed at all, and the plugins' skills and what a
+//! fenced run only reads can't be changed).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -33,8 +41,6 @@ use std::path::{Component, Path, PathBuf};
 const OPEN: &[&str] = &[
     // The workspace: the documents it writes and the files it is sent.
     "files",
-    // The project copies its isolated helpers work in.
-    "worktrees",
     // Deep research runs and their reports.
     "research",
     // The company and industry layers, always editable.
@@ -97,6 +103,54 @@ pub struct NeboFiles {
     others: Vec<(PathBuf, PathBuf)>,
     /// The open parts of this Nebo's folder, relative to it.
     open: Vec<PathBuf>,
+    /// The working copies, for a fenced run: `None` when every copy is
+    /// open to the run.
+    copies: Option<Copies>,
+}
+
+/// The working copies, fenced for a run that works in some of them only.
+/// Every path as named and as resolved.
+#[derive(Debug, Clone)]
+pub struct Copies {
+    /// The working-copy root.
+    pub roots: Vec<PathBuf>,
+    /// What the run works in there.
+    pub own: Vec<PathBuf>,
+    /// What it reads there and never changes.
+    pub reads: Vec<PathBuf>,
+}
+
+impl Copies {
+    /// The working copies under `root` for a run fenced to `fence`, of
+    /// which it only reads `reads`.
+    pub fn new(root: &Path, fence: &[PathBuf], reads: &[PathBuf]) -> Self {
+        let both = |p: &Path| {
+            let named = lexical(&absolute(p, None));
+            let real = resolved(&named);
+            if real == named { vec![named] } else { vec![named, real] }
+        };
+        let reads: Vec<PathBuf> = reads.iter().flat_map(|p| both(p)).collect();
+        let own: Vec<PathBuf> =
+            fence.iter().flat_map(|p| both(p)).filter(|p| !reads.iter().any(|r| p.starts_with(r))).collect();
+        Self { roots: both(root), own, reads }
+    }
+
+    fn closes(&self, path: &Path, access: Access) -> bool {
+        self.roots.iter().any(|r| path.starts_with(r))
+            && !self.own.iter().any(|o| path.starts_with(o))
+            && !(access == Access::Read && self.reads.iter().any(|r| path.starts_with(r)))
+    }
+
+    /// Every path as the operating system checks it: resolved.
+    pub fn real(&self) -> Self {
+        let real = |v: &[PathBuf]| {
+            let mut out: Vec<PathBuf> = v.iter().map(|p| resolved(p)).collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        Self { roots: real(&self.roots), own: real(&self.own), reads: real(&self.reads) }
+    }
 }
 
 impl NeboFiles {
@@ -107,7 +161,26 @@ impl NeboFiles {
     pub fn of(ctx: &crate::origin::ToolContext) -> Option<Self> {
         let root = config::data_dir().ok()?;
         let session = crate::checkpoint::session_dir(&ctx.session_id);
-        Some(Self::at(&root, &config::nebo_roots(), &session, ctx.trusted_plugin_env))
+        let mut fence = Self::at(&root, &config::nebo_roots(), &session, ctx.trusted_plugin_env);
+        // A fenced run reaches only its own of the working copies.
+        if let Some((own, reads)) = ctx.grant.as_deref().and_then(|g| g.run_fence())
+            && let Ok(copies) = config::copies_dir()
+        {
+            fence.copies = Some(Copies::new(&copies, own, reads));
+        }
+        Some(fence)
+    }
+
+    /// This fence with the working copies fenced as `copies` says.
+    pub fn with_copies(mut self, copies: Copies) -> Self {
+        self.copies = Some(copies);
+        self
+    }
+
+    /// The working copies as fenced for this run, `None` when all are open
+    /// to it.
+    pub fn copies(&self) -> Option<&Copies> {
+        self.copies.as_ref()
     }
 
     /// The fence of the folder `root`, with every other folder of `roots`
@@ -134,7 +207,7 @@ impl NeboFiles {
         {
             open.push(rel.to_path_buf());
         }
-        Self { root, real, others, open }
+        Self { root, real, others, open, copies: None }
     }
 
     /// Every Nebo folder, with its links resolved: this one's first.
@@ -185,7 +258,8 @@ impl NeboFiles {
     }
 
     fn closed(&self, path: &Path, access: Access) -> bool {
-        self.fenced().any(|root| path.starts_with(root)) && !self.opens(path, access)
+        (self.fenced().any(|root| path.starts_with(root)) && !self.opens(path, access))
+            || self.copies.as_ref().is_some_and(|c| c.closes(path, access))
     }
 
     /// Every Nebo folder, as named and as resolved.
@@ -230,7 +304,15 @@ impl NeboFiles {
     fn spellings(&self) -> Vec<(String, PathBuf)> {
         let variables = variables();
         let mut out: Vec<(String, PathBuf)> = Vec::new();
-        for root in self.fenced() {
+        // The working copies' root, for a fenced run, also by the name the
+        // system gives it a link to (`/tmp` for macOS's `/private/tmp`).
+        let copies: Vec<PathBuf> = self.copies.iter().flat_map(|c| c.roots.iter().cloned()).collect();
+        for root in &copies {
+            if let Ok(linked) = root.strip_prefix("/private") {
+                out.push((Path::new("/").join(linked).to_string_lossy().into_owned(), root.clone()));
+            }
+        }
+        for root in self.fenced().chain(copies.iter()) {
             let s = root.to_string_lossy().into_owned();
             let mut forms = vec![s.clone()];
             for (var, value) in &variables {
@@ -458,10 +540,12 @@ mod tests {
     fn the_folder_is_closed_but_for_the_parts_an_employee_works_in() {
         let (_d, root) = home();
         let fence = fence(&root);
-        for closed in ["settings.json", "logs/nebo.log", "data/nebo.db", "sessions/s2/x", "nebo/plugin-profiles/a", "appdata/plugins/p/db", "bot_id", ""] {
+        // The working copies live with the system's temporary files now
+        // (`config::copies_dir`): a folder of them in Nebo's is Nebo's own.
+        for closed in ["settings.json", "logs/nebo.log", "data/nebo.db", "sessions/s2/x", "nebo/plugin-profiles/a", "appdata/plugins/p/db", "bot_id", "worktrees/w/src/main.rs", "verify/v-1/review-r1/a.rs", ""] {
             assert!(fence.closes(&root.join(closed), None, Read), "{closed} must be closed");
         }
-        for open in ["files/report.md", "files", "worktrees/w/src/main.rs", "sessions/s1/tool-results/r.txt", "nebo/skills/x/SKILL.md", "packs/acme/COMPANY.md"] {
+        for open in ["files/report.md", "files", "sessions/s1/tool-results/r.txt", "nebo/skills/x/SKILL.md", "packs/acme/COMPANY.md"] {
             assert!(!fence.closes(&root.join(open), None, Write), "{open} must be open");
         }
         assert!(!fence.closes(Path::new("/etc/hosts"), None, Write), "outside the folder is not the fence's");
@@ -627,6 +711,7 @@ mod tests {
                 "settings.json",
                 "user/plugins/ledger/0.1.0/ledger",
                 "user/plugins/ledger/0.1.0/plugin.json",
+                "worktrees",
             ]
         );
         assert!(fence.closed_entries().contains(&std::fs::canonicalize(&other).unwrap()), "another Nebo's folder, whole");
@@ -650,5 +735,78 @@ mod tests {
         let s = spaced.to_string_lossy();
         assert!(fence.named_in(&format!("cat {}/settings.json", s.replace(' ', "\\ ")), None).is_some(), "escaped spaces");
         assert!(fence.named_in(&format!("cat \"{s}/files/a.md\""), None).is_none());
+    }
+
+    /// The working copies are any employee's own turn's to work in, and a
+    /// fenced run's only where its fence is: an isolated helper reaches its
+    /// own copy and no other; a reviewer reads its round's copy and patch
+    /// and changes neither, builds in its own folder, and reaches no other
+    /// verification's. However the path is spelled, through a link or
+    /// `/tmp` included.
+    #[test]
+    fn a_fenced_run_reaches_only_its_own_working_copies() {
+        let (d, root) = home();
+        let copies = d.path().join("nebo-copies");
+        let helper = copies.join("worktrees/site/sa-1");
+        let other = copies.join("worktrees/site/sa-2");
+        let round = copies.join("verify/v-1/round-1");
+        let build = copies.join("verify/v-1/build-security");
+        let theirs = copies.join("verify/v-2/round-1");
+        for dir in [&helper, &other, &round.join("project"), &build, &theirs.join("project")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(round.join("change.patch"), "+x").unwrap();
+
+        // An employee's own turn: no fence, every copy is its to work in.
+        let open = fence(&root);
+        for p in [&helper, &other, &round, &theirs] {
+            assert!(!open.closes(&p.join("a.rs"), None, Write), "{}", p.display());
+        }
+
+        let isolated = fence(&root).with_copies(Copies::new(&copies, std::slice::from_ref(&helper), &[]));
+        assert!(!isolated.closes(&helper.join("src/a.rs"), None, Write), "its own copy");
+        for closed in [other.join("a.rs"), round.join("change.patch"), copies.clone(), copies.join("build/abc")] {
+            assert!(isolated.closes(&closed, None, Read), "{}", closed.display());
+        }
+
+        let reviewer = fence(&root).with_copies(Copies::new(&copies, &[round.join("project"), build.clone()], std::slice::from_ref(&round)));
+        for read in [round.join("project/src/a.rs"), round.join("change.patch")] {
+            assert!(!reviewer.closes(&read, None, Read), "{} is read", read.display());
+            assert!(reviewer.closes(&read, None, Write), "{} is never changed", read.display());
+        }
+        assert!(!reviewer.closes(&build.join("debug/x"), None, Write), "its own build folder");
+        for closed in [theirs.join("change.patch"), copies.join("verify/v-1/build-data/x"), helper.join("a.rs")] {
+            assert!(reviewer.closes(&closed, None, Read), "{}", closed.display());
+        }
+        assert!(reviewer.closes(&round.join("project/../../../v-2/round-1/change.patch"), None, Read), "..");
+        // Nebo's own folder stays exactly as closed.
+        assert!(reviewer.closes(&root.join("settings.json"), None, Read));
+        assert!(reviewer.closes(&root.join("verify/v-1/shadow.git/config"), None, Read));
+
+        // A command's text: its own copy, patch and build folder named
+        // freely, another verification's and the root refused.
+        let r = round.to_string_lossy();
+        assert_eq!(reviewer.named_in(&format!("cat '{r}/change.patch' && grep -rn x '{r}/project'"), None), None);
+        assert_eq!(reviewer.named_in(&format!("CARGO_TARGET_DIR={} cargo test", build.display()), None), None);
+        assert!(reviewer.named_in(&format!("cat {}/change.patch", theirs.display()), None).is_some());
+        assert!(reviewer.named_in(&format!("ls {}", copies.display()), None).is_some());
+        #[cfg(unix)]
+        {
+            let link = d.path().join("link-to-copies");
+            std::os::unix::fs::symlink(&copies, &link).unwrap();
+            assert!(reviewer.closes(&link.join("verify/v-2/round-1/change.patch"), None, Read), "through a link");
+            assert!(!reviewer.closes(&link.join("verify/v-1/round-1/change.patch"), None, Read));
+        }
+    }
+
+    /// macOS names its shared temporary folder `/private/tmp` and links
+    /// `/tmp` to it: a command naming the root through `/tmp` is found.
+    #[test]
+    fn a_command_naming_the_copies_through_tmp_is_found() {
+        let (_d, root) = home();
+        let copies = PathBuf::from("/private/tmp/nebo-fence-proof/copies");
+        let reviewer = fence(&root).with_copies(Copies::new(&copies, &[copies.join("verify/v-1/build-data")], &[copies.join("verify/v-1/round-1")]));
+        assert!(reviewer.named_in("cat /tmp/nebo-fence-proof/copies/verify/v-2/round-1/change.patch", None).is_some());
+        assert!(reviewer.named_in("cat /tmp/nebo-fence-proof/copies/verify/v-1/round-1/change.patch", None).is_none());
     }
 }

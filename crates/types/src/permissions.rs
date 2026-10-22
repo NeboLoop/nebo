@@ -397,6 +397,10 @@ pub struct Grant {
     /// copy and nowhere else. File writes and shell outside are refused.
     #[serde(default)]
     pub fence: Option<Vec<PathBuf>>,
+    /// Of what a fenced run reaches, what it only reads and never changes:
+    /// a reviewer's copy of the change and its patch. Rides with `fence`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<PathBuf>,
     /// The mode everything this run starts is held to: the mode the owner
     /// picked for a conversation when it is stricter than the employee's
     /// own, carried on to the workflow runs, hand-offs and team posts the
@@ -683,7 +687,40 @@ impl Grant {
             ceiling: None,
             run_folders: Vec::new(),
             fence: None,
+            reads: Vec::new(),
             narrow: None,
+        }
+    }
+
+    /// The fence the run works under and what of it the run only reads:
+    /// its own, or else the nearest its ceilings carry (an isolated
+    /// helper's copy rides on the grant it runs under). `None`: the run is
+    /// not fenced.
+    pub fn run_fence(&self) -> Option<(&[PathBuf], &[PathBuf])> {
+        match &self.fence {
+            Some(fence) => Some((fence, &self.reads)),
+            None => self.ceiling.as_ref().and_then(|c| c.grant().run_fence()),
+        }
+    }
+
+    /// This grant with `dir` in the fence its run works under
+    /// ([`Grant::run_fence`]), for a step Nebo itself runs on the run's
+    /// behalf that writes there (the project's checks, into its build
+    /// folder). Unchanged when the run is not fenced.
+    pub fn with_fenced_folder(&self, dir: &std::path::Path) -> Grant {
+        let mut grant = self.clone();
+        if let Some(fence) = grant.fence_mut() {
+            fence.push(dir.to_path_buf());
+        }
+        grant
+    }
+
+    fn fence_mut(&mut self) -> Option<&mut Vec<PathBuf>> {
+        if self.fence.is_some() {
+            return self.fence.as_mut();
+        }
+        match self.ceiling.as_mut()? {
+            Ceiling::Parent { grant } | Ceiling::Creator { grant, .. } => grant.fence_mut(),
         }
     }
 }
@@ -770,5 +807,27 @@ mod tests {
                 assert_eq!(b.stricter(*a), want);
             }
         }
+    }
+
+    /// A helper's fence rides on the grant it runs under: the run's fence
+    /// is the nearest one up its ceilings, with what of it the run only
+    /// reads; a step Nebo runs for it (its checks) adds a folder to that
+    /// fence and no other.
+    #[test]
+    fn a_run_works_under_the_nearest_fence() {
+        let mut parent = Grant::new("dev", Mode::Automatic);
+        parent.fence = Some(vec!["/copies/round/project".into(), "/copies/build-data".into()]);
+        parent.reads = vec!["/copies/round".into()];
+        let mut run = Grant::new("dev", Mode::Automatic);
+        run.ceiling = Some(Ceiling::Parent { grant: Box::new(parent) });
+        let (fence, reads) = run.run_fence().unwrap();
+        assert_eq!(fence, [PathBuf::from("/copies/round/project"), PathBuf::from("/copies/build-data")]);
+        assert_eq!(reads, [PathBuf::from("/copies/round")]);
+        let checks = run.with_fenced_folder(std::path::Path::new("/copies/build/abc"));
+        assert_eq!(checks.run_fence().unwrap().0.last(), Some(&PathBuf::from("/copies/build/abc")));
+        assert_eq!(run.run_fence().unwrap().0.len(), 2, "the run's own grant is unchanged");
+        let open = Grant::new("dev", Mode::Automatic);
+        assert!(open.run_fence().is_none());
+        assert_eq!(open.with_fenced_folder(std::path::Path::new("/x")), open, "an unfenced run stays unfenced");
     }
 }

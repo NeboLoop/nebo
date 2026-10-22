@@ -473,6 +473,7 @@ pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissi
     }
     grant.ceiling = req.ceiling.cloned();
     grant.fence = None;
+    grant.reads = Vec::new();
     grant.run_folders = req.cwd.iter().map(std::path::PathBuf::from).collect();
     grant
 }

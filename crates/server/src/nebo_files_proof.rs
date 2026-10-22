@@ -128,13 +128,14 @@ async fn an_employee_never_reaches_nebo_own_files() {
     std::fs::write(&saved, "SAVED-result").unwrap();
     let r = nebo.tool(&ctx, "read_file", json!({ "path": saved.to_string_lossy() })).await;
     assert!(!r.is_error && r.content.contains("SAVED-result"), "its own saved result: {}", r.content);
-    let copy = home.join("worktrees/proof-copy");
+    let copy = agent::worktree::copies_root().unwrap().join("proof/proof-copy");
     std::fs::create_dir_all(&copy).unwrap();
     let r = nebo
         .tool(&ctx, "run_command", json!({ "command": "echo built > out.txt && cat out.txt", "cwd": copy.to_string_lossy(), "description": "Build in the copy" }))
         .await;
     assert!(!r.is_error && r.content.contains("built"), "a helper's copy: {}", r.content);
     assert!(Path::new(&copy.join("out.txt")).exists());
+    let _ = std::fs::remove_dir_all(copy.parent().unwrap());
 }
 
 /// `use-skill-files-readable`: in the v0.16.0 release proof `use_skill`

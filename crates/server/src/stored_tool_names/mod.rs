@@ -73,7 +73,7 @@ pub fn upgrade(store: &db::Store, data_dir: &Path) -> Result<Option<Report>, Neb
     for root in ["nebo", "user", "packs", "learned"] {
         files(&data_dir.join(root), &mut report);
     }
-    hooks(&project_folders(store, data_dir), &mut report);
+    hooks(&project_folders(store), &mut report);
     for c in &report.changes {
         info!(place = %c.place, before = %c.before, after = %c.after, "stored tool name moved");
     }
@@ -422,7 +422,7 @@ fn files(root: &Path, report: &mut Report) {
 /// The project folders Nebo knows: every folder rule, and the worktrees it
 /// made. A hooks file above one of them (up to its git root) is the one a
 /// call there reads.
-fn project_folders(store: &db::Store, data_dir: &Path) -> Vec<PathBuf> {
+fn project_folders(store: &db::Store) -> Vec<PathBuf> {
     let mut folders: BTreeSet<PathBuf> = BTreeSet::new();
     let mut scopes = vec![types::permissions::Scope::Company];
     if let Ok(agents) = store.list_agents(10_000, 0) {
@@ -435,7 +435,7 @@ fn project_folders(store: &db::Store, data_dir: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    if let Ok(entries) = std::fs::read_dir(data_dir.join("worktrees")) {
+    if let Ok(entries) = agent::worktree::copies_root().and_then(|c| std::fs::read_dir(c).map_err(|e| e.to_string())) {
         folders.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
     }
     folders.into_iter().collect()

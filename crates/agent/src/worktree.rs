@@ -28,6 +28,15 @@
 //! and re-tested on top of the one before; the first that does not land
 //! stops the set, and the copies not landed are kept.
 //!
+//! Copies live with the working copies (`config::copies_dir`), in the
+//! system's temporary folder, which the system may clear (macOS does at
+//! restart and for what sits unused for days). A copy's work is saved
+//! where it outlives that ([`save`]): a worktree's committed on its task
+//! branch, a scratch copy's in a shadow repository in Nebo's own folder.
+//! It is saved at the end of every turn that worked in it and before
+//! anything cleans it up, and a copy that is gone is made again from it on
+//! its next use ([`reattach`]), its work intact.
+//!
 //! House git rules hold throughout: no stash, no reset, no checkout of the
 //! owner's files, nothing forced. The owner's tree is only ever moved
 //! forward by a fast-forward.
@@ -407,15 +416,22 @@ pub async fn repo_root(dir: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(out))
 }
 
-/// Where copies live: outside the project, under Nebo's data dir, so the
-/// owner's folder (and `git status`) never shows them.
-fn worktrees_dir(root: &Path) -> PathBuf {
-    let base = config::data_dir().unwrap_or_else(|_| std::env::temp_dir());
+/// Where the copies of the project at `root` live: with the working
+/// copies (`config::copies_dir`), outside the project, so the owner's
+/// folder (and `git status`) never shows them.
+fn worktrees_dir(root: &Path) -> Result<PathBuf, String> {
     let name = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".into());
-    base.join("worktrees").join(name)
+    Ok(copies_root()?.join(name))
+}
+
+/// `<copies>/worktrees`, made (private) when the system cleared it: every
+/// copy is made under it, so nothing above a copy is ever made by anyone
+/// but `config::copies_dir`.
+pub fn copies_root() -> Result<PathBuf, String> {
+    config::copies_dir().map(|c| c.join("worktrees")).map_err(|e| format!("no folder for working copies: {e}"))
 }
 
 /// A task id is joined into a path and a branch name: one segment of
@@ -445,7 +461,7 @@ pub async fn create(workspace: &Path, task_id: &str) -> Result<Isolation, String
 /// branch back, its work on it, never a second branch or copy.
 pub async fn create_worktree(root: &Path, task_id: &str) -> Result<Worktree, String> {
     validate_task_id(task_id)?;
-    let dir = worktrees_dir(root);
+    let dir = worktrees_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(task_id);
     let branch = format!("nebo/{task_id}");
@@ -464,7 +480,8 @@ pub async fn create_worktree(root: &Path, task_id: &str) -> Result<Worktree, Str
 }
 
 /// A worktree's copy on disk again: as it is when it is still there, or
-/// checked out anew from its task branch when its work was put away there.
+/// checked out anew from its task branch when its work was put away there
+/// or the system cleared it (its work was saved there, [`save`]).
 async fn reattach_worktree(wt: Worktree) -> Result<Worktree, String> {
     if wt.path.join(".git").exists() {
         return Ok(wt);
@@ -472,6 +489,8 @@ async fn reattach_worktree(wt: Worktree) -> Result<Worktree, String> {
     if wt.path.exists() {
         return Err(format!("{} is in the way of {}'s copy", wt.path.display(), wt.branch));
     }
+    // The folders above it, made private again when they were cleared.
+    copies_root()?;
     // A worktree removed by hand leaves its registration behind.
     let _ = git(&wt.root, &["worktree", "prune"]).await;
     git(&wt.root, &["worktree", "add", wt.path.to_str().unwrap_or_default(), &wt.branch])
@@ -482,13 +501,93 @@ async fn reattach_worktree(wt: Worktree) -> Result<Worktree, String> {
 
 /// A held copy, ready to work in or land again: a worktree whose work was
 /// put away on its branch is checked out again; a scratch copy is where it
-/// was kept. `Err` when its work is gone.
+/// was kept. A copy the system cleared is made again from its saved work
+/// ([`save`]). `Err` when its work is gone.
 pub async fn reattach(iso: Isolation) -> Result<Isolation, String> {
+    present(&iso).await?;
+    Ok(iso)
+}
+
+/// Make a copy that is gone again from its saved work ([`save`]): a
+/// worktree from its task branch, a scratch copy from its saved snapshot.
+/// A copy still on disk is left as it is.
+async fn present(iso: &Isolation) -> Result<(), String> {
     match iso {
-        Isolation::Git(wt) => reattach_worktree(wt).await.map(Isolation::Git),
-        Isolation::Copy(c) if c.path.is_dir() => Ok(Isolation::Copy(c)),
-        Isolation::Copy(c) => Err(format!("its copy at {} is gone", c.path.display())),
+        Isolation::Git(wt) => reattach_worktree(wt.clone()).await.map(|_| ()),
+        Isolation::Copy(c) if c.path.is_dir() => Ok(()),
+        Isolation::Copy(c) => {
+            copies_root()?;
+            let shadow = saved_shadow(&c.path).await?;
+            let Some(saved) = shadow.kept(SAVED).await else {
+                return Err(format!("its copy at {} is gone, and none of its work was saved", c.path.display()));
+            };
+            shadow.export(&saved, &c.path).await.map_err(|e| format!("its copy at {} could not be made again: {e}", c.path.display()))?;
+            tracing::info!(path = %c.path.display(), "a cleared scratch copy was made again from its saved work");
+            Ok(())
+        }
     }
+}
+
+/// A scratch copy with nothing left of it: not on disk, and none of its
+/// work saved (its landing finished, or it was discarded). One the system
+/// cleared still has its saved work.
+pub fn nothing_left(c: &ScratchCopy) -> bool {
+    !c.path.exists() && !saved_dir(&c.path).exists()
+}
+
+/// The name a scratch copy's saved snapshot is kept under in its shadow.
+const SAVED: &str = "saved";
+
+/// Where a scratch copy's work is saved: a shadow repository over it in
+/// Nebo's own folder, where the system never clears it.
+fn saved_dir(copy: &Path) -> PathBuf {
+    config::data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("copies")
+        .join(format!("{:016x}.git", tools::checkpoint::fingerprint(copy.to_string_lossy().as_bytes())))
+}
+
+async fn saved_shadow(copy: &Path) -> Result<crate::harness::verify::shadow::Shadow, String> {
+    crate::harness::verify::shadow::Shadow::open(&saved_dir(copy), copy).await
+}
+
+/// Save a copy's work where it outlives the copy, which the system may
+/// clear: a worktree's is committed on its task branch (as Nebo, "Work in
+/// progress, saved"); a scratch copy's is snapshotted into its shadow in
+/// Nebo's own folder. Run at the end of every turn that worked in a copy
+/// and before anything cleans one up. A copy not on disk has nothing new
+/// to save. A worktree in the middle of a catch-up (a conflict being
+/// resolved) is left as it is: committing it would resolve the conflict
+/// without the builder's word.
+pub async fn save(iso: &Isolation) -> Result<(), String> {
+    match iso {
+        Isolation::Git(wt) => {
+            if !wt.path.join(".git").exists() {
+                return Ok(());
+            }
+            if rebasing(wt).await {
+                return Err(format!("{} is catching up with the project; it is saved when that ends", wt.path.display()));
+            }
+            commit_all(wt, "Work in progress, saved").await
+        }
+        Isolation::Copy(c) => {
+            if !c.path.is_dir() {
+                return Ok(());
+            }
+            let shadow = saved_shadow(&c.path).await?;
+            let now = shadow.snapshot().await?;
+            shadow.keep(SAVED, &now).await
+        }
+    }
+}
+
+/// Commit everything a worktree holds on its task branch, as Nebo.
+async fn commit_all(wt: &Worktree, message: &str) -> Result<(), String> {
+    git(&wt.path, &["add", "-A"]).await?;
+    if git(&wt.path, &["diff", "--cached", "--quiet"]).await.is_err() {
+        git_as_nebo(&wt.path, &["commit", "-q", "--no-verify", "-m", message]).await?;
+    }
+    Ok(())
 }
 
 /// Walk a folder: every regular file with its size. Symlinks are skipped
@@ -653,7 +752,7 @@ pub fn create_copy(workspace: &Path, task_id: &str) -> Result<ScratchCopy, Strin
             MAX_SCRATCH_BYTES as f64 / 1e9
         ));
     }
-    let path = worktrees_dir(&root).join(task_id);
+    let path = worktrees_dir(&root)?.join(task_id);
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
@@ -1601,12 +1700,22 @@ struct Step {
 
 const JOURNAL_SUFFIX: &str = ".nebo-landing.json";
 
+/// A copy's landing journal, in Nebo's own folder: a landing cut short
+/// is finished or put back from it at the next start, and the system
+/// clearing the copies must not take it.
 fn journal_path(c: &ScratchCopy) -> PathBuf {
-    c.path.with_file_name(format!("{}{JOURNAL_SUFFIX}", c.task_id))
+    landings_dir().join(format!("{:016x}{JOURNAL_SUFFIX}", tools::checkpoint::fingerprint(c.path.to_string_lossy().as_bytes())))
+}
+
+fn landings_dir() -> PathBuf {
+    config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("landings")
 }
 
 impl Journal {
     fn write(&self, at: &Path) -> Result<(), String> {
+        if let Some(dir) = at.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
         let tmp = at.with_extension("tmp");
         std::fs::write(&tmp, serde_json::to_vec(self).unwrap_or_default())
             .and_then(|_| std::fs::rename(&tmp, at))
@@ -1883,11 +1992,23 @@ pub async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<
     (last, MergeOutcome::Failed { error: "the project kept moving while the copy caught up; try again when it is quiet".into(), kept_at, branch })
 }
 
-/// A merged scratch copy has nothing left to keep; a failure to delete it is
-/// disk, not correctness, so it is logged and the stale sweep gets it later.
+/// A merged scratch copy has nothing left to keep, its saved work
+/// included; a failure to delete it is disk, not correctness, so it is
+/// logged and the stale sweep gets it later. The saved work goes first: a
+/// copy left without it is still on disk.
 fn remove_copy(path: &Path) {
+    remove_saved(path);
     if let Err(e) = std::fs::remove_dir_all(path) {
         warn!(path = %path.display(), error = %e, "scratch copy not removed; the stale sweep will retry");
+    }
+}
+
+fn remove_saved(copy: &Path) {
+    let saved = saved_dir(copy);
+    if let Err(e) = std::fs::remove_dir_all(&saved)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(path = %saved.display(), error = %e, "a scratch copy's saved work not removed");
     }
 }
 
@@ -1925,6 +2046,11 @@ pub async fn remove(wt: &Worktree, keep_branch: bool) -> Result<(), String> {
 /// it got: committed on its branch, staged, edited or new.
 pub async fn changed_files(iso: &Isolation) -> Vec<String> {
     match iso {
+        // Not on disk (put away, or cleared by the system): its work is on
+        // its branch.
+        Isolation::Git(wt) if !wt.path.join(".git").exists() => {
+            z_paths(&wt.root, &["diff", "-z", "--name-only", "--no-renames", &wt.base, &format!("refs/heads/{}", wt.branch)]).await
+        }
         Isolation::Git(wt) => {
             let mut files = z_paths(&wt.path, &["diff", "-z", "--name-only", "--no-renames", &wt.base]).await;
             for f in z_paths(&wt.path, &["ls-files", "-z", "--others", "--exclude-standard"]).await {
@@ -1934,7 +2060,14 @@ pub async fn changed_files(iso: &Isolation) -> Vec<String> {
             }
             files
         }
-        Isolation::Copy(c) => changes_of(c).map(|ch| ch.into_iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect()).unwrap_or_default(),
+        Isolation::Copy(c) => {
+            // Cleared by the system: made again from its saved work first,
+            // its changes are there, never nothing.
+            if let Err(e) = present(iso).await {
+                warn!(path = %c.path.display(), error = %e, "a scratch copy's work could not be read");
+            }
+            changes_of(c).map(|ch| ch.into_iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect()).unwrap_or_default()
+        }
     }
 }
 
@@ -1951,6 +2084,10 @@ pub async fn put_away(iso: &mut Isolation, message: &str) -> Option<String> {
         return None;
     }
     match iso {
+        // Already off the disk: its work is on its branch.
+        Isolation::Git(wt) if !wt.path.join(".git").exists() => {
+            Some(format!("its work is kept on branch {} in {}", wt.branch, wt.root.display()))
+        }
         Isolation::Git(wt) => {
             match shelve(wt, message).await {
                 Ok(()) => Some(format!("its work is kept on branch {} in {}", wt.branch, wt.root.display())),
@@ -1960,7 +2097,13 @@ pub async fn put_away(iso: &mut Isolation, message: &str) -> Option<String> {
                 }
             }
         }
-        Isolation::Copy(c) => Some(format!("its work is kept in its copy at {}", c.path.display())),
+        Isolation::Copy(c) => {
+            let kept = format!("its work is kept in its copy at {}", c.path.display());
+            if let Err(e) = save(iso).await {
+                warn!(path = %iso.path().display(), error = %e, "a scratch copy's work could not be saved");
+            }
+            Some(kept)
+        }
     }
 }
 
@@ -1991,8 +2134,8 @@ pub async fn shelve(wt: &mut Worktree, message: &str) -> Result<(), String> {
         wt.base = onto;
         wt.onto = None;
         wt.conflicted.clear();
-    } else if git(&wt.path, &["diff", "--cached", "--quiet"]).await.is_err() {
-        git_as_nebo(&wt.path, &["commit", "-q", "--no-verify", "-m", message]).await?;
+    } else {
+        commit_all(wt, message).await?;
     }
     remove(wt, true).await
 }
@@ -2025,24 +2168,30 @@ pub async fn discard(iso: &Isolation) -> Result<(), String> {
             }
             Ok(())
         }
-        Isolation::Copy(c) => match std::fs::remove_dir_all(&c.path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("remove {}: {e}", c.path.display())),
-        },
+        Isolation::Copy(c) => {
+            remove_saved(&c.path);
+            match std::fs::remove_dir_all(&c.path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("remove {}: {e}", c.path.display())),
+            }
+        }
     }
 }
 
-/// Sweep copies a crashed parent left behind under `<data_dir>/worktrees`.
+/// Finish or put back the landings a restart cut short ([`recover_landing`]),
+/// then sweep copies a crashed parent left behind under the working copies.
 /// Fail-closed: a worktree with uncommitted changes or
 /// commits not on any remote is kept; a scratch copy is always kept (there is
 /// no snapshot to compare against once the parent is gone) unless it is
 /// empty. Only `nebo/sa-*` branches are ever deleted. Returns what was removed.
 pub async fn cleanup_stale(cutoff_secs: u64) -> Vec<PathBuf> {
-    let base = match config::data_dir() {
-        Ok(d) => d.join("worktrees"),
-        Err(_) => return Vec::new(),
-    };
+    for journal in std::fs::read_dir(landings_dir()).into_iter().flatten().flatten() {
+        if journal.file_name().to_string_lossy().ends_with(JOURNAL_SUFFIX) {
+            recover_landing(&journal.path());
+        }
+    }
+    let Ok(base) = copies_root() else { return Vec::new() };
     let Ok(projects) = std::fs::read_dir(&base) else { return Vec::new() };
     let now = std::time::SystemTime::now();
     let mut removed = Vec::new();
@@ -2051,10 +2200,6 @@ pub async fn cleanup_stale(cutoff_secs: u64) -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(JOURNAL_SUFFIX) {
-                recover_landing(&path);
-                continue;
-            }
             let old = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -2090,7 +2235,10 @@ pub async fn cleanup_stale(cutoff_secs: u64) -> Vec<PathBuf> {
                 }
             } else {
                 let empty = walk(&path).map(|(f, _)| f.is_empty()).unwrap_or(false);
-                if empty && std::fs::remove_dir_all(&path).is_ok() {
+                if empty && {
+                    remove_saved(&path);
+                    std::fs::remove_dir_all(&path).is_ok()
+                } {
                     removed.push(path);
                 }
             }
@@ -2246,6 +2394,81 @@ mod tests {
             MergeOutcome::Merged { files, .. } => files.clone(),
             other => panic!("expected it to land, got {other:?}"),
         }
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    /// The system clears the working copies (macOS: at restart, and what
+    /// sits unused for days). A worktree's work, saved on its branch when
+    /// its turn ended, comes back with the copy on its next use, files
+    /// never committed by the builder included, and lands; the copies'
+    /// folder is made private again.
+    #[test]
+    fn a_cleared_worktree_comes_back_from_its_branch_with_its_work() {
+        with_home(|home| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-cleared").await.unwrap();
+            let copies = config::copies_dir().unwrap();
+            assert!(wt.path.starts_with(&copies) && !wt.path.starts_with(home), "{}", wt.path.display());
+            std::fs::write(wt.path.join("new.txt"), "never committed\n").unwrap();
+            std::fs::write(wt.path.join("a.txt"), "edited\n").unwrap();
+            let iso = Isolation::Git(wt.clone());
+            save(&iso).await.unwrap();
+            assert!(log(&wt.path).await[0].starts_with("Work in progress, saved|"));
+
+            std::fs::remove_dir_all(&copies).unwrap();
+            assert_eq!(sorted(changed_files(&iso).await), ["a.txt", "new.txt"], "read from its branch, never nothing");
+            let iso = reattach(iso).await.unwrap();
+            assert_eq!(std::fs::read_to_string(wt.path.join("new.txt")).unwrap(), "never committed\n");
+            assert_eq!(std::fs::read_to_string(wt.path.join("a.txt")).unwrap(), "edited\n");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(std::fs::metadata(&copies).unwrap().permissions().mode() & 0o777, 0o700);
+            }
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Add new and edit a", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), vec!["a.txt".to_string(), "new.txt".to_string()]);
+            assert_eq!(std::fs::read_to_string(r.path().join("new.txt")).unwrap(), "never committed\n");
+        }))
+    }
+
+    /// A scratch copy has no branch: its work is saved in a shadow in
+    /// Nebo's own folder, and a cleared copy is made again from it, its
+    /// work intact, and lands. Once landed, nothing of it is left. One that
+    /// was never saved is gone, never "no changes" in a copy made anew.
+    #[test]
+    fn a_cleared_scratch_copy_comes_back_from_its_saved_work() {
+        with_home(|home| rt().block_on(async {
+            let f = folder();
+            std::fs::write(f.path().join("doc.txt"), "base\n").unwrap();
+            std::fs::write(f.path().join("keep.txt"), "kept\n").unwrap();
+            let c = create_copy(f.path(), "sa-cleared-c").unwrap();
+            std::fs::write(c.path.join("doc.txt"), "edited\n").unwrap();
+            std::fs::write(c.path.join("new.md"), "new\n").unwrap();
+            let iso = Isolation::Copy(c.clone());
+            save(&iso).await.unwrap();
+            assert!(saved_dir(&c.path).starts_with(home), "saved in Nebo's own folder");
+
+            std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
+            assert!(!nothing_left(&c), "cleared, not landed");
+            let iso = reattach(iso).await.unwrap();
+            assert_eq!(std::fs::read_to_string(c.path.join("doc.txt")).unwrap(), "edited\n");
+            assert_eq!(std::fs::read_to_string(c.path.join("keep.txt")).unwrap(), "kept\n");
+            assert_eq!(sorted(changed_files(&iso).await), ["doc.txt", "new.md"]);
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Edit doc", None, &Landing::default()).await;
+            assert_eq!(sorted(landed_files(&out[0].1)), ["doc.txt", "new.md"]);
+            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "edited\n");
+            assert!(nothing_left(&c), "landed: the copy and its saved work are gone");
+
+            let unsaved = create_copy(f.path(), "sa-unsaved").unwrap();
+            std::fs::remove_dir_all(&unsaved.path).unwrap();
+            assert!(reattach(Isolation::Copy(unsaved)).await.unwrap_err().contains("none of its work was saved"));
+        }))
     }
 
     #[test]

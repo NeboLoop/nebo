@@ -97,6 +97,27 @@ pub fn node(verification_id: &str, round: u32, lens: Lens) -> String {
     format!("verify-{verification_id}-r{round}-{}", lens.as_str())
 }
 
+/// What one lens's reviewer is started with: its brief and answer shape,
+/// fenced to the round's copy (its working directory) and its own build
+/// folder, of which it only reads the round's copy and patch.
+fn ask(lens: Lens, input: &RoundInput<'_>) -> Ask {
+    Ask {
+        node: node(input.verification_id, input.round, lens),
+        description: format!("Reviewing: {}", lens.as_str()),
+        kind: HelperKind::Review,
+        prompt: brief(lens, input),
+        schema: findings::answer_schema(),
+        tools: None,
+        fence: vec![
+            input.work_dir.to_string_lossy().into_owned(),
+            build_dir(input.scratch, lens).to_string_lossy().into_owned(),
+        ],
+        // The round's copy and its patch: read, never changed.
+        reads: vec![round_dir(input.scratch, input.round).to_string_lossy().into_owned()],
+        shown: true,
+    }
+}
+
 /// Run one round: a reviewer per lens, all at once, for the turn `parent`.
 /// `done` hears each reviewer's result the moment it finishes, so the round's
 /// record shows it while the others still run.
@@ -107,19 +128,7 @@ pub async fn run_round(
     done: &(dyn Fn(&LensReview) + Sync),
 ) -> Vec<LensReview> {
     let asks = input.lenses.iter().map(|&lens| {
-        let ask = Ask {
-            node: node(input.verification_id, input.round, lens),
-            description: format!("Reviewing: {}", lens.as_str()),
-            kind: HelperKind::Review,
-            prompt: brief(lens, input),
-            schema: findings::answer_schema(),
-            tools: None,
-            fence: vec![
-                input.work_dir.to_string_lossy().into_owned(),
-                build_dir(input.scratch, lens).to_string_lossy().into_owned(),
-            ],
-            shown: true,
-        };
+        let ask = ask(lens, input);
         async move {
             let answered = helpers.answer(parent, ask, None).await;
             let review = answered.value.and_then(|v| {
@@ -478,11 +487,14 @@ mod tests {
 
     /// 2026-10-21 `v-e9e6a7defa6d`: every reviewer was refused its own copy
     /// and patch ("one of Nebo's own files"), because they sat in Nebo's own
-    /// folder. They are with the working copies now: every lens reads both
-    /// with each tool it has, runs its commands in the copy, and has a build
-    /// folder of its own; Nebo's own folder stays closed to it.
+    /// folder. They are with the working copies now, and each reviewer runs
+    /// under the fence its ask gives it: every lens reads its copy and patch
+    /// with each tool it has, runs its commands in the copy and builds in
+    /// its own folder; it never changes the copy, never reaches another
+    /// verification's folder or another lens's build, and Nebo's own folder
+    /// stays closed to it.
     #[test]
-    fn every_reviewer_reads_its_copy_and_patch() {
+    fn every_reviewer_reads_its_copy_and_patch_and_nothing_else() {
         crate::test_home::with_home(|home| {
             let scratch = crate::harness::verify::work::Work::copies("v-reads").unwrap();
             assert!(!scratch.starts_with(home), "never in Nebo's own folder");
@@ -492,12 +504,30 @@ mod tests {
             std::fs::write(project.join("src/total.rs"), "let t = a + b;\n").unwrap();
             let patch = patch_file(&round);
             std::fs::write(&patch, "+let t = a + b;\n").unwrap();
+            let theirs = patch_file(&round_dir(&crate::harness::verify::work::Work::copies("v-other").unwrap(), 1));
+            std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+            std::fs::write(&theirs, "+secret\n").unwrap();
 
-            let ctx = tools::ToolContext { session_id: "sa-verify-v-reads-r1".into(), ..Default::default() };
-            let fence = tools::nebo_files::NeboFiles::of(&ctx).unwrap();
-            for lens in [Lens::Correctness, Lens::Security, Lens::Billing, Lens::Data, Lens::Performance, Lens::Experience] {
+            let c = change();
+            let mut input = input(&c, false, &[], &[]);
+            input.verification_id = "v-reads";
+            (input.work_dir, input.patch_file, input.scratch) = (&project, &patch, &scratch);
+            let lenses = [Lens::Correctness, Lens::Security, Lens::Billing, Lens::Data, Lens::Performance, Lens::Experience];
+            for lens in lenses {
+                // The grant a reviewer runs under: its ask's fence and reads
+                // on the grant it can only narrow (`Helpers::answer`).
+                let a = ask(lens, &input);
+                let mut ceiling = types::permissions::Grant::new("dev", types::permissions::Mode::Automatic);
+                ceiling.fence = Some(a.fence.iter().map(std::path::PathBuf::from).collect());
+                ceiling.reads = a.reads.iter().map(std::path::PathBuf::from).collect();
+                let mut grant = types::permissions::Grant::new("dev", types::permissions::Mode::Automatic);
+                grant.ceiling = Some(types::permissions::Ceiling::Parent { grant: Box::new(ceiling) });
+                let ctx = tools::ToolContext {
+                    session_id: format!("sa-verify-v-reads-r1-{}", lens.as_str()),
+                    grant: Some(std::sync::Arc::new(grant)),
+                    ..Default::default()
+                };
                 let build = build_dir(&scratch, lens);
-                let folders = [project.to_string_lossy().into_owned(), build.to_string_lossy().into_owned()];
                 let p = project.to_string_lossy();
                 let reads = [
                     ("read_file", json!({ "path": project.join("src/total.rs") })),
@@ -508,23 +538,31 @@ mod tests {
                 ];
                 for (key, input) in &reads {
                     assert_eq!(tools::safeguard::check_safeguard(key, input, &ctx), None, "{lens:?} {key} {input}");
-                    assert_eq!(tools::safeguard::check_path_scope(key, input, &folders), None, "{lens:?} {key} {input}: inside its fence");
+                    assert_eq!(tools::safeguard::check_path_scope(key, input, &a.fence), None, "{lens:?} {key} {input}: inside its fence");
                 }
-                // What the operating system closes to its commands holds
-                // nothing of its copy, its patch or its build folder.
+                let fence = tools::nebo_files::NeboFiles::of(&ctx).unwrap();
+                let copies = fence.copies().expect("a reviewer's working copies are fenced");
+                assert!(copies.own.contains(&build) && !copies.own.contains(&project), "builds in its own folder, never in the copy");
                 for closed in fence.closed_entries() {
                     for own in [&project, &patch, &build] {
                         assert!(!own.starts_with(&closed), "{} is closed by {}", own.display(), closed.display());
                     }
                 }
+
+                // Never changed: the copy and the patch.
+                for path in [project.join("src/total.rs"), patch.clone()] {
+                    let write = json!({ "path": path, "content": "x" });
+                    assert!(tools::safeguard::check_safeguard("write_file", &write, &ctx).is_some(), "{lens:?} wrote {}", path.display());
+                }
+                // Never reached: another verification's folder, another
+                // lens's build, Nebo's own folder.
+                let other_lens = build_dir(&scratch, if lens == Lens::Data { Lens::Security } else { Lens::Data });
+                for path in [theirs.clone(), other_lens.join("out"), crate::harness::verify::work::Work::home("v-reads").join("shadow.git/config"), home.join("settings.json")] {
+                    assert!(tools::safeguard::check_safeguard("read_file", &json!({ "path": path }), &ctx).is_some(), "{lens:?} read {}", path.display());
+                    let cat = json!({ "command": format!("cat '{}'", path.display()), "cwd": p });
+                    assert!(tools::safeguard::check_safeguard("run_command", &cat, &ctx).is_some(), "{lens:?} ran cat {}", path.display());
+                }
             }
-            // Nebo's own folder, the verification's own files among them, is
-            // as closed to a reviewer as to any employee.
-            let own = crate::harness::verify::work::Work::home("v-reads").join("shadow.git/config");
-            assert!(tools::safeguard::check_safeguard("read_file", &json!({ "path": own }), &ctx).is_some());
-            let cat = json!({ "command": format!("cat '{}'", home.join("settings.json").display()) });
-            assert!(tools::safeguard::check_safeguard("run_command", &cat, &ctx).is_some());
-            std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
         })
     }
 }

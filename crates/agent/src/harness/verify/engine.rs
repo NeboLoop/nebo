@@ -211,6 +211,18 @@ impl Verify {
         ended
     }
 
+    /// Save the work in this turn's copies where it outlives them
+    /// (`worktree::save`): the system may clear them before the next turn.
+    pub async fn save_copies(&self) {
+        for work in self.work.snapshot().await {
+            if let Some(iso) = &work.iso
+                && let Err(e) = worktree::save(iso).await
+            {
+                tracing::warn!(verification = %work.id, error = %e, "a copy's work could not be saved");
+            }
+        }
+    }
+
     /// The verifications whose builder was told to report this turn: the
     /// turn's last reply is their badge's.
     pub fn reported(&self) -> Vec<String> {

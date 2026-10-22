@@ -3,7 +3,7 @@
 //! A write is code work when its path is in a code folder ([`code_folder`]):
 //! - an app's own pages (the folders the caller passes in), wherever they
 //!   live, Nebo's data folder included;
-//! - one of Nebo's own working copies (`<data_dir>/worktrees/<project>/<id>`:
+//! - one of Nebo's own working copies (`<copies>/worktrees/<project>/<id>`:
 //!   a helper's, or the verify loop's), which is the project it copies;
 //! - a project: the nearest folder at or above the path that is a git
 //!   repository's root or holds a project manifest ([`MANIFESTS`]); a
@@ -57,9 +57,9 @@ impl Folder {
     }
 }
 
-/// Where Nebo keeps its working copies: `<data_dir>/worktrees`.
+/// Where Nebo keeps its working copies of projects (`worktree::copies_root`).
 pub fn copies_dir() -> Option<PathBuf> {
-    config::data_dir().ok().map(|d| d.join("worktrees"))
+    crate::worktree::copies_root().ok()
 }
 
 /// The code folder `path` is in, if any (see the module docs). `app_pages`
@@ -171,17 +171,21 @@ mod tests {
             assert_eq!(code_folder(&home.join("files/notes.md"), &[]), None);
 
             // A working copy is the project it copies.
-            let copy = home.join("worktrees/site/v-1");
+            let copies = copies_dir().unwrap();
+            let copy = copies.join("site/v-1");
             std::fs::create_dir_all(copy.join("src")).unwrap();
             assert_eq!(
                 code_folder(&copy.join("src/app.ts"), &[]),
                 Some(Folder::Copy(copy.clone()))
             );
             assert_eq!(
-                code_folder(&home.join("worktrees/site"), &[]),
+                code_folder(&copies.join("site"), &[]),
                 None,
                 "the copies' own folder is no copy"
             );
+            // Nebo's own folder holds no copies.
+            std::fs::create_dir_all(home.join("worktrees/site/v-1/src")).unwrap();
+            assert_eq!(code_folder(&home.join("worktrees/site/v-1/src/app.ts"), &[]), None);
 
             // An app's pages, wherever they live.
             let pages = home.join("agents/flip/ui");

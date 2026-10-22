@@ -211,6 +211,17 @@ impl TurnWork {
             })
             .unwrap_or_default();
         for row in rows {
+            // Its copy, cleared by the system since: made again from its
+            // saved work, while the verification's own files are kept.
+            if !Path::new(&row.work_dir).is_dir()
+                && row.landed_ref.is_empty()
+                && row.state != "stopped"
+                && Work::home(&row.id).is_dir()
+                && let Some(iso) = row.isolation_state.clone().and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok())
+                && let Err(e) = worktree::reattach(iso).await
+            {
+                tracing::warn!(verification = %row.id, error = %e, "a cleared copy could not be made again");
+            }
             // Work still in hand: being checked, waiting on the owner, or
             // finished in a copy (this loop's, or a helper's own) that
             // hasn't landed: a change to it is checked again over the whole
@@ -895,7 +906,7 @@ mod tests {
         crate::test_home::with_home(|home| {
             rt().block_on(async {
                 let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
-                let copy = home.join("worktrees/site/h-1");
+                let copy = worktree::copies_root().unwrap().join("site/h-1");
                 std::fs::create_dir_all(&copy).unwrap();
                 std::fs::write(copy.join("a.rs"), "fn a() {}\n").unwrap();
                 let mut w = who(&store);

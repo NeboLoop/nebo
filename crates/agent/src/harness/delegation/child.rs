@@ -152,6 +152,7 @@ pub(crate) mod tests {
             ceiling: None,
             run_folders: vec!["/work/books".into()],
             fence: Some(vec!["/work/books".into()]),
+            reads: vec![],
             narrow: None,
         }
     }

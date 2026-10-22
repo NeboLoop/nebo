@@ -164,9 +164,25 @@ fn profile(offline: bool, fence: Option<&NeboFiles>, closed_ports: &[u16]) -> St
             p.push(format!("(allow file-read* {})", subpaths(&skills)));
         }
         p.push(format!("(allow file-read* file-write* {})", subpaths(&fence.real_open())));
+        // A fenced run's working copies: only its own. What is closed there
+        // is closed to reading its contents, not to looking a path up, so
+        // the run's own folders resolve (`realpath`, git, node) through the
+        // folders above them.
+        let copies = fence.copies().map(|c| c.real());
+        if let Some(c) = &copies {
+            p.push(format!("(deny file-read-data file-write* {})", subpaths(&c.roots)));
+            if !c.own.is_empty() {
+                p.push(format!("(allow file-read-data file-write* {})", subpaths(&c.own)));
+            }
+            if !c.reads.is_empty() {
+                p.push(format!("(allow file-read-data {})", subpaths(&c.reads)));
+                p.push(format!("(deny file-write* {})", subpaths(&c.reads)));
+            }
+        }
         // Moving a folder above one would carry the closed paths out from
         // under the fence.
-        let mut ancestors: Vec<&Path> = roots.iter().flat_map(|root| root.ancestors().skip(1)).collect();
+        let mut ancestors: Vec<&Path> =
+            roots.iter().chain(copies.iter().flat_map(|c| c.roots.iter())).flat_map(|root| root.ancestors().skip(1)).collect();
         ancestors.sort();
         ancestors.dedup();
         if !ancestors.is_empty() {
@@ -324,6 +340,22 @@ fn bwrap_args(offline: bool, fence: Option<&NeboFiles>) -> Vec<OsString> {
     for skill in fence.map(NeboFiles::real_skills).unwrap_or_default() {
         args.extend([OsString::from("--ro-bind"), skill.clone().into(), skill.into()]);
     }
+    // A fenced run's working copies: an empty root with its own folders
+    // bound back, what it only reads read-only.
+    if let Some(c) = fence.and_then(NeboFiles::copies).map(|c| c.real()) {
+        for root in c.roots.iter().filter(|r| r.is_dir()) {
+            args.extend([OsString::from("--tmpfs"), root.clone().into()]);
+        }
+        for own in c.own.iter().filter(|p| p.exists()) {
+            args.extend([OsString::from("--bind"), own.clone().into(), own.clone().into()]);
+        }
+        for read in c.reads.iter().filter(|p| p.exists()) {
+            args.extend([OsString::from("--ro-bind"), read.clone().into(), read.clone().into()]);
+        }
+        for root in c.roots.iter().filter(|r| r.is_dir()) {
+            args.extend([OsString::from("--remount-ro"), root.clone().into()]);
+        }
+    }
     args.push("--".into());
     args
 }
@@ -420,6 +452,60 @@ mod tests {
         let program = root.join("user/plugins/ledger/0.1.0/ledger");
         let (_, out) = run(&c, &format!("cat '{}' '{}'", program.display(), other.join("settings.json").display()));
         assert!(!out.contains("PROGRAM-BYTES") && !out.contains("THEIR-SECRET"), "{out}");
+    }
+
+    /// A reviewer's commands, as the operating system holds them: they
+    /// read the round's copy and patch and change neither, build in their
+    /// own folder, and reach no other verification's copy or a helper's;
+    /// the tools a build runs still resolve their own folder (`realpath`,
+    /// git). An employee's own turn reaches every copy.
+    #[test]
+    fn a_reviewers_command_reads_its_copy_builds_beside_it_and_reaches_no_other() {
+        if platform().is_none() {
+            eprintln!("no confinement on this computer; the fence rests on the safeguard");
+            return;
+        }
+        let (d, root) = home();
+        let copies = std::fs::canonicalize(d.path()).unwrap().join("copies");
+        let round = copies.join("verify/v-1/round-1");
+        let build = copies.join("verify/v-1/build-security");
+        let theirs = copies.join("verify/v-2/round-1");
+        let helper = copies.join("worktrees/site/sa-1");
+        for dir in [&round.join("project"), &build, &theirs, &helper] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(round.join("project/a.rs"), "OWN-CODE").unwrap();
+        std::fs::write(round.join("change.patch"), "OWN-PATCH").unwrap();
+        std::fs::write(theirs.join("change.patch"), "THEIR-PATCH").unwrap();
+        std::fs::write(helper.join("b.rs"), "HELPER-CODE").unwrap();
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false)
+            .with_copies(crate::nebo_files::Copies::new(&copies, &[round.join("project"), build.clone()], std::slice::from_ref(&round)));
+        let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
+        let (p, b) = (round.join("project"), build.to_string_lossy().into_owned());
+        let (ok, out) = run(
+            &c,
+            &format!(
+                "cd '{}' && cat a.rs ../change.patch && grep -rl OWN . && python3 -c \"import os; print(os.path.realpath('.'))\" && echo BUILT > '{b}/out' && cat '{b}/out'",
+                p.display()
+            ),
+        );
+        assert!(ok && out.contains("OWN-CODE") && out.contains("OWN-PATCH") && out.contains("BUILT"), "{out}");
+        let (ok, _) = run(&c, &format!("echo changed > '{}/a.rs'", p.display()));
+        assert!(!ok, "the copy was changed");
+        let (ok, _) = run(&c, &format!("echo new > '{}/new.rs'", p.display()));
+        assert!(!ok && !p.join("new.rs").exists(), "a file was added to the copy");
+        assert_eq!(std::fs::read_to_string(p.join("a.rs")).unwrap(), "OWN-CODE");
+        let (_, out) = run(&c, &format!("cat '{}/change.patch' '{}/b.rs'", theirs.display(), helper.display()));
+        assert!(!out.contains("THEIR-PATCH") && !out.contains("HELPER-CODE"), "{out}");
+        let (ok, out) = run(&c, &format!("ls '{}'", copies.display()));
+        assert!(!ok, "the working copies were listed: {out}");
+        let (_, out) = run(&c, &format!("cat '{}/settings.json'", root.display()));
+        assert!(!out.contains("SECRET"), "{out}");
+
+        let open = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let c = Confinement { offline: false, fence: Some(&open), closed_ports: &[] };
+        let (ok, out) = run(&c, &format!("cat '{}/change.patch' '{}/b.rs'", theirs.display(), helper.display()));
+        assert!(ok && out.contains("THEIR-PATCH") && out.contains("HELPER-CODE"), "{out}");
     }
 
     /// Offline, nothing the command starts reaches a socket: not this

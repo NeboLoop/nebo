@@ -145,6 +145,10 @@ pub async fn run(tools: &tools::Registry, ctx: &tools::ToolContext, checks: &[Ch
         let started = std::time::Instant::now();
         let mut ctx = ctx.clone();
         ctx.cwd = Some(check.dir.to_string_lossy().into_owned());
+        // A fenced run (a helper in its own copy) reaches only its own of
+        // the working copies: its checks build into the project's build
+        // folder, Nebo's own step on its behalf.
+        ctx.grant = ctx.grant.map(|g| std::sync::Arc::new(g.with_fenced_folder(build_dir)));
         // Nobody answers a question in the middle of a check.
         ctx.cannot_wait = true;
         let input = serde_json::json!({
@@ -501,7 +505,6 @@ mod tests {
             // Nebo's own folder, which is closed to every command.
             assert!(a.starts_with(config::copies_dir().unwrap().join("build")), "{}", a.display());
             assert!(!a.starts_with(home));
-            let _ = std::fs::remove_dir_all(config::copies_dir().unwrap());
         })
     }
 

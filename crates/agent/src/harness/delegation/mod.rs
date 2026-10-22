@@ -234,6 +234,9 @@ pub struct Ask {
     /// The folders it works in: the first is its working directory; all of
     /// them are its fence. Empty: the parent's.
     pub fence: Vec<String>,
+    /// What it reads and never changes, its fence's folders among them
+    /// (a reviewer's copy of the change and its patch). Only with a fence.
+    pub reads: Vec<String>,
     /// Shown on the owner's screen as one of the parent's helpers.
     pub shown: bool,
 }
@@ -1386,6 +1389,7 @@ impl Helpers {
             schema,
             tools: Some(tools),
             fence: Vec::new(),
+            reads: Vec::new(),
             shown: false,
         };
         self.answer(&parent, ask, activity).await.value
@@ -1411,10 +1415,11 @@ impl Helpers {
         let copy = ask.fence.first().cloned();
         let mut req = child::child_request(parent, &format!("sa-{}", ask.node), &spec, copy.as_deref(), TurnInput::Platform { text: ask.prompt });
         let session_key = req.session_key.clone();
-        if ask.fence.len() > 1
+        if !ask.fence.is_empty()
             && let Some(types::permissions::Ceiling::Parent { grant }) = req.seat.ceiling.as_mut()
         {
             grant.fence = Some(ask.fence.iter().map(std::path::PathBuf::from).collect());
+            grant.reads = ask.reads.iter().map(std::path::PathBuf::from).collect();
         }
         if let Some(tools) = ask.tools {
             let allowed: std::collections::HashSet<String> = tools.into_iter().collect();
@@ -1920,7 +1925,9 @@ impl Helpers {
                     match serde_json::from_str::<Held>(&copy) {
                         // A scratch copy whose landing finished at boot (its
                         // journal done) is landed: nothing is held any more.
-                        Ok(held) if matches!(&held.iso, crate::worktree::Isolation::Copy(c) if !c.path.exists()) => self.release(&id),
+                        // One the system cleared is still held: its saved
+                        // work makes it again on its next use.
+                        Ok(held) if matches!(&held.iso, crate::worktree::Isolation::Copy(c) if crate::worktree::nothing_left(c)) => self.release(&id),
                         Ok(held) => {
                             self.state().copies.insert(id, held);
                         }
@@ -2420,6 +2427,11 @@ impl Helpers {
     /// builder's word that conflicts it was handed are resolved.
     async fn report_copy(&self, task_id: &str, description: &str, completion: &mut Completion) {
         let Some(mut held) = self.state().copies.get(task_id).cloned() else { return };
+        // Its turn ended: its work is saved where it outlives the copy,
+        // which the system may clear before it goes on or lands.
+        if let Err(e) = crate::worktree::save(&held.iso).await {
+            warn!(task_id, error = %e, "a helper's work could not be saved");
+        }
         let files = crate::worktree::changed_files(&held.iso).await;
         let catching_up = matches!(&held.iso, crate::worktree::Isolation::Git(wt) if wt.onto.is_some());
         if files.is_empty() && !catching_up {
@@ -4399,6 +4411,45 @@ mod tests {
         })
     }
 
+    /// The system clears the working copies (macOS at restart): a finished
+    /// helper's work, saved when its turn ended, survives it. After the
+    /// restart its copy is made again on its next use and its changes land
+    /// intact: a git project's from its branch, a folder that is no
+    /// repository's from its saved snapshot.
+    #[test]
+    fn a_helpers_work_outlives_the_system_clearing_its_copy() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let folder = tempfile::tempdir().unwrap();
+                std::fs::write(folder.path().join("a.txt"), "base\n").unwrap();
+                for project in [repo.clone(), folder.path().to_path_buf()] {
+                    let mut rig = Rig::new(FOREGROUND_BUDGET);
+                    let key = "agent:bookkeeper:web";
+                    let mut owner = rig.owner_turn(key);
+                    owner.seat.cwd = Some(project.to_string_lossy().into_owned());
+                    let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                        panic!("background")
+                    };
+                    let child = rig.next_turn().await;
+                    let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                    assert!(copy.starts_with(config::copies_dir().unwrap()), "{}", copy.display());
+                    std::fs::write(copy.join("b.txt"), "never committed\n").unwrap();
+                    rig.heard(&child.request.session_key);
+                    child.answer("Added b.").await;
+                    rig.next_wake().await;
+
+                    // Nebo stops; the system clears its temporary files.
+                    let Rig { store, _dir, .. } = rig;
+                    std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
+                    let rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+                    rig.helpers.recover().await;
+                    rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.unwrap();
+                    assert_eq!(std::fs::read_to_string(project.join("b.txt")).unwrap(), "never committed\n", "{}", project.display());
+                }
+            })
+        })
+    }
+
     /// An isolated helper asks the owner; its next turn (it hears its own
     /// helper) reports only progress. The question is still pending, so
     /// nothing lands until an answer is sent, the run finishes, and it is
@@ -4556,6 +4607,7 @@ mod tests {
             schema: serde_json::json!({"type": "object"}),
             tools: None,
             fence: Vec::new(),
+            reads: Vec::new(),
             shown: false,
         };
         let helpers = rig.helpers.clone();
@@ -4621,6 +4673,7 @@ mod tests {
                 schema: serde_json::json!({"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array"}}}),
                 tools: None,
                 fence: vec!["/copy".into(), "/build".into()],
+                reads: vec!["/round".into()],
                 shown: true,
             };
             helpers.answer(&parent, ask, None).await
@@ -4630,7 +4683,8 @@ mod tests {
         assert_eq!(started.request.seat.cwd.as_deref(), Some("/copy"));
         match started.request.seat.ceiling.as_ref() {
             Some(types::permissions::Ceiling::Parent { grant }) => {
-                assert_eq!(grant.fence, Some(vec!["/copy".into(), "/build".into()]), "fenced to its copy and build folder")
+                assert_eq!(grant.fence, Some(vec!["/copy".into(), "/build".into()]), "fenced to its copy and build folder");
+                assert_eq!(grant.reads, vec![std::path::PathBuf::from("/round")], "its round's copy and patch, read only")
             }
             other => panic!("{other:?}"),
         }

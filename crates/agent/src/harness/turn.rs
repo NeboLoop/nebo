@@ -3298,6 +3298,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     // honestly; one waiting on the owner (an approval, a question) keeps
     // them for the turn that goes on.
     if let Some(verify) = &st.verify {
+        verify.save_copies().await;
         use super::verify::engine::Closed;
         let why = match exit {
             TurnExit::Answered | TurnExit::Compacted => None,

@@ -448,6 +448,27 @@ impl Shadow {
         self.run(&["cat-file", "-p", &format!("{}:{rel}", snapshot.0)]).await.ok()
     }
 
+    /// Keep `snapshot` under `name` (`refs/nebo/<name>`): it outlives the
+    /// folder and is never pruned.
+    pub async fn keep(&self, name: &str, snapshot: &Snapshot) -> Result<(), String> {
+        let dir = format!("--git-dir={}", self.git_dir.display());
+        git(&self.git_dir, &[&dir, "update-ref", &format!("refs/nebo/{name}"), &snapshot.0])
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("keep {name}: {e}"))
+    }
+
+    /// The snapshot kept under `name` ([`Shadow::keep`]), if any. Read
+    /// without the folder, which may be gone.
+    pub async fn kept(&self, name: &str) -> Option<Snapshot> {
+        let dir = format!("--git-dir={}", self.git_dir.display());
+        git(&self.git_dir, &[&dir, "rev-parse", "--verify", "--quiet", &format!("refs/nebo/{name}")])
+            .await
+            .ok()
+            .map(|id| Snapshot(id.trim().to_string()))
+            .filter(|s| !s.0.is_empty())
+    }
+
     /// Remove the shadow repository (the folder itself is untouched).
     pub fn remove(&self) {
         if let Err(e) = std::fs::remove_dir_all(&self.git_dir) {
