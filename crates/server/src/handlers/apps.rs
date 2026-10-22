@@ -1893,8 +1893,9 @@ pub struct ChatThread {
 
 /// POST /apps/{agent_id}/chat/new — the page starts its conversation over:
 /// the next words begin a new one under the same key, and the one before is
-/// kept (the owner still reads it among the employee's chats). Nothing to do
-/// when the page has not said anything yet.
+/// kept (an app's conversation, never listed among the owner's). Nothing to
+/// do when the page has not said anything yet. Refused while a turn runs
+/// there: stop it first.
 pub async fn new_chat(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
