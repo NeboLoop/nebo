@@ -130,7 +130,9 @@ async fn each_app_keeps_its_data_in_its_own_folder() {
 async fn a_long_app_folder_path_still_serves() {
     let parent = std::path::Path::new("Library/Application Support/Nebo/user/agents/A long app name like the ones people pick");
     let app = TestApp::at_depth("5d79d5b9-ee5d-4830-a9f1-948b1c215748", parent);
-    assert!(app.tool_dir.as_os_str().len() > 160, "{}", app.tool_dir.display());
+    // Past every OS's socket path limit (macOS 104 bytes with its NUL,
+    // Linux 108), wherever the temporary folder is: a short `/tmp` too.
+    assert!(app.tool_dir.as_os_str().len() > 108, "{}", app.tool_dir.display());
     let w = World::new(app, quick(), |_| {}).await;
     assert_eq!(w.get("me").await.expect("served"), "GET me");
     let SidecarState::Running(l) = w.lifecycle.state() else { panic!("expected running") };
