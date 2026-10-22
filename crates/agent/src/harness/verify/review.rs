@@ -236,7 +236,8 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
         "## Where the code is\nThe project, with the change applied, is at {}. Read anything in it, and change \
          nothing in it: it is read-only. The build folder is {}, shared with the other reviewers of this change: \
          everything you build or run writes there (for cargo, CARGO_TARGET_DIR={}; cargo waits its turn when \
-         another reviewer is building). A build or test that writes into the project itself (most JavaScript \
+         another reviewer is building). Never clean it (no `cargo clean`): that deletes the other reviewers' \
+         builds. A build or test that writes into the project itself (most JavaScript \
          builds do) runs on a copy of your own: copy the project into {} and run it there. The project's own \
          checks already ran on this exact change; their results are below. You may make read-only checks of live \
          state. No commits, no installs into the project, no messages to anyone.\n\n",
@@ -399,6 +400,7 @@ mod tests {
         // a folder of the lens's own there.
         assert!(b.contains("CARGO_TARGET_DIR=/copies/verify/v1/build;"), "{b}");
         assert!(b.contains("copy the project into /copies/verify/v1/build/billing"), "{b}");
+        assert!(b.contains("Never clean it (no `cargo clean`"), "{b}");
         assert!(b.contains("is at /copies/verify/v1/round-1/project"));
         assert!(b.contains("it is read-only"));
         assert!(b.contains("Read-only means read-only."));

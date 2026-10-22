@@ -511,6 +511,14 @@ pub async fn reattach(iso: Isolation) -> Result<Isolation, String> {
 /// Make a copy that is gone again from its saved work ([`save`]): a
 /// worktree from its task branch, a scratch copy from its saved snapshot.
 /// A copy still on disk is left as it is.
+///
+/// A scratch copy's snapshot leaves out what the folder ignores and new
+/// files over [`crate::harness::verify::shadow::BIG_FILE_BYTES`], files the
+/// copy was made with ([`create_copy`] copies every file). Each of those
+/// the owner still holds as the copy was made is copied in from the
+/// project; one the owner changed or deleted since can't be made again as
+/// the copy had it, so it is held as unknown ([`UNHELD`]): never a deletion
+/// the copy lands. Catching up then takes in the owner's version.
 async fn present(iso: &Isolation) -> Result<(), String> {
     match iso {
         Isolation::Git(wt) => reattach_worktree(wt.clone()).await.map(|_| ()),
@@ -522,7 +530,25 @@ async fn present(iso: &Isolation) -> Result<(), String> {
                 return Err(format!("its copy at {} is gone, and none of its work was saved", c.path.display()));
             };
             shadow.export(&saved, &c.path).await.map_err(|e| format!("its copy at {} could not be made again: {e}", c.path.display()))?;
-            tracing::info!(path = %c.path.display(), "a cleared scratch copy was made again from its saved work");
+            let saved_at = saved_dir(&c.path);
+            let mut unheld = read_paths(&saved_at.join(UNHELD));
+            let mut lost = 0usize;
+            for rel in read_paths(&saved_at.join(LEFT_OUT)) {
+                let Some(&made_with) = c.snapshot.get(Path::new(&rel)) else {
+                    // A file the copy made that the snapshot could not hold
+                    // (build output, or a new file too big to hash).
+                    lost += 1;
+                    continue;
+                };
+                let src = c.root.join(&rel);
+                match std::fs::read(&src) {
+                    Ok(bytes) if tools::checkpoint::fingerprint(&bytes) == made_with => write_like(&c.path.join(&rel), &bytes, &src)?,
+                    _ if !unheld.contains(&rel) => unheld.push(rel),
+                    _ => {}
+                }
+            }
+            write_paths(&saved_at.join(UNHELD), &unheld)?;
+            tracing::info!(path = %c.path.display(), unheld = unheld.len(), lost, "a cleared scratch copy was made again from its saved work");
             Ok(())
         }
     }
@@ -537,6 +563,33 @@ pub fn nothing_left(c: &ScratchCopy) -> bool {
 
 /// The name a scratch copy's saved snapshot is kept under in its shadow.
 const SAVED: &str = "saved";
+
+/// The files a scratch copy held that its saved snapshot left out, as of
+/// its last [`save`]: '/'-separated, NUL-ended, in its shadow's folder.
+const LEFT_OUT: &str = "left-out";
+
+/// The files of the project a scratch copy made again ([`present`]) could
+/// not hold as it was made with them (the snapshot left them out, and the
+/// owner has changed or deleted them since). Their absence from the copy
+/// is never a deletion of the copy's.
+const UNHELD: &str = "unheld";
+
+/// The paths of a NUL-ended list ([`write_paths`]); none when there is no
+/// list.
+fn read_paths(file: &Path) -> Vec<String> {
+    std::fs::read(file).map(|b| z_entries(&b)).unwrap_or_default()
+}
+
+/// Write `paths` as a NUL-ended list, replacing the file whole.
+fn write_paths(file: &Path, paths: &[String]) -> Result<(), String> {
+    let mut bytes = Vec::new();
+    for p in paths {
+        bytes.extend_from_slice(p.as_bytes());
+        bytes.push(0);
+    }
+    let tmp = file.with_extension("tmp");
+    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, file)).map_err(|e| format!("write {}: {e}", file.display()))
+}
 
 /// Where a scratch copy's work is saved: a shadow repository over it in
 /// Nebo's own folder, where the system never clears it.
@@ -576,6 +629,12 @@ pub async fn save(iso: &Isolation) -> Result<(), String> {
             }
             let shadow = saved_shadow(&c.path).await?;
             let now = shadow.snapshot().await?;
+            // What the snapshot could not hold, for a copy made again from
+            // it ([`present`]).
+            let held: std::collections::HashSet<String> = shadow.paths(&now).await?.into_iter().collect();
+            let (files, _) = walk(&c.path)?;
+            let left_out: Vec<String> = files.iter().map(|(rel, _)| rel_str(rel)).filter(|rel| !held.contains(rel)).collect();
+            write_paths(&saved_dir(&c.path).join(LEFT_OUT), &left_out)?;
             shadow.keep(SAVED, &now).await
         }
     }
@@ -776,9 +835,12 @@ enum Change {
 }
 
 /// Every file the child changed (relative path → change). The owner's
-/// versions waiting next to conflicted files are not the child's.
+/// versions waiting next to conflicted files are not the child's, and a
+/// file a copy made again could not hold ([`UNHELD`]) is not the child's
+/// deletion.
 fn changes_of(c: &ScratchCopy) -> Result<Vec<(PathBuf, Change)>, String> {
     let (files, _) = walk(&c.path)?;
+    let unheld: std::collections::HashSet<PathBuf> = read_paths(&saved_dir(&c.path).join(UNHELD)).into_iter().map(PathBuf::from).collect();
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let twins: std::collections::HashSet<&PathBuf> = c.pending.iter().map(|p| &p.twin).collect();
@@ -794,7 +856,7 @@ fn changes_of(c: &ScratchCopy) -> Result<Vec<(PathBuf, Change)>, String> {
         }
     }
     for rel in c.snapshot.keys() {
-        if !seen.contains(rel) {
+        if !seen.contains(rel) && !unheld.contains(rel) {
             out.push((rel.clone(), Change::Deleted));
         }
     }
@@ -2075,9 +2137,12 @@ pub async fn changed_files(iso: &Isolation) -> Vec<String> {
 /// stopped, or Nebo restarted): a worktree's work is committed on its task
 /// branch and the worktree removed, so the disk is freed and nothing is
 /// lost ([`shelve`]; [`reattach`] checks it out again); a scratch copy with
-/// work in it is kept where it is; a copy with none is removed. Returns
+/// work in it is saved ([`save`]) and kept where it is, or with
+/// `free_scratch` (nothing will work in it soon) removed once saved, its
+/// saved work then where it is kept, as a worktree's is on its branch
+/// ([`reattach`] makes it again); a copy with none is removed. Returns
 /// where the work is, for the owner's report (`None`: there was none).
-pub async fn put_away(iso: &mut Isolation, message: &str) -> Option<String> {
+pub async fn put_away(iso: &mut Isolation, message: &str, free_scratch: bool) -> Option<String> {
     let mid_catch_up = matches!(iso, Isolation::Git(wt) if rebasing(wt).await);
     if !mid_catch_up && changed_files(iso).await.is_empty() {
         finish_no_changes(iso).await;
@@ -2101,6 +2166,13 @@ pub async fn put_away(iso: &mut Isolation, message: &str) -> Option<String> {
             let kept = format!("its work is kept in its copy at {}", c.path.display());
             if let Err(e) = save(iso).await {
                 warn!(path = %iso.path().display(), error = %e, "a scratch copy's work could not be saved");
+                return Some(kept);
+            }
+            if free_scratch {
+                if let Err(e) = std::fs::remove_dir_all(iso.path()) {
+                    warn!(path = %iso.path().display(), error = %e, "a put-away scratch copy's folder not removed");
+                }
+                return Some(format!("its work is saved, made again in {} when it is needed", iso.path().display()));
             }
             Some(kept)
         }
@@ -2468,6 +2540,48 @@ mod tests {
             let unsaved = create_copy(f.path(), "sa-unsaved").unwrap();
             std::fs::remove_dir_all(&unsaved.path).unwrap();
             assert!(reattach(Isolation::Copy(unsaved)).await.unwrap_err().contains("none of its work was saved"));
+        }))
+    }
+
+    /// Review of #1014: a scratch copy's saved snapshot leaves out a file
+    /// over 50 MB and the folder's build output, which the copy was made
+    /// with. Made again after the system cleared it, the copy holds each
+    /// one the owner still has as it was, and one the owner changed since
+    /// is never landed as a deletion: the owner's file stays, whatever is
+    /// landed.
+    #[test]
+    fn a_cleared_copy_never_lands_a_deletion_of_a_file_its_snapshot_could_not_hold() {
+        with_home(|_| rt().block_on(async {
+            let big = crate::harness::verify::shadow::BIG_FILE_BYTES + 10 * 1024 * 1024;
+            let f = folder();
+            for name in ["kept.mov", "changed.mov"] {
+                std::fs::File::create(f.path().join(name)).unwrap().set_len(big).unwrap();
+            }
+            std::fs::create_dir_all(f.path().join("node_modules/pkg")).unwrap();
+            std::fs::write(f.path().join("node_modules/pkg/index.js"), "module.exports = 1;\n").unwrap();
+            let c = create_copy(f.path(), "sa-big").unwrap();
+            assert_eq!(std::fs::metadata(c.path.join("kept.mov")).unwrap().len(), big, "the copy is made with every file");
+            std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
+            let iso = Isolation::Copy(c.clone());
+            save(&iso).await.unwrap();
+
+            // The owner changes one big file; then the system clears the copies.
+            std::fs::OpenOptions::new().write(true).open(f.path().join("changed.mov")).unwrap().set_len(big + 1).unwrap();
+            std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
+            let iso = reattach(iso).await.unwrap();
+            assert_eq!(std::fs::metadata(c.path.join("kept.mov")).unwrap().len(), big, "held as it was");
+            assert_eq!(std::fs::read_to_string(c.path.join("node_modules/pkg/index.js")).unwrap(), "module.exports = 1;\n");
+            assert!(!c.path.join("changed.mov").exists(), "the copy's version of it is not known");
+            assert_eq!(sorted(changed_files(&iso).await), ["b.txt"], "nothing it could not hold is a change");
+
+            // Landed as it is, the owner's word: never a deletion of his files.
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Edit b", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), ["b.txt"]);
+            assert_eq!(std::fs::metadata(f.path().join("changed.mov")).unwrap().len(), big + 1, "the owner's change stays");
+            assert_eq!(std::fs::metadata(f.path().join("kept.mov")).unwrap().len(), big);
+            assert!(f.path().join("node_modules/pkg/index.js").is_file());
+            assert!(nothing_left(&c));
         }))
     }
 
@@ -3100,14 +3214,14 @@ mod tests {
             let path = wt.path.clone();
             let mut iso = Isolation::Git(wt);
             assert_eq!(changed_files(&iso).await, vec!["b.txt".to_string()]);
-            let note = put_away(&mut iso, "Unfinished: add b").await.unwrap();
+            let note = put_away(&mut iso, "Unfinished: add b", false).await.unwrap();
             assert!(note.contains("branch nebo/sa-r15"), "{note}");
             assert!(!path.exists(), "the worktree is gone");
             assert_eq!(git(r.path(), &["show", "nebo/sa-r15:b.txt"]).await.unwrap(), "half done", "the work is on its branch");
             assert!(!r.path().join("b.txt").exists(), "nothing landed");
 
             let mut idle = Isolation::Git(create_worktree(r.path(), "sa-r16").await.unwrap());
-            assert!(put_away(&mut idle, "Unfinished").await.is_none(), "no work, nothing kept");
+            assert!(put_away(&mut idle, "Unfinished", false).await.is_none(), "no work, nothing kept");
             assert!(!idle.path().exists());
         }))
     }
@@ -3201,12 +3315,12 @@ mod tests {
             std::fs::write(copy.join("more.txt"), "more work\n").unwrap();
             let [mut iso] = isos;
             // Not resolved yet: kept as it is, nothing staged for the builder.
-            let note = put_away(&mut iso, "Unfinished").await.unwrap();
+            let note = put_away(&mut iso, "Unfinished", false).await.unwrap();
             assert!(note.contains("kept in its copy") && copy.exists(), "{note}");
             assert!(!unmerged(match &iso { Isolation::Git(w) => w, _ => unreachable!() }).await.is_empty(), "the conflict is still the builder's");
             // Resolved (staged): put away on its branch.
             stage_resolution(&iso).await;
-            let note = put_away(&mut iso, "Unfinished").await.unwrap();
+            let note = put_away(&mut iso, "Unfinished", false).await.unwrap();
             assert!(note.contains("branch nebo/sa-m3"), "{note}");
             assert!(!copy.exists(), "the disk is freed");
             assert_eq!(git(r.path(), &["show", "nebo/sa-m3:a.txt"]).await.unwrap(), "parent and child");
@@ -3393,7 +3507,7 @@ mod tests {
             let c = create_copy(f.path(), "sa-pa").unwrap();
             std::fs::write(c.path.join("doc.txt"), "half\n").unwrap();
             let mut iso = Isolation::Copy(c);
-            assert!(put_away(&mut iso, "x").await.unwrap().contains("kept in its copy"));
+            assert!(put_away(&mut iso, "x", false).await.unwrap().contains("kept in its copy"));
             let iso = reattach(iso).await.unwrap();
             assert_eq!(std::fs::read_to_string(iso.path().join("doc.txt")).unwrap(), "half\n");
             let mut isos = [iso];

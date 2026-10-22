@@ -10971,6 +10971,50 @@ mod tests {
         })
     }
 
+    /// Review of #1014: on Linux a reviewer's command reaches only the
+    /// folders that exist when it starts, so the lenses' one build folder
+    /// is made with the round's copy, before any of them runs, never left
+    /// to the first build.
+    #[test]
+    fn the_reviewers_build_folder_is_made_before_they_run() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(decision),
+                    Step::Say("Rounded to cents."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                // Asked mid-round, after the reviewers ran: their folders as
+                // they had them.
+                let builds = Arc::new(Mutex::new(Vec::new()));
+                let seen = builds.clone();
+                let on_ask: Box<dyn Fn() + Send + Sync> = Box::new(move || {
+                    let verify = config::copies_dir().unwrap().join("verify");
+                    for scratch in std::fs::read_dir(verify).into_iter().flatten().flatten() {
+                        seen.lock().unwrap().push(crate::harness::verify::review::build_dir(&scratch.path()).is_dir());
+                    }
+                });
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(OwnerAnswers { picked: "cents", asked: asked.clone(), on_ask: Some(on_ask) })],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(asked.lock().unwrap().len(), 1);
+                assert_eq!(*builds.lock().unwrap(), [true], "the build folder was there for the reviewers");
+            })
+        })
+    }
+
     /// Live 2026-10-21: a reviewer called "Contact form does nothing on
     /// static site" the owner's decision with no choices, and his card had
     /// only Skip. A decision without choices goes to the builder as a defect

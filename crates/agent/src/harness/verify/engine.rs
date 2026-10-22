@@ -522,6 +522,11 @@ impl VerifyCheck {
         let round_dir = review::round_dir(&scratch, round);
         let _ = std::fs::remove_dir_all(&round_dir);
         std::fs::create_dir_all(&round_dir).map_err(|e| format!("create {}: {e}", round_dir.display()))?;
+        // The lenses' one build folder is made here, before any of them
+        // runs: a confined command reaches only folders that exist when it
+        // starts (Linux binds them into an empty, read-only root).
+        let build = review::build_dir(&scratch);
+        std::fs::create_dir_all(&build).map_err(|e| format!("create {}: {e}", build.display()))?;
         let patch = review::patch_file(&round_dir);
         std::fs::write(&patch, &reviewed.patch).map_err(|e| format!("write {}: {e}", patch.display()))?;
         work.shadow.export(head, &review::project_dir(&round_dir)).await?;
@@ -737,7 +742,7 @@ impl VerifyCheck {
         if whole.is_empty() && v.rounds == 0 {
             // Nothing changed after all: no verification to show.
             if let Some(iso) = work.iso.as_mut() {
-                worktree::put_away(iso, "No changes").await;
+                worktree::put_away(iso, "No changes", false).await;
             }
             let _ = store.delete_verification(&v.id);
             work.clean_up();

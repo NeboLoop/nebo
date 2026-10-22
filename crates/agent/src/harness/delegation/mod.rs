@@ -1186,7 +1186,7 @@ impl Helpers {
             self.unplace(parent_key);
             if let Some(iso) = &mut isolation {
                 // Never used: nothing in it.
-                crate::worktree::put_away(iso, &spec.description).await;
+                crate::worktree::put_away(iso, &spec.description, false).await;
             }
             return Err(e);
         }
@@ -1980,7 +1980,7 @@ impl Helpers {
             let mut error = error.to_string();
             let held = self.state().copies.get(&run.id).cloned();
             if let Some(mut held) = held {
-                match crate::worktree::put_away(&mut held.iso, "Unfinished work, put away when Nebo restarted").await {
+                match crate::worktree::put_away(&mut held.iso, "Unfinished work, put away when Nebo restarted", false).await {
                     Some(kept) => {
                         error.push_str(&format!("; {kept}, and a follow-up continues in it"));
                         held.unfinished = Some("it was interrupted by a restart before it finished".into());
@@ -2436,7 +2436,7 @@ impl Helpers {
         let catching_up = matches!(&held.iso, crate::worktree::Isolation::Git(wt) if wt.onto.is_some());
         if files.is_empty() && !catching_up {
             self.release(task_id);
-            crate::worktree::put_away(&mut held.iso, description).await;
+            crate::worktree::put_away(&mut held.iso, description, false).await;
             return;
         }
         let at = held.iso.path().display().to_string();
@@ -2456,7 +2456,7 @@ impl Helpers {
             }
             CompletionStatus::Stopped => {
                 held.unfinished = Some("it was stopped before it finished".into());
-                let kept = crate::worktree::put_away(&mut held.iso, &format!("Unfinished: {description}")).await.unwrap_or_default();
+                let kept = crate::worktree::put_away(&mut held.iso, &format!("Unfinished: {description}"), false).await.unwrap_or_default();
                 format!(
                     "It was stopped before its changes landed: {kept}. Nothing of the owner's changed. A follow-up \
                      (send_message to {task_id}) continues it there, or drop them with changes: \"discard\"."
