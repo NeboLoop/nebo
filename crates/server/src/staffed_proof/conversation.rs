@@ -3917,11 +3917,12 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
     let opened = nebo.post_ok(&format!("/agents/{app}/chats"), &json!({})).await;
     let thread = opened["sessionKey"].as_str().expect("thread").to_string();
 
-    let (status, body) = nebo.post(&send, &json!({})).await;
+    let (status, body) = nebo.post_as_page(&app, &send, &json!({})).await;
     assert_eq!((status, body["error"].as_str()), (422, Some("No errors to send.")), "{body}");
 
     let (status, body) = nebo
-        .post(
+        .post_as_page(
+            &app,
             &format!("/apps/{app}/devlog"),
             &json!({ "entries": [
                 { "level": "log", "message": "booted", "source": "console", "time": 1_700_000_000_000i64 },
@@ -3937,7 +3938,7 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
         { "level": "error", "message": "Failed to load /assets/index-MARK-FLIP.js", "source": "resource", "time": 1_700_000_000_500i64 },
         { "level": "error", "message": "GET /levels/1.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_000_900i64 }
     ] });
-    let sent = nebo.post_ok(&send, &page).await;
+    let sent = nebo.post_ok_as_page(&app, &send, &page).await;
     assert_eq!(sent["status"], "dispatched", "{sent}");
     assert_eq!(sent["sessionId"].as_str(), Some(thread.as_str()), "{sent}");
     rig.until(30, "the employee works on the errors in the owner's open chat", || fixing(&thread) == 1).await;
@@ -3959,21 +3960,21 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
     rig.owner_writes(&web, &app, Some("conv-flip-phone"), "OWNER-FLIP-PHONE the bird won't fly").await;
     rig.until(30, "the phone conversation is answered", || rig.loop_.all("conv-flip-phone").contains("PHONE-ACK")).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    let sent = nebo.post_ok(&send, &page).await;
+    let sent = nebo.post_ok_as_page(&app, &send, &page).await;
     assert_eq!((sent["status"].as_str(), sent["sessionId"].as_str()), (Some("dispatched"), Some(web.as_str())), "{sent}");
     rig.until(30, "the work on the errors reaches his phone", || rig.loop_.all("conv-flip-phone").contains("FLIP-FIXING")).await;
     assert_eq!(fixing(&thread), 1, "the thread he left is not written to");
 
     // Turned off: refused, in words the page shows, never "dispatched".
     nebo.post_ok(&format!("/agents/{app}/deactivate"), &json!({})).await;
-    let (status, body) = nebo.post(&send, &page).await;
+    let (status, body) = nebo.post_as_page(&app, &send, &page).await;
     assert_eq!(status, 409, "{body}");
     assert_eq!(body["error"], "Proof Flip App is turned off. Turn it on, then send again.", "{body}");
     assert!(body.get("status").is_none(), "{body}");
 
     // The errors were kept: the same press, once it is back on, sends them.
     nebo.activate(&app).await;
-    let again = nebo.post_ok(&send, &page).await;
+    let again = nebo.post_ok_as_page(&app, &send, &page).await;
     assert_eq!(again["status"], "dispatched", "{again}");
     rig.until(30, "the retried errors are worked on", || fixing(&web) == 2).await;
 }
@@ -4015,7 +4016,7 @@ async fn an_apps_console_send_shows_live_in_the_open_chat() {
     let errors = json!({ "entries": [
         { "level": "error", "message": "Uncaught TypeError: MARK-LIVE scene is null", "source": "error", "time": 1_700_000_000_000i64 }
     ] });
-    let sent = nebo.post_ok(&format!("/apps/{app}/devlog/send"), &errors).await;
+    let sent = nebo.post_ok_as_page(&app, &format!("/apps/{app}/devlog/send"), &errors).await;
     assert_eq!((sent["status"].as_str(), sent["sessionId"].as_str()), (Some("dispatched"), Some(thread.as_str())), "{sent}");
 
     let mut heard: Vec<(String, Value)> = Vec::new();
