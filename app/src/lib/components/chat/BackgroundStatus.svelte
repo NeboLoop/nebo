@@ -55,6 +55,12 @@
   });
 
   let open = $state(false);
+  let popover = $state<HTMLDivElement | null>(null);
+  // The list opens under its line, at the end of the conversation: brought
+  // into view it lands above the composer (the scroller's scroll padding).
+  $effect(() => {
+    popover?.scrollIntoView({ block: 'nearest' });
+  });
   let transcript = $state<BackgroundTask | null>(null);
   let flash = $state(0);
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -136,10 +142,10 @@
       {/if}
     </div>
     <!-- Opens in the conversation, under the line: never clipped by a short
-         chat's edge. -->
+         chat's edge, and scrolled into view above the composer. -->
     {#if open && count > 0}
       <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
-      <div class="bg-status-popover">
+      <div class="bg-status-popover" bind:this={popover}>
         <BackgroundPanel
           tasks={mine}
           {finished}

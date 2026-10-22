@@ -797,6 +797,9 @@
 	/* Room at the end for what floats over it (chat-floating) and its fade,
 	   so the last row is never under either. */
 	padding: 18px 24px calc(18px + 1rem + var(--chat-float, 0px));
+	/* What is brought into view (the running tasks' list) lands above the
+	   composer, never under it. */
+	scroll-padding-bottom: calc(1rem + var(--chat-float, 0px));
 }
 
 /* The conversation fills the column; the composer floats over its end, the
@@ -816,10 +819,26 @@
 	@apply pointer-events-none absolute inset-x-0 bottom-full h-4;
 	background-image: linear-gradient(to bottom, transparent, color-mix(in oklab, var(--color-base-100) 50%, transparent));
 }
+/* The composer's card and its menus (@mentions, commands, the intelligence
+   picker) stand above all that floats under them: the conversation and the
+   scroll-to-bottom button (z-20). The running tasks' list (z-50) stands
+   above the card. */
+.composer-card {
+	@apply z-30;
+}
 /* The composer's card: nearly opaque, with a light blur, so words running
-   under it show only faintly. Solid where the browser can't blur. */
+   under it show only faintly. Solid where the browser can't blur. The glass
+   is a layer under the card's content, never the card itself: a filtered
+   element contains its fixed children, and the intelligence picker's
+   click-away cover must span the window. */
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
 	.composer-card {
+		background-color: transparent;
+	}
+	.composer-card::before {
+		content: '';
+		@apply pointer-events-none absolute inset-0 -z-10;
+		border-radius: inherit;
 		background-color: color-mix(in oklab, var(--color-surface, var(--color-base-100)) 94%, transparent);
 		-webkit-backdrop-filter: blur(8px);
 		backdrop-filter: blur(8px);

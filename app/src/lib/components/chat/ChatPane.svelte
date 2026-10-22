@@ -1064,6 +1064,14 @@
   /** The floating area's height (its fade, the goal and notices, the
    *  composer): the room the scroller leaves at its end. */
   let floatHeight = $state(0);
+  let chatStage = $state<HTMLDivElement | null>(null);
+  // The measured height goes to app.css as `--chat-float`, where every rule
+  // that reads it lives (as `--ui-scale` does from stores/theme.ts). CSS alone
+  // can't reserve the room: a sticky composer is a stacking context and would
+  // trap its full-window sheets under the Work pane.
+  $effect(() => {
+    chatStage?.style.setProperty('--chat-float', `${floatHeight}px`);
+  });
   /** The fade above the floating composer (app.css `.chat-floating::before`). */
   const FLOAT_FADE_PX = 16;
   let messagesContent = $state<HTMLDivElement | null>(null);
@@ -1821,8 +1829,8 @@
 
   <!-- The conversation fills the column; the composer floats over its end
        (chat-floating), the messages fading out behind it. Its measured
-       height is the room the scroller leaves at its end. -->
-  <div class="chat-stage" style:--chat-float="{floatHeight}px">
+       height (`--chat-float`) is the room the scroller leaves at its end. -->
+  <div class="chat-stage" bind:this={chatStage}>
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
     <div class="flex-1 flex items-center justify-center p-6 chat-under-float">

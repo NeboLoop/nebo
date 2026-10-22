@@ -49,7 +49,14 @@ describe('ChatPane', () => {
 		expect(status, 'the running line is in the conversation').toBeGreaterThan(out.indexOf('Fixed it.'));
 		expect(status, 'before the floating area').toBeLessThan(floating);
 		expect(composer, 'the composer floats').toBeGreaterThan(floating);
-		expect(out).toContain('--chat-float: 0px');
+		expect(out, 'no inline style: the height reaches app.css from the script').not.toMatch(/class="chat-stage"[^>]*style=/);
+	});
+
+	it('stands the composer card and its menus over the scroll button, and the running tasks over the card', () => {
+		const z = (name: string) => Number(/z-(\d+)/.exec(rule(name))?.[1]);
+		expect(z('.composer-card')).toBeGreaterThan(z('.chat-scroll-button'));
+		expect(z('.bg-status-popover')).toBeGreaterThan(z('.composer-card'));
+		expect(rule('.chat-scroller'), 'what is scrolled into view lands above the composer').toContain('scroll-padding-bottom: calc(1rem + var(--chat-float');
 	});
 
 	it('leaves the floating height and its fade at the end of the scroller; the fade never takes a click', () => {
@@ -68,6 +75,8 @@ describe('ChatPane', () => {
 		expect(glass).toContain('.composer-card');
 		expect(glass).toContain('94%, transparent');
 		expect(glass).toContain('backdrop-filter: blur(8px)');
+		expect(glass, "the glass is a layer, so the card never contains its menus' fixed covers").toContain('.composer-card::before');
+		expect(glass.slice(0, glass.indexOf('.composer-card::before'))).not.toContain('blur(8px)');
 	});
 
 	it("opens the composer's full-window sheets over the header's menus and the Work pane", () => {
