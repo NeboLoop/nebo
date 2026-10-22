@@ -292,7 +292,7 @@ impl SubAgentOrchestrator for HelperDoor {
                 Box::pin(async move {
                     let changed = crate::worktree::changed_files(&iso).await;
                     let checks = crate::harness::verify::checks::detect(iso.path(), &changed);
-                    let build = crate::harness::verify::checks::build_cache(iso.root());
+                    let build = crate::harness::verify::checks::build_cache(iso.root())?;
                     let runs = crate::harness::verify::checks::run(&tools, &ctx, &checks, &build).await;
                     let failed: Vec<String> = runs.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
                     if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
