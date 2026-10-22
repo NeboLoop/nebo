@@ -439,6 +439,7 @@ fn the_publish_tools_are_in_the_one_developer_pack() {
     // An app installed from the marketplace never does, mode or not.
     seed_app(&store, dir.path(), "app-9", "Bought Game");
     store.set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp").unwrap();
+    store.set_agent_built_here("app-9", false).unwrap();
     for on in [false, true] {
         set_mode(&store, on);
         let withheld = crate::app_dev::withheld(&store, "app-9");
@@ -651,6 +652,7 @@ async fn with_the_mode_off_an_app_publishes_only_itself() {
     seed_app(&store, dir.path(), "app-2", "Note Pad");
     seed_app(&store, dir.path(), "app-9", "Bought Game");
     store.set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp").unwrap();
+    store.set_agent_built_here("app-9", false).unwrap();
     let ctx = |who: &str| ToolContext {
         origin: crate::origin::Origin::User,
         session_key: format!("agent:{who}:web"),
