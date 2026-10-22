@@ -194,11 +194,11 @@ impl WebCore {
             .build()
             .expect("reqwest web client builder is infallible with these options");
         // Never auto-follows redirects — each hop gets the SSRF check in
-        // fetch_checked.
-        let bare_client = tls::http_client()
+        // fetch_checked — and connects only to the public addresses it
+        // resolves (`checked_client`).
+        let bare_client = checked_client()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(USER_AGENT)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest web client builder is infallible with these options");
         Self {
@@ -3042,10 +3042,38 @@ fn private_url_error(url: &str) -> String {
     )
 }
 
+/// The client [`fetch_checked`] takes: it never follows a redirect itself,
+/// and it connects only to an address it resolved and found public
+/// ([`PublicOnly`]), so a name that answers public to the check and private
+/// to the connection (DNS rebinding) reaches nothing local.
+pub fn checked_client() -> reqwest::ClientBuilder {
+    tls::http_client()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(PublicOnly))
+}
+
+/// [`checked_client`]'s resolver: the system lookup, refused when ANY address
+/// it answers is not public ([`is_public_ip`]), the same rule
+/// [`check_url_allowed`] holds a name to.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs.is_empty() || addrs.iter().any(|a| !is_public_ip(a.ip())) {
+                return Err(format!("{host} resolves to a local or private network address, which is never fetched").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 /// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
 /// redirects are followed manually (limit 5, matching the previous auto
 /// policy) so a public URL can't redirect into a private address unchecked.
-/// `client` must not follow redirects itself. `hop_allowed` is the
+/// `client` is a [`checked_client`]. `hop_allowed` is the
 /// caller's own rule on top, asked of every hop (an app's `network:`
 /// grant: a redirect never leaves the domains it was allowed).
 pub async fn fetch_checked(
@@ -3869,6 +3897,16 @@ button "Next" [ref_4]
 link "Create account" [ref_5]"#;
         let result = detect_auth_page(url, content);
         assert!(result.is_some(), "should detect Google OAuth login");
+    }
+
+    /// The checked client's resolver refuses a name that answers a local
+    /// address: the address connected to is the one checked.
+    #[tokio::test]
+    async fn the_checked_client_never_connects_to_a_name_that_resolves_local() {
+        use reqwest::dns::Resolve;
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        let err = PublicOnly.resolve(name).await.err().expect("refused");
+        assert!(err.to_string().contains("local or private"), "{err}");
     }
 
     #[test]

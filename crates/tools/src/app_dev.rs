@@ -105,8 +105,15 @@ pub fn app_location(row: &db::models::Agent) -> Option<String> {
 
 /// Whether an app is the owner's own: made on this bot (a loose package in
 /// `user/agents/`, or a database-only row), never one installed from the
-/// marketplace (a sealed `.napp`, or a package under `nebo/agents/`). Only
-/// the owner's own apps carry developer tooling and build themselves.
+/// marketplace (a sealed `.napp`, or a package in an installs folder,
+/// `nebo/agents/`). Only the owner's own apps carry developer tooling, build
+/// themselves, and hold what they ask for without his OK (`app_grants`).
+///
+/// An install is known by its folder's shape, `…/nebo/agents/…`, wherever
+/// Nebo's folder is: a row left on the folder of an older copy of Nebo's
+/// data (a moved `NEBO_HOME`, a restore) is still an install. Every row the
+/// loader adds records its folder, and one with none gets it at start
+/// (`repair_napp_path`), so a row with none is one made here.
 pub fn is_own_app(row: &db::models::Agent) -> bool {
     if row.is_app.unwrap_or(0) == 0 {
         return false;
@@ -121,7 +128,18 @@ pub fn is_own_app(row: &db::models::Agent) -> bool {
         .is_some_and(|p| {
             p.extension().is_some_and(|e| e == "napp")
                 || installed_root.as_deref().is_some_and(|root| p.starts_with(root))
+                || in_an_installs_folder(p)
         })
+}
+
+/// Whether `path` lies in an installs folder (`…/nebo/agents/…`), whichever
+/// copy of Nebo's data holds it.
+fn in_an_installs_folder(path: &Path) -> bool {
+    let parts: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    parts.windows(2).any(|w| w[0] == "nebo" && w[1] == "agents")
 }
 
 /// Whether `caller` may use the developer pack on `app`: only ever one of
@@ -974,6 +992,28 @@ mod tests {
         store
             .set_agent_app_fields(id, true, Some(&ui.to_string_lossy()), None, None)
             .unwrap();
+    }
+
+    /// An install is known by its folder's shape wherever Nebo's data is:
+    /// a row left on an older copy's `nebo/agents/` folder is never taken
+    /// for an app made here.
+    #[test]
+    fn an_install_is_never_the_owners_own_wherever_its_folder_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        app_row(&store, "app-1", "Mine", &dir.path().join("ui1"));
+        let row = || store.get_agent("app-1").unwrap().unwrap();
+        assert!(is_own_app(&row()), "a database-only row is made here");
+        for (path, own) in [
+            ("/old/Library/Application Support/Nebo/user/agents/Mine", true),
+            ("/old/Library/Application Support/Nebo/nebo/agents/mine/1.0.0", false),
+            ("/home/a/.local/share/nebo/nebo/agents/mine/1.0.0", false),
+            ("/home/a/.local/share/nebo/user/agents/Mine", true),
+            ("/data/bought.napp", false),
+        ] {
+            store.set_agent_napp_path("app-1", path).unwrap();
+            assert_eq!(is_own_app(&row()), own, "{path}");
+        }
     }
 
     /// app_status names the entry page's scripts and styles, flags the one

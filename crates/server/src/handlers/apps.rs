@@ -1829,7 +1829,7 @@ pub async fn http_proxy(
     }
     let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
 
-    let client = match tls::http_client().redirect(reqwest::redirect::Policy::none()).build() {
+    let client = match tools::web_tool::checked_client().build() {
         Ok(client) => client,
         Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
     };
