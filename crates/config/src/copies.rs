@@ -3,8 +3,8 @@
 //!
 //! A working copy is the project an employee changes in isolation (a git
 //! worktree or a scratch copy) and what the verify loop hands its reviewers
-//! (a read-only export of the change, the patch, each reviewer's build
-//! folder). None of it is Nebo's own data, so none of it sits in
+//! (a read-only export of the change, the patch, the one build folder
+//! they share). None of it is Nebo's own data, so none of it sits in
 //! `data_dir`, where every employee is fenced out of everything but a few
 //! open parts (`tools::nebo_files`).
 //!

@@ -740,8 +740,8 @@ mod tests {
     /// The working copies are any employee's own turn's to work in, and a
     /// fenced run's only where its fence is: an isolated helper reaches its
     /// own copy and no other; a reviewer reads its round's copy and patch
-    /// and changes neither, builds in its own folder, and reaches no other
-    /// verification's. However the path is spelled, through a link or
+    /// and changes neither, builds in the build folder its verification's
+    /// lenses share, and reaches no other verification's. However the path is spelled, through a link or
     /// `/tmp` included.
     #[test]
     fn a_fenced_run_reaches_only_its_own_working_copies() {
@@ -750,7 +750,7 @@ mod tests {
         let helper = copies.join("worktrees/site/sa-1");
         let other = copies.join("worktrees/site/sa-2");
         let round = copies.join("verify/v-1/round-1");
-        let build = copies.join("verify/v-1/build-security");
+        let build = copies.join("verify/v-1/build");
         let theirs = copies.join("verify/v-2/round-1");
         for dir in [&helper, &other, &round.join("project"), &build, &theirs.join("project")] {
             std::fs::create_dir_all(dir).unwrap();
@@ -774,8 +774,8 @@ mod tests {
             assert!(!reviewer.closes(&read, None, Read), "{} is read", read.display());
             assert!(reviewer.closes(&read, None, Write), "{} is never changed", read.display());
         }
-        assert!(!reviewer.closes(&build.join("debug/x"), None, Write), "its own build folder");
-        for closed in [theirs.join("change.patch"), copies.join("verify/v-1/build-data/x"), helper.join("a.rs")] {
+        assert!(!reviewer.closes(&build.join("debug/x"), None, Write), "its verification's build folder");
+        for closed in [theirs.join("change.patch"), copies.join("verify/v-2/build/x"), helper.join("a.rs")] {
             assert!(reviewer.closes(&closed, None, Read), "{}", closed.display());
         }
         assert!(reviewer.closes(&round.join("project/../../../v-2/round-1/change.patch"), None, Read), "..");
@@ -805,7 +805,7 @@ mod tests {
     fn a_command_naming_the_copies_through_tmp_is_found() {
         let (_d, root) = home();
         let copies = PathBuf::from("/private/tmp/nebo-fence-proof/copies");
-        let reviewer = fence(&root).with_copies(Copies::new(&copies, &[copies.join("verify/v-1/build-data")], &[copies.join("verify/v-1/round-1")]));
+        let reviewer = fence(&root).with_copies(Copies::new(&copies, &[copies.join("verify/v-1/build")], &[copies.join("verify/v-1/round-1")]));
         assert!(reviewer.named_in("cat /tmp/nebo-fence-proof/copies/verify/v-2/round-1/change.patch", None).is_some());
         assert!(reviewer.named_in("cat /tmp/nebo-fence-proof/copies/verify/v-1/round-1/change.patch", None).is_none());
     }
