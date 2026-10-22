@@ -46,9 +46,9 @@ const MAX_SECONDS: u64 = 30;
 const SPEECH_MODEL: &str = "nebo-speech";
 /// The speed transcripts are made and billed as.
 const TRANSCRIBE_MODEL: &str = "nebo-transcribe";
-/// The plugin whose engine pulls a video's sound out as small speech and
-/// cuts a long recording in pauses, for a transcript.
-const MEDIA_PLUGIN: &str = "nebo-media";
+/// Nebo Media, the plugin whose engine pulls a video's sound out as small
+/// speech and cuts a long recording in pauses, for a transcript.
+pub const MEDIA_PLUGIN: &str = "nebo-media";
 /// The longest part of a recording sent in one transcription request, in
 /// seconds; a longer one is cut into parts in its pauses.
 const TRANSCRIPT_PART: u32 = 1200;
@@ -653,9 +653,17 @@ pub fn contained(base: &Path, into: &str) -> Result<PathBuf, String> {
 fn outside(into: &str, base: &Path) -> String {
     format!(
         "`{into}` leads out of {}, where relative paths stay. Name the file by its absolute or `~/` path instead \
-         (e.g. `~/NeboAI/Media/Projects/lighthouse/frames/s1-start.png`); never copy files into this folder to reach them.",
-        base.display()
+         (e.g. `{}/lighthouse/frames/s1-start.png`); never copy files into this folder to reach them.",
+        base.display(),
+        media_studio()
     )
+}
+
+/// The Media Studio folder a production's project folder is in
+/// (`config::workspace_folder`), as the employee is told it.
+fn media_studio() -> String {
+    let studio = config::WorkspaceFolder::MediaStudio;
+    config::workspace_folder(studio).map(|d| d.display().to_string()).unwrap_or_else(|_| studio.name().to_string())
 }
 
 /// Makes `path`'s folder and checks that, links resolved, it is still
@@ -1422,8 +1430,8 @@ impl GenerateMediaTool {
         Ok(Target {
             base: root,
             label: "the workspace".to_string(),
-            // `Media`, as Nebo Media writes it: one folder on a case-sensitive disk too.
-            default_folder: "Media",
+            // Media made outside a project is a file made for the owner.
+            default_folder: config::WorkspaceFolder::Documents.name(),
         })
     }
 
@@ -2236,11 +2244,12 @@ impl DynTool for GenerateMediaTool {
          - Remake only what failed, once at most without asking. What it makes is tagged AI-generated and reaches the owner \
            as a card by itself; don't share_file it.\n\
          - `into`: an absolute or `~/` path is saved there, a relative one inside the app's folder (yours or `app`) or the \
-           workspace; project work inside `~/NeboAI/Media/Projects/<project>/`. Then use the path the result gives.\n\
+           workspace; project work inside `{studio}/<project>/`. Then use the path the result gives.\n\
          - It only makes new media; a media plugin such as Nebo Media only edits (mix, trim, resize, convert, inspect).\n\
          - The result gives paths, never pictures; to look at one, use the vision helper.\n\
          - Leave `model` out unless the owner named one.",
-            if_sound(" kind \"sound\": a sound effect.")
+            if_sound(" kind \"sound\": a sound effect."),
+            studio = media_studio()
         )
     }
 
@@ -2260,7 +2269,7 @@ impl DynTool for GenerateMediaTool {
                 "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
                 "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe, as it is, of any length or size (an absolute, `~/` or relative path); never extract or split it first." },
                 "language": { "type": "string", "description": "Transcript: the spoken language code (e.g. en, es) when known. Left out: detected." },
-                "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Project work always goes inside its project, `~/NeboAI/Media/Projects/<project>/`, in sources/, voice/, music/, frames/, clips/, work/, versions/ or deliver/ (finals), e.g. `~/NeboAI/Media/Projects/lighthouse/frames/s1-start.png`. Left out: a name from the prompt, loose in the workspace." },
+                "into": { "type": "string", "description": format!("The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Project work always goes inside its project, `{studio}/<project>/`, in sources/, voice/, music/, frames/, clips/, work/, versions/ or deliver/ (finals), e.g. `{studio}/lighthouse/frames/s1-start.png`. Left out: a name from the prompt, in the workspace's {documents} folder.", studio = media_studio(), documents = config::WorkspaceFolder::Documents.name()) },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
                 "model": { "type": "string", "description": "A NeboAI media model. Leave out for the default." },
                 "n": { "type": "integer", "minimum": 1, "maximum": MAX_IMAGES, "description": "Image: how many (1-4)." },

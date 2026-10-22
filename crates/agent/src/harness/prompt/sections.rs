@@ -396,11 +396,13 @@ installs (npm install -g, pip install --user, cargo install, go install) are kep
 
 /// The environment's fields after the date, in the order they are told:
 /// the platform, the shell, admin rights, where software comes from, the desktop a server bot lacks, the working
-/// folder when there is one, the channel, who is watching, the employee's
+/// folder when there is one, the owner's workspace and its folders
+/// ([`workspace_layout`]), the channel, who is watching, the employee's
 /// email address when the bot has one (`inputs::email_address`), and the
 /// bot's Location when the owner set one (`inputs::office_location`).
 pub fn environment_fields(
     cwd: Option<&str>,
+    workspace: Option<&str>,
     channel: &str,
     watching: Watching,
     email: Option<&str>,
@@ -436,6 +438,9 @@ pub fn environment_fields(
     if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
         fields.push(("Working folder".to_string(), cwd.to_string()));
     }
+    if let Some(workspace) = workspace {
+        fields.push(("Workspace".to_string(), workspace_layout(workspace)));
+    }
     fields.push(("Channel".to_string(), channel.to_string()));
     fields.push(("Watching".to_string(), watching.to_string()));
     if let Some(email) = email {
@@ -445,6 +450,20 @@ pub fn environment_fields(
         fields.push(("Location".to_string(), location.to_string()));
     }
     fields
+}
+
+/// Where the owner's work goes: his workspace and each of its folders
+/// (`config::WorkspaceFolder`), by the names they have on disk. A folder the
+/// owner names wins.
+pub fn workspace_layout(workspace: &str) -> String {
+    let folders: Vec<String> = config::WorkspaceFolder::ALL
+        .into_iter()
+        .map(|f| format!("{}/{} ({})", f.name(), f.per(), f.holds()))
+        .collect();
+    format!(
+        "{workspace}. Each kind of work goes in its folder here, unless the owner names another folder: {}",
+        folders.join("; ")
+    )
 }
 
 /// The time it is for the owner at `now`: the clock, their zone and its UTC
@@ -485,9 +504,29 @@ mod owner_now_tests {
         assert_eq!(Watching::of(auto, &Door::Heartbeat), Watching::Scheduled);
         assert_eq!(Watching::of(auto, &Door::Workflow), Watching::Unattended);
         assert_eq!(Watching::of(tools::ExecutionMode::Interactive, &Door::Chat), Watching::Live);
-        let told = environment_fields(None, "cron", Watching::Scheduled, None, None);
+        let told = environment_fields(None, None, "cron", Watching::Scheduled, None, None);
         let watching = &told.iter().find(|(k, _)| k == "Watching").unwrap().1;
         assert!(watching.contains("Inbox (push_notification)") && watching.contains("end without posting"), "{watching}");
+    }
+
+    /// Every turn is told the workspace and each of its folders by the name
+    /// it has on disk, spaces kept, and that a folder the owner names wins.
+    #[test]
+    fn the_environment_names_the_workspace_folders() {
+        let told = environment_fields(None, Some("/Users/a/NeboAI"), "web", Watching::Live, None, None);
+        let workspace = &told.iter().find(|(k, _)| k == "Workspace").unwrap().1;
+        assert!(workspace.starts_with("/Users/a/NeboAI. ") && workspace.contains("unless the owner names another folder"), "{workspace}");
+        for part in [
+            "Design Studio/<project>/ (websites",
+            "Media Studio/<project>/ (videos",
+            "Apps/<app>/ (source of apps",
+            "Code/<project>/ (code projects",
+            "Documents/ (files made",
+            "Downloads/ (files downloaded",
+        ] {
+            assert!(workspace.contains(part), "{part}: {workspace}");
+        }
+        assert!(environment_fields(None, None, "web", Watching::Live, None, None).iter().all(|(k, _)| k != "Workspace"));
     }
 
     fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {

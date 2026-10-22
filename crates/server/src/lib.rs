@@ -2496,6 +2496,13 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 Err(e) => warn!(error = %e, "workspace move task failed; it is tried again at the next start"),
             }
         }
+        // The owner's Nebo Media projects into the Media Studio folder (once
+        // the Nebo Media here reads them there), after the workspace move and
+        // before the first look.
+        {
+            let (store, plugins) = (store.clone(), plugin_store.clone());
+            let _ = tokio::task::spawn_blocking(move || migration::move_media_projects(&store, &plugins)).await;
+        }
         let store = store.clone();
         tokio::task::spawn_blocking(move || match tools::workspace_history::look(&store, &workspace, &files, None) {
             Ok(look) => info!(files = look.files, hashed = look.hashed, kept = look.kept, "workspace history: looked at start"),
@@ -4095,6 +4102,12 @@ async fn handle_plugin_fs_event(state: &AppState, event: napp::plugin::PluginFsE
                 codes::activate_plugins(state, std::slice::from_ref(slug)).await;
             }
             info!(slug = %slug, path = %binary_path.display(), action, by_hand, "plugin hot-loaded");
+            // An updated Nebo Media may be the first to read the Media Studio
+            // folder: its projects move there now.
+            if slug == tools::media_tool::MEDIA_PLUGIN {
+                let (store, plugins) = (state.store.clone(), state.plugin_store.clone());
+                let _ = tokio::task::spawn_blocking(move || migration::move_media_projects(&store, &plugins)).await;
+            }
         }
         napp::plugin::PluginFsEvent::Removed { .. } => {
             state.hooks.unregister_app(slug);

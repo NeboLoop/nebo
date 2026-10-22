@@ -1055,6 +1055,46 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── Nebo Media's projects into the Media Studio folder ─────────────
+
+/// The first Nebo Media that reads its projects from the Media Studio folder
+/// (`NEBO_MEDIA_STUDIO_DIR`). An older one reads `Media/Projects`, so the
+/// move waits for this one: moving under an older reader would leave it
+/// writing new work back into the old folder.
+const MEDIA_STUDIO_READER: semver::Version = semver::Version::new(0, 6, 1);
+
+/// The owner's Nebo Media projects into the Media Studio folder
+/// (`tools::workspace_history::move_media_projects`), once the Nebo Media
+/// installed here reads them there, or none is installed (the next one
+/// installed is current). Called at startup and whenever Nebo Media is
+/// installed or updated; once the old folder is gone it does nothing.
+pub fn move_media_projects(store: &db::Store, plugins: &napp::plugin::PluginStore) {
+    if let Some(m) = plugins.get_manifest(tools::media_tool::MEDIA_PLUGIN) {
+        match semver::Version::parse(&m.version) {
+            Ok(v) if v >= MEDIA_STUDIO_READER => {}
+            _ => {
+                debug!(version = %m.version, "Nebo Media still reads Media/Projects; its projects stay until it updates");
+                return;
+            }
+        }
+    }
+    let studio = config::WorkspaceFolder::MediaStudio;
+    let (Ok(workspace), Ok(to)) = (config::workspace_dir(), config::workspace_folder(studio)) else {
+        return;
+    };
+    let done = tools::workspace_history::move_media_projects(store, &workspace, &to, dirs::home_dir().as_deref());
+    for (from, to_name) in &done.moved {
+        if from == to_name {
+            info!(project = %from, "media project moved into {}", to.display());
+        } else {
+            warn!(project = %from, kept_as = %to_name, "{} already had one of this name: both kept", to.display());
+        }
+    }
+    for name in &done.left {
+        warn!(project = %name, "media project could not be moved; it stays where it was and is tried again at the next start");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1343,3 +1383,4 @@ mod tests {
         assert_eq!(text(&old.join("token.json")), "secret", "the plugin keeps its file");
     }
 }
+

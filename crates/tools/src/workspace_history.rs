@@ -547,5 +547,8 @@ pub fn describe_restore(r: &Restored) -> String {
     out
 }
 
+mod media_projects;
+pub use media_projects::{MediaProjectsMove, move_media_projects};
+
 #[cfg(test)]
 mod tests;

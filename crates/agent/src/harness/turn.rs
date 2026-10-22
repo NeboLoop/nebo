@@ -1298,9 +1298,9 @@ pub(crate) async fn prepare(
     let watching = prompt::sections::Watching::of(seat.execution_mode, &req.seat.door);
     let environment = h.environment_fields(&req.seat.agent_id, req.seat.cwd.as_deref(), &channel, watching);
     let channel_plugin = h.tools.get(&format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX)).await.is_some();
-    let files_dir = config::workspace_dir()
+    let files_dir = config::workspace_folder(config::WorkspaceFolder::Documents)
         .map(|d| d.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "~/NeboAI".to_string());
+        .unwrap_or_else(|_| format!("~/NeboAI/{}", config::WorkspaceFolder::Documents.name()));
     let channel_rules = sections::channel_rules(&channel, channel_plugin, &files_dir);
     let coworker_access = sections::coworker_access(seat.audience_restricted);
     let identity = Identity {

@@ -256,6 +256,11 @@ impl PluginRuntime {
             env.push(("NEBO_CHROMIUM".into(), browser));
         }
 
+        // The owner's workspace folders (`NEBO_MEDIA_STUDIO_DIR`, …), so a
+        // plugin never builds one by hand. After the permission filter, like
+        // the browser.
+        env.extend(config::workspace_folders_env());
+
         // User-stored auth values (plugin settings) — the top auth layer.
         for (k, v) in stored_auth {
             if !v.is_empty() {

@@ -861,6 +861,12 @@ Your sidecar runs in a sandboxed environment. The injected variables are:
 | `NEBO_APP_SOCK` | `...deal-tracker/deal-tracker.sock` | Unix socket path |
 | `NEBO_DATA_DIR` | `<Nebo appdata>/agents/deal-tracker` | Writable data directory under Nebo's appdata, `appdata/agents/<app id>/` — the app's own, keyed by its id (separate from code — survives upgrades, reinstalls and renames of the app's folder). Always use the env var; never hardcode a path. |
 | `NEBO_API_URL` | `http://127.0.0.1:27895` | Local Nebo API base URL (the port is the running server's port, injected at launch) |
+| `NEBO_DESIGN_STUDIO_DIR` | `~/NeboAI/Design Studio` | The owner's Design Studio folder: one folder per project (websites, decks, cards, mailers) |
+| `NEBO_MEDIA_STUDIO_DIR` | `~/NeboAI/Media Studio` | The owner's Media Studio folder: one folder per video project (Nebo Media's projects) |
+| `NEBO_APPS_DIR` | `~/NeboAI/Apps` | Source for apps the owner builds, one folder per app |
+| `NEBO_CODE_DIR` | `~/NeboAI/Code` | Code projects an employee builds outside a studio, one folder per project |
+| `NEBO_DOCUMENTS_DIR` | `~/NeboAI/Documents` | Files employees make for the owner |
+| `NEBO_DOWNLOADS_DIR` | `~/NeboAI/Downloads` | Files employees save for the owner |
 | `NEBO_APP_TOKEN` | (per-launch token) | Per-launch auth token for calling the Nebo API |
 | `PATH` | system path | Allowlisted system var |
 | `HOME` | user home | Allowlisted system var |
