@@ -522,6 +522,11 @@ impl VerifyCheck {
         let round_dir = review::round_dir(&scratch, round);
         let _ = std::fs::remove_dir_all(&round_dir);
         std::fs::create_dir_all(&round_dir).map_err(|e| format!("create {}: {e}", round_dir.display()))?;
+        // The lenses' one build folder is made here, before any of them
+        // runs: a confined command reaches only folders that exist when it
+        // starts (Linux binds them into an empty, read-only root).
+        let build = review::build_dir(&scratch);
+        std::fs::create_dir_all(&build).map_err(|e| format!("create {}: {e}", build.display()))?;
         let patch = review::patch_file(&round_dir);
         std::fs::write(&patch, &reviewed.patch).map_err(|e| format!("write {}: {e}", patch.display()))?;
         work.shadow.export(head, &review::project_dir(&round_dir)).await?;
@@ -551,7 +556,8 @@ impl VerifyCheck {
     /// Ask the owner one question with choices, the recommended one first,
     /// on the conversation's card (and the mobile app). `None` when nobody
     /// can answer in this run. The question waits on the row while it is
-    /// asked, so a restart asks it again.
+    /// asked, so a restart asks it again. A question with no choices is
+    /// never asked: the owner would have nothing to pick but Skip.
     async fn ask_owner(
         &self,
         id: &str,
@@ -560,6 +566,10 @@ impl VerifyCheck {
         options: &[&str],
         purpose: &Purpose,
     ) -> Option<String> {
+        if options.iter().all(|o| o.trim().is_empty()) {
+            tracing::error!(verification = %id, question, "a question for the owner with no choices was not asked");
+            return None;
+        }
         let ask = json!({ "question": question, "context": context, "options": options, "purpose": purpose });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
@@ -732,7 +742,7 @@ impl VerifyCheck {
         if whole.is_empty() && v.rounds == 0 {
             // Nothing changed after all: no verification to show.
             if let Some(iso) = work.iso.as_mut() {
-                worktree::put_away(iso, "No changes").await;
+                worktree::put_away(iso, "No changes", false).await;
             }
             let _ = store.delete_verification(&v.id);
             work.clean_up();
@@ -994,6 +1004,21 @@ impl VerifyCheck {
             held.extend(r.verified_ok.iter().cloned());
             priors.extend(r.prior.iter().cloned());
         }
+        // Progress, against the best so far.
+        let earlier = store.verification_rounds(&v.id).unwrap_or_default();
+        // The owner's calls already made, by the finding that asked each: the
+        // same call is never asked twice, and one that keeps coming back
+        // counts against progress.
+        let asked_before: Vec<(Finding, String)> = earlier
+            .iter()
+            .filter(|r| r.round < at)
+            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
+            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
+            .collect();
+        // Settled only now, against the calls he already made: one raised
+        // again without its choices still carries his answer.
+        let answered: Vec<Finding> = asked_before.iter().map(|(f, _)| f.clone()).collect();
+        findings::settle(&mut new, &answered);
         let (decisions, defects): (Vec<Finding>, Vec<Finding>) =
             new.iter().cloned().partition(|f| f.kind == Kind::Decision);
         let open = findings::open_after(&prior_open, &priors, &defects);
@@ -1006,17 +1031,6 @@ impl VerifyCheck {
         let checks_failed = runs.iter().filter(|r| !r.passed).count();
         let blocking_now = findings::blocking(&open) + checks_failed;
 
-        // Progress, against the best so far.
-        let earlier = store.verification_rounds(&v.id).unwrap_or_default();
-        // The owner's calls already made, by the finding that asked each: the
-        // same call is never asked twice, and one that keeps coming back
-        // counts against progress.
-        let asked_before: Vec<(Finding, String)> = earlier
-            .iter()
-            .filter(|r| r.round < at)
-            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
-            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
-            .collect();
         let mut calls: Vec<Finding> = Vec::new();
         for d in decisions {
             if !calls.iter().any(|c| c.same_call(&d)) {
@@ -1082,15 +1096,7 @@ impl VerifyCheck {
                 asked.push(json!({ "finding": d, "answer": answer }));
                 continue;
             }
-            let mut options: Vec<&str> = Vec::new();
-            if let Some(r) = d.recommended.as_deref() {
-                options.push(r);
-            }
-            for o in &d.options {
-                if Some(o.as_str()) != d.recommended.as_deref() {
-                    options.push(o);
-                }
-            }
+            let options = d.choices();
             let context = format!(
                 "{}\n\nWhy it matters: {}\n\nWhere: {}",
                 d.repro, d.impact, d.evidence

@@ -362,7 +362,7 @@ impl TurnWork {
                         Ok(w) => w,
                         Err(e) => {
                             let mut iso = iso;
-                            worktree::put_away(&mut iso, "Not started").await;
+                            worktree::put_away(&mut iso, "Not started", false).await;
                             return Err(e);
                         }
                     }
@@ -733,11 +733,11 @@ pub fn cap_builds() -> usize {
 
 /// Reclaim the verify loop's disk (run at boot and daily): the files of a
 /// verification finished more than [`KEEP_FINISHED_SECS`] ago (or with no
-/// row), a finished worktree copy that never landed put away on its branch
-/// (its work kept, the disk freed), build folders and folder shadows unused
-/// that long, and the build folders over [`BUILD_CAP_BYTES`], least recently
-/// used first. A scratch copy is never removed: its work lives only there.
-/// Returns how many folders it removed.
+/// row), a finished copy that never landed put away (its work kept, on its
+/// branch or in its saved snapshot, and the disk freed), build folders and
+/// folder shadows unused that long, and the build folders over
+/// [`BUILD_CAP_BYTES`], least recently used first. Returns how many folders
+/// it removed.
 pub async fn sweep(store: &db::Store, now: i64) -> usize {
     let root = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("verify");
     // A verification's own files, and its reviewers' with the working copies.
@@ -764,13 +764,13 @@ pub async fn sweep(store: &db::Store, now: i64) -> usize {
                 if !old(v.finished_at.unwrap_or(v.created_at)) {
                     false
                 } else {
-                    // Its copy, never landed: put away on its branch.
+                    // Its copy, never landed: put away, a worktree's work on
+                    // its branch, a scratch copy's in its saved snapshot.
                     if v.landed_ref.is_empty()
                         && let Some(mut iso) = v.isolation_state.clone().and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok())
-                        && matches!(iso, worktree::Isolation::Git(_))
                         && iso.path().exists()
                     {
-                        worktree::put_away(&mut iso, "Verified work never landed, put away to free the disk").await;
+                        worktree::put_away(&mut iso, "Verified work never landed, put away to free the disk", true).await;
                         let _ = store.set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
                     }
                     true
@@ -858,7 +858,7 @@ mod tests {
         })
     }
 
-    fn rt()-> tokio::runtime::Runtime {
+    fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -979,6 +979,39 @@ mod tests {
                 for kept in ["v-live", "v-new", "v-orphan"] {
                     assert!(Work::home(kept).exists(), "{kept} is kept");
                 }
+            })
+        })
+    }
+
+    /// Review of #1014: a scratch copy finished long ago and never landed
+    /// is put away like a worktree: its work saved, its folder freed. Its
+    /// saved work makes it again, and it still lands.
+    #[test]
+    fn a_finished_scratch_copy_never_landed_is_put_away_by_the_sweep() {
+        crate::test_home::with_home(|home| {
+            rt().block_on(async {
+                let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+                let project = tempfile::tempdir().unwrap();
+                std::fs::write(project.path().join("doc.txt"), "base\n").unwrap();
+                let c = worktree::create_copy(project.path(), "sa-swept").unwrap();
+                std::fs::write(c.path.join("doc.txt"), "verified\n").unwrap();
+                let iso = worktree::Isolation::Copy(c.clone());
+                store
+                    .create_verification(&db::NewVerification { id: "v-copy", session_key: "agent:a:web", isolation: "copy", work_kind: "isolated", ..Default::default() }, 1)
+                    .unwrap();
+                store.set_verification_state("v-copy", &db::VerificationState { state: "verified", ..Default::default() }, 1).unwrap();
+                store.set_verification_isolation("v-copy", &serde_json::to_value(&iso).unwrap()).unwrap();
+                std::fs::create_dir_all(Work::home("v-copy")).unwrap();
+
+                sweep(&store, 10 * KEEP_FINISHED_SECS as i64).await;
+                assert!(!c.path.exists(), "its folder freed");
+                assert!(!worktree::nothing_left(&c), "its work saved");
+                let iso = worktree::reattach(iso).await.unwrap();
+                assert_eq!(std::fs::read_to_string(c.path.join("doc.txt")).unwrap(), "verified\n");
+                let mut isos = [iso];
+                let out = worktree::merge_all(&mut isos, "Edit doc", None, &worktree::Landing::default()).await;
+                assert!(out[0].1.landed(), "{:?}", out[0].1);
+                assert_eq!(std::fs::read_to_string(project.path().join("doc.txt")).unwrap(), "verified\n");
             })
         })
     }

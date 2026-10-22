@@ -438,6 +438,15 @@ impl Shadow {
         Ok(out)
     }
 
+    /// Every file `snapshot` holds, '/'-separated.
+    pub async fn paths(&self, snapshot: &Snapshot) -> Result<Vec<String>, String> {
+        let listed = self
+            .run_bytes(&["ls-tree", "-r", "-z", "--name-only", "--full-tree", &snapshot.0])
+            .await
+            .map_err(|e| format!("ls-tree: {e}"))?;
+        Ok(nul_split(&listed).map(str::to_string).collect())
+    }
+
     /// The text of the regular file `rel` as `snapshot` holds it; `None`
     /// for a link, a folder or nothing there.
     pub async fn read(&self, snapshot: &Snapshot, rel: &str) -> Option<String> {

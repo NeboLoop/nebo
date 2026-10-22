@@ -139,10 +139,18 @@ pub const CHECK_TIMEOUT_MS: u64 = 600_000;
 /// takes (`run_command` in the registry, under the run's permissions in
 /// `ctx`), each in its folder with the project's build folder. A check the
 /// permission check refuses, or that outlasts [`CHECK_TIMEOUT_MS`], failed.
+/// The build folder is made first: a confined command reaches only the
+/// folders that exist when it starts (Linux binds them into an empty,
+/// read-only root), so one made by the build itself would be refused.
 pub async fn run(tools: &tools::Registry, ctx: &tools::ToolContext, checks: &[Check], build_dir: &Path) -> Vec<CheckRun> {
     let mut out = Vec::with_capacity(checks.len());
+    let made = std::fs::create_dir_all(build_dir).map_err(|e| format!("The build folder {} could not be made: {e}", build_dir.display()));
     for check in checks {
         let started = std::time::Instant::now();
+        if let Err(e) = &made {
+            out.push(CheckRun { label: check.label.clone(), command: check.command.clone(), passed: false, tail: e.clone(), duration_ms: 0 });
+            continue;
+        }
         let mut ctx = ctx.clone();
         ctx.cwd = Some(check.dir.to_string_lossy().into_owned());
         // A fenced run (a helper in its own copy) reaches only its own of
@@ -506,6 +514,62 @@ mod tests {
             assert!(a.starts_with(config::copies_dir().unwrap().join("build")), "{}", a.display());
             assert!(!a.starts_with(home));
         })
+    }
+
+    /// Review of #1014: on Linux a confined command reaches only the
+    /// folders that exist when it starts, so the build folder is made
+    /// before a check runs, never left to the build.
+    #[test]
+    fn a_check_runs_with_its_build_folder_already_made() {
+        struct RunEverything;
+        #[async_trait::async_trait]
+        impl tools::PermissionGate for RunEverything {
+            async fn check(&self, _ctx: &tools::ToolContext, _call: &tools::ResolvedCall<'_>) -> tools::GateVerdict {
+                tools::GateVerdict::Run { why: types::permissions::Why::BasicWork, reach: Default::default() }
+            }
+        }
+        struct SeesBuild(std::sync::Arc<std::sync::Mutex<Vec<bool>>>);
+        impl tools::registry::DynTool for SeesBuild {
+            fn name(&self) -> &str {
+                "run_command"
+            }
+            fn description(&self) -> String {
+                "runs a command".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}, "description": {"type": "string"}, "timeout": {"type": "integer"}}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                false
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move {
+                    let command = input["command"].as_str().unwrap_or("");
+                    let build = command.split_whitespace().next().and_then(|e| e.strip_prefix("CARGO_TARGET_DIR=")).unwrap_or("");
+                    self.0.lock().unwrap().push(Path::new(build.trim_matches('\'')).is_dir());
+                    tools::ToolResult::ok("ok")
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let build = dir.path().join("copies/build/0123");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runs = rt.block_on(async {
+            let registry = tools::Registry::new(std::sync::Arc::new(RunEverything));
+            registry.register(Box::new(SeesBuild(seen.clone()))).await;
+            let check = Check { label: "cargo check".into(), command: "cargo check".into(), dir: dir.path().to_path_buf() };
+            run(&registry, &tools::ToolContext::default(), &[check], &build).await
+        });
+        assert!(runs[0].passed, "{runs:?}");
+        assert_eq!(*seen.lock().unwrap(), [true], "the build folder was there when the check started");
     }
 
     #[test]
