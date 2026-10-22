@@ -116,6 +116,12 @@ enum Answers {
 pub(crate) struct Waiting {
     pub card: WaitingAsk,
     answers: Answers,
+    /// A question the verify loop asks about the code work it checks (a
+    /// live verification of the conversation waits on it): that work's
+    /// request. The owner's instruction about that work is his answer in
+    /// his own words; a request for other work is a new message
+    /// ([`reply_question`]).
+    about_work: Option<String>,
 }
 
 /// GET /api/v1/asks — everything waiting on the owner's answer, from every
@@ -195,7 +201,20 @@ fn from_parked(state: &AppState, session_key: &str, ask: &PendingAsk) -> Waiting
             widgets: ask.widgets.clone(),
         },
         answers: Answers::Question,
+        about_work: work_asked_about(state, session_key, &ask.prompt),
     }
+}
+
+/// The request of the code work whose live verification, in conversation
+/// `session_key`, waits on the question `prompt` (its pending ask).
+fn work_asked_about(state: &AppState, session_key: &str, prompt: &str) -> Option<String> {
+    state
+        .store
+        .list_verifications(&db::VerificationQuery { session_key: Some(session_key), live: true, ..Default::default() })
+        .unwrap_or_default()
+        .into_iter()
+        .find(|v| v.pending_ask.as_ref().and_then(|a| a["question"].as_str()).is_some_and(|q| q.trim() == prompt.trim()))
+        .map(|v| v.spec)
 }
 
 /// What a parked question's card offers.
@@ -309,6 +328,7 @@ fn permission_waiting(c: &PermissionAskCard) -> Waiting {
             widgets: None,
         },
         answers: Answers::Permission(offered.into_iter().map(|(_, a)| a).collect()),
+        about_work: None,
     }
 }
 
@@ -479,7 +499,14 @@ fn reply_question(w: &Waiting) -> Question {
     if w.card.free_text {
         criteria.insert(
             OWN_WORDS.into(),
-            if w.card.options.is_empty() {
+            if w.about_work.is_some() {
+                // The verify loop asks about the code it checks: what he
+                // wants done about it is his answer (live, build 152: "save it
+                // to the thread too" waited in the queue as a new message).
+                "The owner's own answer that is none of the listed answers: what he wants done about this question \
+                 or about the change it asks about (`work`), including an instruction about that change"
+                    .into()
+            } else if w.card.options.is_empty() {
                 "An answer to the question".into()
             } else {
                 "An answer to the question in the owner's own words that is none of the listed answers".into()
@@ -488,28 +515,42 @@ fn reply_question(w: &Waiting) -> Question {
     }
     criteria.insert(
         NOT_AN_ANSWER.into(),
-        "Not an answer to this question: a new request or instruction, a different question, or a remark about \
-         something else"
-            .into(),
+        if w.about_work.is_some() {
+            "Not about this question or the change it asks about (`work`): a request for other work (a different \
+             feature, page, file or project, even one about code), a different question, or a remark about \
+             something else"
+        } else {
+            "Not an answer to this question: a new request or instruction, a different question, or a remark about \
+             something else"
+        }
+        .into(),
     );
-    Question::Choice {
-        instructions: "The owner was asked `question`; `options` are the answers it offers. Then the owner said \
-                       `reply`. `conversation` is what the owner has been saying, in the language they speak, and \
-                       `reply` is in that language. What `reply` is."
-            .into(),
-        criteria,
+    let mut instructions = "The owner was asked `question`; `options` are the answers it offers. Then the owner said \
+                            `reply`. `conversation` is what the owner has been saying, in the language they speak, and \
+                            `reply` is in that language."
+        .to_string();
+    if w.about_work.is_some() {
+        instructions.push_str(" `question` is about the code change made for `work`.");
     }
+    instructions.push_str(" What `reply` is.");
+    Question::Choice { instructions, criteria }
 }
 
 /// The state the decision reads. The owner's words are data, never part of
 /// an instruction.
 fn reply_state(w: &Waiting, words: &str, conversation: &str) -> serde_json::Value {
-    serde_json::json!({
+    let mut state = serde_json::json!({
         "question": ai::decide::clip(w.card.question.trim(), WORDS_CAP),
         "options": w.card.options,
         "reply": ai::decide::clip(words.trim(), WORDS_CAP),
         "conversation": ai::decide::clip(conversation.trim(), WORDS_CAP),
-    })
+    });
+    // The change a verify loop's question is about: what tells an
+    // instruction about it from a request for other work.
+    if let Some(work) = &w.about_work {
+        state["work"] = ai::decide::clip(work.trim(), WORDS_CAP).into();
+    }
+    state
 }
 
 /// The reading a decision states: not an answer when that is picked or its
@@ -993,6 +1034,7 @@ pub(crate) mod tests {
                 relayed: false, widgets: None,
             },
             answers: Answers::Question,
+            about_work: None,
         }
     }
 
@@ -1172,6 +1214,7 @@ pub(crate) mod tests {
                 relayed: false, widgets: None,
             },
             answers: Answers::Permission(vec![Answer::AllowAlways, Answer::ThisOnce, Answer::No]),
+            about_work: None,
         };
         for (words, i) in [
             ("Allow always", 0),
@@ -1250,6 +1293,53 @@ pub(crate) mod tests {
         w
     }
 
+    /// The verify loop's question takes the owner's instruction about it as
+    /// his answer (live, build 152: it waited in the queue as a new
+    /// message); every other question keeps the 2026-09-29 guard, where a
+    /// new request is not an answer.
+    #[test]
+    fn an_instruction_answers_the_verify_loops_question_and_no_other() {
+        let criteria = |w: &Waiting| match reply_question(w) {
+            Question::Choice { criteria, .. } => criteria,
+            other => panic!("{other:?}"),
+        };
+        let plain = question("q1", "Pin saves only to local store, not to the chat thread", &["Save to the thread", "Keep it local"]);
+        let looped = Waiting { about_work: Some("Pin a message to the chat".into()), ..question("q2", "Pin saves only to local store, not to the chat thread", &["Save to the thread", "Keep it local"]) };
+        assert!(criteria(&plain)[NOT_AN_ANSWER].contains("a new request or instruction"));
+        assert!(criteria(&looped)[OWN_WORDS].contains("including an instruction about that change"));
+        assert!(!criteria(&looped)[NOT_AN_ANSWER].contains("instruction"), "an instruction about it is not 'not an answer'");
+        assert!(criteria(&looped)[NOT_AN_ANSWER].contains("a different question"));
+    }
+
+    /// Review of #998: a verify loop's question took the owner's
+    /// instruction as his answer, and with it any new coding request typed
+    /// while it was open. The decision reads his words against the change
+    /// the question is about (`work`): an instruction about that change is
+    /// his answer, a request for other work, code or not, is a new message.
+    #[tokio::test]
+    async fn a_new_coding_request_is_never_the_answer_to_a_verify_loops_question() {
+        const FIX: &str = "save it to the thread too";
+        const NEW: &str = "also add a dark mode toggle to the settings page";
+        let (jev, seen) = table_jev(&[(FIX, OWN_WORDS), (NEW, NOT_AN_ANSWER)]).await;
+        let w = Waiting {
+            about_work: Some("Pin a message to the chat".into()),
+            ..question("q1", "Pin saves only to local store, not to the chat thread", &["Save to the thread", "Keep it local"])
+        };
+        assert_eq!(read_reply(Some(&jev), &w, FIX, "").await, Reading::OwnWords, "an instruction about this change");
+        assert_eq!(read_reply(Some(&jev), &w, NEW, "").await, Reading::NotAnAnswer, "other work is a new message");
+        let seen = seen.lock().unwrap().clone();
+        let asked = seen.iter().find(|r| r["state"]["reply"] == NEW).expect("asked");
+        assert_eq!(asked["state"]["work"], "Pin a message to the chat", "read against the change it is about");
+        let criteria = &asked["questions"][REPLY]["criteria"];
+        let not_an_answer = criteria[NOT_AN_ANSWER].as_str().unwrap();
+        assert!(not_an_answer.contains("a request for other work") && not_an_answer.contains("even one about code"), "{not_an_answer}");
+        assert!(criteria[OWN_WORDS].as_str().unwrap().contains("the change it asks about (`work`)"), "{criteria}");
+        assert!(asked["questions"][REPLY]["instructions"].as_str().unwrap().contains("`work`"));
+        // Any other question carries no work, and its criteria are as they were.
+        let plain = reply_state(&question("q2", "Which plan?", &["Monthly", "Yearly"]), NEW, "");
+        assert!(plain.get("work").is_none(), "{plain}");
+    }
+
     /// A near tie with "not an answer" keeps the question open.
     #[test]
     fn a_near_not_an_answer_is_no_answer() {
@@ -1288,6 +1378,7 @@ pub(crate) mod tests {
                 ..w.card.clone()
             },
             answers: w.answers.clone(),
+            about_work: None,
         };
         assert_eq!(
             reading_from(&decision(OWN_WORDS, 0.0), &linked),

@@ -4536,6 +4536,10 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "A responder: {question}",
+		"tellIt": "Diz-lhe o que fazer",
+		"sending": "A enviar…",
+		"sendFailed": "A tua resposta não foi enviada."
 	}
 }

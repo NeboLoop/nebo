@@ -4536,6 +4536,10 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "Antwoord op: {question}",
+		"tellIt": "Zeg wat het moet doen",
+		"sending": "Versturen…",
+		"sendFailed": "Je antwoord is niet verstuurd."
 	}
 }

@@ -4536,6 +4536,10 @@
 		},
 		"time": {
 			"minutes": "{m}分{s}秒"
-		}
+		},
+		"answering": "正在回答：{question}",
+		"tellIt": "告訴它怎麼做",
+		"sending": "正在傳送…",
+		"sendFailed": "你的回答沒有傳送出去。"
 	}
 }

@@ -16,6 +16,7 @@
   import type { BackgroundTask } from '$lib/api/neboComponents';
   import { widthFade } from '$lib/components/background/widthFade';
   import type { VerificationView } from '$lib/api/neboComponents';
+  import type { VerificationAnswer } from '$lib/stores/verifications';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
 
   let {
@@ -24,6 +25,7 @@
     activityStatus = '',
     turnStartedAt = 0,
     checking = [],
+    onanswer,
   }: {
     /** The conversation's session: its list is what its turns launched. */
     sessionKey: string;
@@ -34,6 +36,8 @@
     /** The conversation's code work still being checked or waiting on the
      *  owner: one piece each, "Checking · round 2 ›". */
     checking?: VerificationView[];
+    /** Answers a question code work waits on, from its sheet. */
+    onanswer?: VerificationAnswer;
   } = $props();
 
   /** The turn's time shows once it has run this long. */
@@ -134,7 +138,7 @@
         <span class="bg-status-piece" transition:widthFade>{$t('background.tasksFinished', { values: { n: flash } })}</span>
       {/if}
       {#each checking as v (v.id)}
-        <span class="bg-status-piece" transition:widthFade><VerifiedBadge verification={v} statusLine /></span>
+        <span class="bg-status-piece" transition:widthFade><VerifiedBadge verification={v} statusLine {onanswer} /></span>
       {/each}
       {#if phrase}
         <span class="bg-status-piece bg-status-phrase {thinking ? 'bg-status-thinking' : ''}" transition:widthFade>{phrase}</span>

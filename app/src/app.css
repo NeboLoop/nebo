@@ -1491,6 +1491,27 @@
 .verify-sheet {
   @apply flex flex-col gap-3 text-xs;
 }
+.verify-question {
+  @apply flex flex-col gap-2 rounded-box bg-base-200 px-3 py-2.5;
+}
+.verify-question-text {
+  @apply m-0 text-sm font-medium text-base-content;
+}
+.verify-question-choices {
+  @apply flex flex-wrap gap-2;
+}
+.verify-question-more {
+  @apply flex items-center justify-between;
+}
+.verify-question-chosen {
+  @apply ring-2 ring-primary;
+}
+.verify-question-status {
+  @apply m-0 flex items-center gap-2 text-base-content/60;
+}
+.verify-question-failed {
+  @apply text-error;
+}
 .verify-sheet-phase {
   @apply m-0 font-medium text-info;
 }
