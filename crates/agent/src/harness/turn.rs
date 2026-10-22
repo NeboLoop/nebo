@@ -11132,7 +11132,11 @@ mod tests {
                 let calls = model.calls();
                 let reviewer = calls.iter().find(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).unwrap();
                 let heard: String = reviewer.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
-                assert!(heard.contains("review-r1"), "the reviewer works in its own copy");
+                // Its round's own copy and its own build folder, with the
+                // working copies: never Nebo's own folder.
+                let scratch = crate::harness::verify::work::Work::copies(&v.id).unwrap();
+                assert!(heard.contains(&format!("{}/round-1/project", scratch.display())), "the reviewer works in its own copy");
+                assert!(heard.contains(&format!("{}/build-", scratch.display())), "and builds in its own folder");
                 assert!(!heard.contains(&v.work_dir), "never the builder's copy");
                 assert!(calls[3].messages.iter().any(|m| m.content.contains("changed files in your working copy while this round ran")));
             })
