@@ -796,27 +796,48 @@
 	overflow-anchor: none;
 	/* Room at the end for what floats over it (chat-floating) and its fade,
 	   so the last row is never under either. */
-	padding: 18px 24px calc(18px + 1rem + var(--chat-float, 0px));
+	padding: 18px 24px calc(18px + var(--chat-fade) + var(--chat-float, 0px));
 	/* What is brought into view (the running tasks' list) lands above the
 	   composer, never under it. */
-	scroll-padding-bottom: calc(1rem + var(--chat-float, 0px));
+	scroll-padding-bottom: calc(var(--chat-fade) + var(--chat-float, 0px));
+}
+/* The scroller's frame: its height is the visible conversation, which the
+   running tasks' list is sized to (`cqh`). Its size comes from the column,
+   never its content, so containing it changes nothing. */
+.chat-scroll-frame {
+	@apply relative min-h-0 flex-1;
+	container-type: size;
 }
 
 /* The conversation fills the column; the composer floats over its end, the
    messages fading out behind it in the column's own color. */
 .chat-stage {
 	@apply relative flex min-h-0 flex-1 flex-col;
+	/* The fade over the conversation's end, above the composer. Read by
+	   ChatPane too (the room left for a streaming reply): one value, in px. */
+	--chat-fade: 16px;
 }
 .chat-floating {
 	/* No band: the space beside and under the composer's card stays clear,
 	   the conversation running on under it. Neither a z-index nor a filter
 	   here, so the full-window sheets the composer opens are the window's. */
-	@apply absolute inset-x-0 bottom-0;
+	@apply pointer-events-none absolute inset-x-0 bottom-0;
+}
+/* Its gutters pass the wheel and clicks to the conversation under them;
+   what stands in them (the goal, the notices, the composer's card, the
+   sheets it opens) takes them. */
+.chat-floating > * > *,
+.composer-dock > * {
+	@apply pointer-events-auto;
+}
+.composer-dock {
+	@apply pointer-events-none;
 }
 /* A small, subtle fade just above the composer. It never takes a click. */
 .chat-floating::before {
 	content: '';
-	@apply pointer-events-none absolute inset-x-0 bottom-full h-4;
+	@apply pointer-events-none absolute inset-x-0 bottom-full;
+	height: var(--chat-fade);
 	background-image: linear-gradient(to bottom, transparent, color-mix(in oklab, var(--color-base-100) 50%, transparent));
 }
 /* The composer's card and its menus (@mentions, commands, the intelligence
@@ -1348,7 +1369,11 @@
   @apply fixed inset-0 z-40 cursor-default;
 }
 .bg-status-popover {
-  @apply relative z-50 mt-1 max-h-[60vh] overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg;
+  @apply relative z-50 mt-1 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg;
+  /* Never taller than the room above the composer, its line (h-6 + mt-1)
+     in view even at the end of the conversation (the scroller's 18px end
+     padding): it never reaches over the card. */
+  max-height: min(60vh, calc(100cqh - var(--chat-float, 0px) - var(--chat-fade) - 18px - 1.75rem));
 }
 
 .bg-panel {

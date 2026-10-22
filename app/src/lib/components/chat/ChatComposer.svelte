@@ -727,7 +727,7 @@
   }
 </script>
 
-<div class="px-6 py-3 shrink-0">
+<div class="composer-dock px-6 py-3 shrink-0">
   <div
     class="composer-card rounded-box border shadow-md p-3 relative bg-surface transition-colors {composerDragOver ? 'border-primary ring-2 ring-primary/30' : 'border-base-300'}"
     ondragenter={onComposerDragEnter}

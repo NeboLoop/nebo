@@ -3,6 +3,7 @@
   import { t } from 'svelte-i18n';
   import { devMode, appDeveloperMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
+  import { vars } from '$lib/actions/vars';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
@@ -1064,16 +1065,6 @@
   /** The floating area's height (its fade, the goal and notices, the
    *  composer): the room the scroller leaves at its end. */
   let floatHeight = $state(0);
-  let chatStage = $state<HTMLDivElement | null>(null);
-  // The measured height goes to app.css as `--chat-float`, where every rule
-  // that reads it lives (as `--ui-scale` does from stores/theme.ts). CSS alone
-  // can't reserve the room: a sticky composer is a stacking context and would
-  // trap its full-window sheets under the Work pane.
-  $effect(() => {
-    chatStage?.style.setProperty('--chat-float', `${floatHeight}px`);
-  });
-  /** The fade above the floating composer (app.css `.chat-floating::before`). */
-  const FLOAT_FADE_PX = 16;
   let messagesContent = $state<HTMLDivElement | null>(null);
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
@@ -1113,7 +1104,8 @@
     const usedByTurn = content.getBoundingClientRect().bottom - target.getBoundingClientRect().top;
     // What can be seen is the scroller less what floats over its end (the
     // composer and its fade): the reply never streams behind the composer.
-    const seen = scroller.clientHeight - floatHeight - FLOAT_FADE_PX;
+    const fade = parseFloat(getComputedStyle(scroller).getPropertyValue('--chat-fade')) || 0;
+    const seen = scroller.clientHeight - floatHeight - fade;
     const room = Math.max(0, Math.round(seen - usedByTurn - TURN_TOP_PAD * 2));
     turnSpacerHeight = room;
     return room;
@@ -1625,7 +1617,7 @@
 >
   <!-- Dropzone overlay -->
   {#if isDragging}
-    <div class="absolute inset-0 z-30 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
+    <div class="absolute inset-0 z-40 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
       <div class="text-primary font-medium text-sm">{$t('chat.dropFilesHere')}</div>
     </div>
   {/if}
@@ -1830,7 +1822,7 @@
   <!-- The conversation fills the column; the composer floats over its end
        (chat-floating), the messages fading out behind it. Its measured
        height (`--chat-float`) is the room the scroller leaves at its end. -->
-  <div class="chat-stage" bind:this={chatStage}>
+  <div class="chat-stage" use:vars={{ '--chat-float': floatHeight }}>
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
     <div class="flex-1 flex items-center justify-center p-6 chat-under-float">
@@ -1850,7 +1842,7 @@
       {#if emptyActions}{@render emptyActions()}{/if}
     </div>
   {:else}
-  <div class="flex-1 relative min-h-0">
+  <div class="chat-scroll-frame">
     <!-- Scroll to bottom button -->
     {#if showScrollButton}
       <div class="chat-scroll-button">
