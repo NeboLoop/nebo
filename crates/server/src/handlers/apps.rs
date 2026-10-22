@@ -1999,8 +1999,14 @@ async fn granted_file(workspace: &StdPath, grant: &str, rel: &str) -> Option<Pat
     if config::workspace_private(rel) {
         return None;
     }
-    let (folder, _) = super::files::within_files_root(workspace, &workspace.join(grant)).await?;
+    let (folder, root) = super::files::within_files_root(workspace, &workspace.join(grant)).await?;
     let (file, _) = super::files::within_files_root(&folder, &folder.join(below)).await?;
+    // The rule again, of what the path opens: a link, or a name the disk
+    // reads another way (`Claude-Code`, `CLAUDE~1`), never reaches a private
+    // folder.
+    if config::workspace_private(&file.strip_prefix(&root).ok()?.to_string_lossy()) {
+        return None;
+    }
     fs::metadata(&file).await.ok()?.is_file().then_some(file)
 }
 
@@ -2738,6 +2744,13 @@ mod app_file_tests {
         std::fs::write(tmp.path().join("elsewhere/a.mp4"), b"a").unwrap();
         std::os::unix::fs::symlink(tmp.path().join("elsewhere"), ws.join("Linked")).unwrap();
         assert_eq!(granted_file(&ws, "Linked", "Linked/a.mp4").await, None);
+        // A granted folder that is a link to a private one inside the
+        // workspace is judged by what it opens.
+        std::fs::create_dir_all(ws.join("claude-code/repo")).unwrap();
+        std::fs::write(ws.join("claude-code/repo/main.rs"), b"code").unwrap();
+        std::os::unix::fs::symlink(ws.join("claude-code"), ws.join("Code")).unwrap();
+        assert_eq!(granted_file(&ws, "Code", "Code/repo/main.rs").await, None);
+        assert_eq!(granted_file(&ws, "Claude-Code", "Claude-Code/repo/main.rs").await, None, "whatever its case");
     }
 }
 
