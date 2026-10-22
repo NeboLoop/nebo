@@ -269,8 +269,11 @@ pub struct VerifyCheck {
 enum Purpose {
     /// A product or business call a reviewer found.
     Decision { title: String },
-    /// The loop stopped making progress with `open` blocking issues.
-    Stalled { open: usize },
+    /// The loop stopped making progress with `open` blocking issues;
+    /// `brief` is what the builder is told if it goes on (the round's
+    /// findings), kept so his words after a restart go on top of the
+    /// same brief.
+    Stalled { open: usize, brief: String },
     /// Reviewed, but no build or test could run.
     NoChecks,
     /// The owner's own edits are in the way of landing verified work.
@@ -328,13 +331,14 @@ fn owner_said(words: &str, brief: &str) -> String {
 
 /// His own words to a question that offered choices (keep going, land it,
 /// keep his edits) are instructions, never a choice guessed from them: the
-/// builder does what he says and the work is checked again. A call of his
-/// (`Decision`) is carried out as he put it, words or choice. `brief`: see
-/// [`owner_said`].
-fn instruction(purpose: &Purpose, answer: Option<&Reply>, brief: &str) -> Option<String> {
+/// builder does what he says and the work is checked again; to a stalled
+/// loop they go on top of its brief ([`owner_said`]). A call of his
+/// (`Decision`) is carried out as he put it, words or choice.
+fn instruction(purpose: &Purpose, answer: Option<&Reply>) -> Option<String> {
     match (purpose, answer) {
         (Purpose::Decision { .. }, _) => None,
-        (_, Some(Reply::Words(words))) => Some(owner_said(words, brief)),
+        (Purpose::Stalled { brief, .. }, Some(Reply::Words(words))) => Some(owner_said(words, brief)),
+        (_, Some(Reply::Words(words))) => Some(owner_said(words, "")),
         _ => None,
     }
 }
@@ -750,9 +754,10 @@ impl VerifyCheck {
             let (question, context) = (ask["question"].as_str().unwrap_or(""), ask["context"].as_str().unwrap_or(""));
             let purpose = serde_json::from_value::<Purpose>(ask["purpose"].clone()).ok();
             // The answer does what it did when it was first asked; his own
-            // words to a stalled loop go on top of what was still open.
-            if let Some(Purpose::Stalled { open }) = purpose {
-                if let Some(step) = self.stalled(&mut work, &v, question, context, open, context).await {
+            // words to a stalled loop go on top of the brief it was asked
+            // with.
+            if let Some(Purpose::Stalled { open, brief }) = &purpose {
+                if let Some(step) = self.stalled(&mut work, &v, question, context, *open, brief).await {
                     return step;
                 }
             } else {
@@ -761,7 +766,7 @@ impl VerifyCheck {
                     .await;
                 match &purpose {
                     Some(p) => {
-                        if let Some(step) = self.answered(&mut work, &v, p, answer.as_ref(), "").await {
+                        if let Some(step) = self.answered(&mut work, &v, p, answer.as_ref()).await {
                             return step;
                         }
                     }
@@ -1279,7 +1284,7 @@ impl VerifyCheck {
                     work.project_root.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
-                return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref(), "").await.map_or(RoundEnd::Finished, RoundEnd::from);
+                return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
             }
             self.finish(&after, "not_verified", Some(reason));
             return RoundEnd::Finished;
@@ -1589,7 +1594,7 @@ impl VerifyCheck {
                     work.work_dir.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
-                self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref(), "").await.unwrap_or(Step::Finished)
+                self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref()).await.unwrap_or(Step::Finished)
             }
             other => {
                 // Why it did not land, as a code; the raw words (a git
@@ -1611,20 +1616,18 @@ impl VerifyCheck {
             self.finish(v, "not_verified", Some(Why::new("stalled").with("open", open)));
             return Some(Step::Finished);
         }
-        let purpose = Purpose::Stalled { open };
+        let purpose = Purpose::Stalled { open, brief: brief.to_string() };
         let answer = self.ask_owner(&v.id, question, context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
         if went_on(answer.as_ref()) {
             self.verify.shared().go_on(&v.id);
         }
-        self.answered(work, v, &purpose, answer.as_ref(), brief).await
+        self.answered(work, v, &purpose, answer.as_ref()).await
     }
 
     /// What the owner's answer to one of the loop's questions does, the same
     /// whenever it comes. `None`: the round goes on.
-    /// `brief`: what the builder is told when the round goes on, which the
-    /// owner's own words go on top of ([`owner_said`]).
-    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>, brief: &str) -> Option<Step> {
-        if let Some(told) = instruction(purpose, answer, brief) {
+    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>) -> Option<Step> {
+        if let Some(told) = instruction(purpose, answer) {
             return Some(Step::Continue(told));
         }
         let answer = answer.map(Reply::text);
@@ -1636,7 +1639,7 @@ impl VerifyCheck {
                     Step::Finished
                 }
             }),
-            Purpose::Stalled { open } => match answer {
+            Purpose::Stalled { open, .. } => match answer {
                 Some(KEEP_GOING) => None,
                 Some(LAND_ANYWAY) => {
                     Some(self.land_unverified(work, v, Why::new("landed_unreviewed")).await.map_or(Step::Finished, Step::Continue))
@@ -1823,13 +1826,13 @@ mod tests {
     #[test]
     fn typed_words_are_instructions_never_a_guessed_choice() {
         let words = Reply::Words("keep going, but add a test for the total".into());
-        for purpose in [Purpose::Stalled { open: 2 }, Purpose::NoChecks, Purpose::OwnerEdits] {
-            let told = instruction(&purpose, Some(&words), "").expect("words are an instruction");
+        for purpose in [Purpose::Stalled { open: 2, brief: String::new() }, Purpose::NoChecks, Purpose::OwnerEdits] {
+            let told = instruction(&purpose, Some(&words)).expect("words are an instruction");
             assert!(told.contains("add a test for the total") && told.contains("next round checks it"), "{purpose:?}");
-            assert_eq!(instruction(&purpose, Some(&Reply::Picked(LAND_ANYWAY.into())), ""), None, "a choice does what it says");
-            assert_eq!(instruction(&purpose, None, ""), None);
+            assert_eq!(instruction(&purpose, Some(&Reply::Picked(LAND_ANYWAY.into()))), None, "a choice does what it says");
+            assert_eq!(instruction(&purpose, None), None);
         }
-        assert_eq!(instruction(&Purpose::Decision { title: "Pins".into() }, Some(&words), ""), None, "a call is carried out as he put it");
+        assert_eq!(instruction(&Purpose::Decision { title: "Pins".into() }, Some(&words)), None, "a call is carried out as he put it");
     }
 
     /// Review of #998: his words to a stalled loop replaced its findings,
@@ -1838,7 +1841,7 @@ mod tests {
     #[test]
     fn his_words_to_a_stalled_loop_go_on_top_of_its_findings() {
         let brief = "Independent reviewers checked your change.\n- f1 [blocker] total() drops cents: total.py:1";
-        let told = instruction(&Purpose::Stalled { open: 1 }, Some(&Reply::Words("use Decimal".into())), brief).unwrap();
+        let told = instruction(&Purpose::Stalled { open: 1, brief: brief.into() }, Some(&Reply::Words("use Decimal".into()))).unwrap();
         assert!(told.starts_with(brief), "the findings stay whole and first: {told}");
         assert!(told.contains("\"use Decimal\"") && told.contains("his words win"), "{told}");
     }

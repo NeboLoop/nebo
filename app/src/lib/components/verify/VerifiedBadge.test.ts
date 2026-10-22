@@ -152,11 +152,11 @@ describe('BackgroundStatus', () => {
 describe('VerificationQuestion', () => {
 	it("asks the loop's question in its sheet, with each choice, Skip, and his own words", () => {
 		const out = render(VerificationQuestion, {
-			props: { ask: { question: 'Pin saves only to local store', options: ['Fix it', 'Leave it as it is'] }, onpick: async () => true, onclose: () => {} },
+			props: { ask: { question: 'Pin saves only to local store', options: ['Save it to the thread', 'Keep it local'] }, onpick: async () => true, onclose: () => {} },
 		}).body;
 		expect(out).toContain('Pin saves only to local store');
-		expect(out).toContain('data-answer="Fix it"');
-		expect(out).toContain('data-answer="Leave it as it is"');
+		expect(out).toContain('data-answer="Save it to the thread"');
+		expect(out).toContain('data-answer="Keep it local"');
 		expect(out).toContain('data-answer="__skip__"');
 		expect(out).toContain('Tell it what to do');
 	});

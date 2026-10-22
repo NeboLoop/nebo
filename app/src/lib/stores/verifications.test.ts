@@ -183,10 +183,10 @@ describe("the badge", () => {
     const question = "Pin saves only to local store, not to the chat thread";
     const waiting = view(
       { state: "waiting" },
-      { id: "v-q", messageId: undefined, pendingAsk: { question, options: ["Fix it", "Leave it as it is"] } },
+      { id: "v-q", messageId: undefined, pendingAsk: { question, options: ["Save it to the thread", "Keep it local"] } },
     );
     const messages = [
-      { type: "ask", requestId: "ask-1", prompt: question, response: "Fix it" },
+      { type: "ask", requestId: "ask-1", prompt: question, response: "Save it to the thread" },
       { type: "user", content: "hi" },
       { type: "ask", requestId: "ask-2", prompt: `${question}\n` },
     ];

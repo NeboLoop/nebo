@@ -11129,10 +11129,12 @@ mod tests {
 
 
     /// The owner's replies to the loop's questions, in order, as the
-    /// ask_owner tool returns them; each question asked is kept.
+    /// ask_owner tool returns them; each question asked is kept. `on_ask`
+    /// runs as each question is asked.
     struct OwnerReplies {
         replies: Mutex<std::collections::VecDeque<serde_json::Value>>,
         asked: Arc<Mutex<Vec<String>>>,
+        on_ask: Option<Box<dyn Fn() + Send + Sync>>,
     }
 
     impl tools::registry::DynTool for OwnerReplies {
@@ -11155,6 +11157,9 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
                 self.asked.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                if let Some(f) = &self.on_ask {
+                    f();
+                }
                 let reply = self.replies.lock().unwrap().pop_front().expect("a question the test did not expect");
                 tools::ToolResult::ok(reply.to_string())
             })
@@ -11164,15 +11169,20 @@ mod tests {
     /// The same blocker, every round: a review that never gets fewer.
     const SAME_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "kind": "defect", "title": "total() drops cents", "evidence": "total.py:1", "repro": "total(0.1, 0.2)", "impact": "invoices are wrong", "fix": "add exactly"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
 
-    /// A verifying harness whose owner answers with `replies`.
-    async fn stalling_harness(model: &Arc<Scripted>, replies: Vec<serde_json::Value>) -> (Harness, Arc<Mutex<Vec<String>>>) {
+    /// A verifying harness whose owner answers with `replies`; `on_ask`
+    /// runs as each question is asked.
+    async fn stalling_harness(
+        model: &Arc<Scripted>,
+        replies: Vec<serde_json::Value>,
+        on_ask: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> (Harness, Arc<Mutex<Vec<String>>>) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let h = harness_with(
             model,
             vec![
                 Box::new(FileWriter),
                 Box::new(Checks(Arc::new(Mutex::new(Vec::new())))),
-                Box::new(OwnerReplies { replies: Mutex::new(replies.into()), asked: asked.clone() }),
+                Box::new(OwnerReplies { replies: Mutex::new(replies.into()), asked: asked.clone(), on_ask }),
             ],
         )
         .await;
@@ -11203,7 +11213,7 @@ mod tests {
                     Step::Say("Stopped, not verified."),
                 ]);
                 let replies = vec![serde_json::json!({"own_words": "use Decimal for the total"}), serde_json::json!({"picked": "Stop here"})];
-                let (h, asked) = stalling_harness(&model, replies).await;
+                let (h, asked) = stalling_harness(&model, replies, None).await;
                 run_turn(&h, owner("Make total() add a and b")).await;
                 assert_eq!(asked.lock().unwrap().len(), 2, "{:?}", asked.lock().unwrap());
                 let calls = model.calls();
@@ -11216,6 +11226,77 @@ mod tests {
                 assert!(told.content.contains("total() drops cents"), "with its findings: {}", told.content);
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert!(v.reason.contains("stopped_by_owner"), "{v:?}");
+            })
+        })
+    }
+
+    /// Review of #998: his own words to a stalled loop's question asked
+    /// again after a restart went on top of the card's short list of
+    /// problems. They go on top of the full brief the question was asked
+    /// with: repro, impact and fix included.
+    #[test]
+    fn his_words_after_a_restart_go_on_top_of_the_brief_it_was_asked_with() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried again."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                    Step::Say("Nothing else."),
+                    Step::Say("Used Decimal."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                ]);
+                // The question as the row held it while it was asked: what a
+                // restart finds.
+                let rows: Arc<Mutex<Option<Arc<db::Store>>>> = Default::default();
+                let held: Arc<Mutex<Option<serde_json::Value>>> = Default::default();
+                let (r, k) = (rows.clone(), held.clone());
+                let on_ask: Box<dyn Fn() + Send + Sync> = Box::new(move || {
+                    let store = r.lock().unwrap().clone().expect("the store");
+                    let v = store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    k.lock().unwrap().get_or_insert(v.pending_ask.expect("the question waits on the row"));
+                });
+                let replies = vec![
+                    serde_json::json!({"picked": "Stop here"}),
+                    serde_json::json!({"own_words": "use Decimal for the total"}),
+                    serde_json::json!({"picked": "Stop here"}),
+                ];
+                let (h, asked) = stalling_harness(&model, replies, Some(on_ask)).await;
+                *rows.lock().unwrap() = Some(h.store.clone());
+                run_turn(&h, owner("Make total() add a and b")).await;
+                // A restart while the question waited.
+                let ask = held.lock().unwrap().clone().expect("the stalled question was asked");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                h.store.set_verification_pending_ask(&v.id, Some(&ask)).unwrap();
+                h.store
+                    .set_verification_state(&v.id, &db::VerificationState { state: "paused", rounds: v.rounds, ..Default::default() }, 5)
+                    .unwrap();
+                let before = model.calls().len();
+                run_turn(&h, owner("Anything else?")).await;
+                assert_eq!(asked.lock().unwrap().len(), 3, "{:?}", asked.lock().unwrap());
+                let calls = model.calls();
+                let told = calls[before..]
+                    .iter()
+                    .flat_map(|c| c.messages.iter())
+                    .find(|m| m.content.contains("use Decimal for the total"))
+                    .expect("the builder heard his words");
+                assert!(
+                    told.content.trim_start_matches("<system-reminder>").trim_start().starts_with("Review of your code work: Independent reviewers checked your change"),
+                    "the brief first, whole: {}",
+                    told.content
+                );
+                for part in ["total() drops cents", "total(0.1, 0.2)", "invoices are wrong", "add exactly"] {
+                    assert!(told.content.contains(part), "the brief keeps {part:?}: {}", told.content);
+                }
+                assert!(told.content.contains("his words win"), "his words on top: {}", told.content);
             })
         })
     }
@@ -11242,7 +11323,7 @@ mod tests {
                 steps.push(Step::Say("Stopped: it kept finding the same problem."));
                 let model = Scripted::new(steps);
                 let replies = vec![serde_json::json!({"picked": "Keep going"}); 4];
-                let (h, asked) = stalling_harness(&model, replies).await;
+                let (h, asked) = stalling_harness(&model, replies, None).await;
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let asked = asked.lock().unwrap().clone();
                 assert_eq!(asked.len(), 3, "asked three times, never a fourth: {asked:?}");
@@ -11505,7 +11586,7 @@ mod tests {
     #[test]
     fn an_answer_after_a_restart_does_what_it_did_before() {
         for (purpose, picked, state, reason) in [
-            (serde_json::json!({"kind": "stalled", "open": 2}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
+            (serde_json::json!({"kind": "stalled", "open": 2, "brief": ""}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
             (serde_json::json!({"kind": "no_checks"}), "Keep it in its copy", "not_verified", r#"{"code":"no_checks"}"#),
             (serde_json::json!({"kind": "owner_edits"}), "Keep mine, don't land it", "verified", r#"{"code":"kept_own_edits"}"#),
         ] {
