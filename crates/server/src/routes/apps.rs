@@ -12,15 +12,9 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // An app's page has one address, `/apps/<id>/ui/…` at the root
+    // (`lib.rs`), never a second one under `/api/v1`.
     Router::new()
-        .route(
-            "/apps/{agent_id}/ui/",
-            routing::get(apps::serve_app_ui_root),
-        )
-        .route(
-            "/apps/{agent_id}/ui/{*path}",
-            routing::get(apps::serve_app_ui),
-        )
         .route(
             "/apps/{agent_id}/api/{*path}",
             routing::any(apps::proxy_to_sidecar),

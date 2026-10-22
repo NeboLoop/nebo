@@ -244,9 +244,15 @@ pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
         return app == agent_id;
     }
     if let Some(surface) = field("surface_id").or_else(|| field("surfaceId")) {
-        return surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) == Some(agent_id);
+        return is_app_surface(agent_id, surface);
     }
     field("session_id").or_else(|| field("session_key")).is_some_and(|key| is_app_session(agent_id, key))
+}
+
+/// Whether `surface` is one of app `agent_id`'s own surfaces
+/// (`agent:<id>:<view>`).
+pub(crate) fn is_app_surface(agent_id: &str, surface: &str) -> bool {
+    surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) == Some(agent_id)
 }
 
 /// Whether `key` is one of app `agent_id`'s own conversations: its page's
@@ -386,6 +392,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     &action,
                     &component_id,
                     &context,
+                    crate::a2ui_actions::ActionFrom::AppPage,
                 )
                 .await;
 
@@ -424,7 +431,9 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     prompt,
                     user_id: String::new(),
                     channel: "app".to_string(),
-                    origin: Origin::User,
+                    // The page wrote this action and its context, not the
+                    // owner: it runs as the app's input, as `invoke` does.
+                    origin: Origin::App,
                     door: types::permissions::Door::Chat,
                     narrow: None,
                     agent_id: agent_id.clone(),
@@ -945,6 +954,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                             &action_name,
                                             &component_id,
                                             &context,
+                                            crate::a2ui_actions::ActionFrom::Owner,
                                         ).await;
 
                                         if handled {

@@ -51,12 +51,19 @@ pub fn revoke(pass: &str) {
 /// (`/apps/<id>/…`), its own routes (`/api/v1/apps/<id>/…`) and its socket
 /// (`/ws/app/<id>`).
 pub fn app_of_path(path: &str) -> Option<&str> {
-    path.strip_prefix("/apps/")
-        .or_else(|| path.strip_prefix("/api/v1/apps/"))
-        .or_else(|| path.strip_prefix("/ws/app/"))?
-        .split('/')
-        .next()
-        .filter(|id| !id.is_empty())
+    // The page is `/apps/<id>/ui[/…]` alone: nothing else under `/apps/<id>/`
+    // is the app's (an unrouted path there is Nebo's own page).
+    let (id, rest) = if let Some(r) = path.strip_prefix("/apps/") {
+        let (id, rest) = r.split_once('/').unwrap_or((r, ""));
+        (id, (rest == "ui" || rest.starts_with("ui/")).then_some(()))
+    } else if let Some(r) = path.strip_prefix("/api/v1/apps/") {
+        (r.split('/').next().unwrap_or(""), Some(()))
+    } else if let Some(r) = path.strip_prefix("/ws/app/") {
+        (r, (!r.contains('/')).then_some(()))
+    } else {
+        return None;
+    };
+    rest.and(Some(id)).filter(|id| !id.is_empty())
 }
 
 #[cfg(test)]
@@ -81,5 +88,9 @@ mod tests {
         assert_eq!(app_of_path("/ws/app/app-1"), Some("app-1"));
         assert_eq!(app_of_path("/api/v1/agents"), None);
         assert_eq!(app_of_path("/apps/"), None);
+        assert_eq!(app_of_path("/apps/app-1/ui"), Some("app-1"));
+        assert_eq!(app_of_path("/apps/app-1/chat-embed"), None, "only its page under /apps/<id>/");
+        assert_eq!(app_of_path("/apps/app-1/uix"), None);
+        assert_eq!(app_of_path("/ws/app/app-1/x"), None);
     }
 }

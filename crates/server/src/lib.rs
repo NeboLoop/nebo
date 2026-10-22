@@ -3821,7 +3821,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .nest(
             "/api/v1",
+            // An address under /api/v1 no route answers is a 404, never
+            // Nebo's page (the SPA fallback below): a pass that admits
+            // `/api/v1/apps/<id>/…` never opens Nebo's own page there.
             routes::api_routes(jwt_secret, state.config.runtime.max_upload_bytes())
+                .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
                 .layer(axum::middleware::from_fn(middleware::api_security_headers)),
         )
         .fallback(spa::spa_handler)

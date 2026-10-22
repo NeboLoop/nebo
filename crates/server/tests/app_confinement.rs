@@ -128,6 +128,22 @@ async fn an_app_page_reaches_its_own_app_alone() {
         let r = http.get(own(&path)).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{path}");
     }
+    // Nothing else under its own addresses is Nebo's page: the page has one
+    // address, an unrouted path is a 404, and whatever its routes answer
+    // goes out in its sandbox.
+    for path in [format!("/apps/{APP}/chat"), format!("/apps/{APP}/x/index.html")] {
+        let r = http.get(own(&path)).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    for path in [format!("/api/v1/apps/{APP}/ui/index.html"), format!("/api/v1/apps/{APP}/no-such-route")] {
+        let r = http.get(own(&path)).header("accept", "text/html").send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{path}");
+        let csp = r.headers()["content-security-policy"].to_str().unwrap().to_string();
+        assert!(csp.starts_with("sandbox "), "{path}: {csp}");
+        assert!(!r.text().await.unwrap().contains("<html"), "never Nebo's page: {path}");
+    }
+    let data = http.get(own(&format!("/api/v1/apps/{APP}/storage"))).send().await.unwrap();
+    assert!(data.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox "));
 
     // The owner's signed-in browser session, carried by a page of opaque
     // origin (`Origin: null`), opens nothing, even with Fetch Metadata that
