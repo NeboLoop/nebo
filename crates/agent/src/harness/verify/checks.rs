@@ -118,10 +118,30 @@ pub struct CheckRun {
 
 impl CheckRun {
     /// The open problems this run counts toward the loop's progress: each
-    /// error it names, else one for a failed check; none when it passed.
+    /// distinct error it names (the same error in a phone's and a desktop's
+    /// view is one), else one for a failed check; none when it passed.
     pub fn problems(&self) -> usize {
-        if self.passed { 0 } else { self.errors.len().max(1) }
+        if self.passed {
+            return 0;
+        }
+        let distinct: std::collections::BTreeSet<&str> = self.errors.iter().map(|e| without_view(e)).collect();
+        distinct.len().max(1)
     }
+}
+
+/// A live check's error without the view it was seen in (`Phone
+/// (390×844): `), as `tools::app_publish::live_load` names them.
+fn without_view(error: &str) -> &str {
+    error
+        .split_once("): ")
+        .filter(|(view, _)| {
+            view.rsplit_once(" (").is_some_and(|(_, size)| {
+                size.split_once('×').is_some_and(|(w, h)| {
+                    !w.is_empty() && !h.is_empty() && w.chars().chain(h.chars()).all(|c| c.is_ascii_digit())
+                })
+            })
+        })
+        .map_or(error, |(_, message)| message)
 }
 
 /// The most of a check's output a round keeps.
@@ -527,5 +547,31 @@ mod tests {
             r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
         );
         assert!(detect(dir.path(), &["index.js".into()]).is_empty());
+    }
+
+    /// Review 2026-10-22: a live check counts each distinct error once,
+    /// whichever views saw it and however often, so progress is measured
+    /// by what the builder fixes, not by how many times a page logged it.
+    #[test]
+    fn a_live_check_counts_each_distinct_error_once() {
+        let run = |errors: &[&str]| CheckRun {
+            label: "Live load".into(),
+            command: String::new(),
+            passed: false,
+            tail: String::new(),
+            duration_ms: 0,
+            errors: errors.iter().map(|e| e.to_string()).collect(),
+        };
+        let twice = run(&[
+            "Phone (390×844): Uncaught TypeError: x is null (/app.js:3)",
+            "Phone (390×844): Uncaught TypeError: x is null (/app.js:3)",
+            "Desktop (1440×900): Uncaught TypeError: x is null (/app.js:3)",
+            "Desktop (1440×900): Uncaught (in promise): offline",
+            "The page answered 404.",
+        ]);
+        assert_eq!(twice.problems(), 3);
+        assert_eq!(run(&[]).problems(), 1, "a failed check is one problem");
+        assert_eq!(CheckRun { passed: true, ..run(&["Phone (390×844): x"]) }.problems(), 0);
+        assert_eq!(without_view("Uncaught (in promise): offline"), "Uncaught (in promise): offline", "no view, nothing taken off");
     }
 }

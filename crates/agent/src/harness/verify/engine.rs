@@ -168,18 +168,17 @@ impl Verify {
         self.shared().tool_ctx = Some(ctx);
     }
 
-    /// Point a call of `tool` at the turn's copies, starting work where it
-    /// first changes a code folder (`TurnWork::route`).
+    /// Point a call at the turn's copies, starting work where it first
+    /// changes a code folder (`TurnWork::route`).
     pub async fn route(
         &self,
         store: &db::Store,
-        tool: &str,
         input: &mut serde_json::Value,
         cwd: &mut Option<String>,
         changes: bool,
     ) -> Result<super::work::Routed, String> {
         self.work
-            .route(tool, input, cwd, changes, &self.builder.starting(store))
+            .route(input, cwd, changes, &self.builder.starting(store))
             .await
     }
 
@@ -645,15 +644,16 @@ impl VerifyCheck {
         };
         if finished_state(&v.state) {
             // Finished, but its copy changed since (the builder kept working
-            // in it): checked again over the whole change, and the verdict
-            // it was reported on no longer holds.
+            // in it), or it deployed again: checked again over the whole
+            // change, and the verdict it was reported on no longer holds.
             let changed = v.landed_ref.is_empty()
                 && v.state != "stopped"
                 && work.work_dir.is_dir()
-                && match work.shadow.snapshot().await {
-                    Ok(now) => Some(&now) != work.last.as_ref(),
-                    Err(_) => false,
-                };
+                && (v.deploy_unchecked
+                    || match work.shadow.snapshot().await {
+                        Ok(now) => Some(&now) != work.last.as_ref(),
+                        Err(_) => false,
+                    });
             if !changed {
                 return Step::Finished;
             }
@@ -711,7 +711,9 @@ impl VerifyCheck {
         // Nothing changed since a clean review (no blocking issue, no call
         // of the owner's to carry out), under the same rules: its verdict
         // stands and it goes on to land; no reviewer reads the same bytes
-        // again.
+        // again. A deploy since is checked first, by a round of checks
+        // alone.
+        let mut unchanged_clean = false;
         if v.rounds > 0 && work.last.as_ref() == Some(&head) {
             let rules = rules_hash(&self.review_rules(&work).await);
             let clean = store
@@ -725,16 +727,17 @@ impl VerifyCheck {
                         && r.decisions.as_array().is_none_or(|d| d.is_empty())
                         && r.detail["rulesHash"].as_str() == Some(rules.as_str())
                 });
-            if clean {
+            if clean && !v.deploy_unchecked {
                 return self.land(work, notes).await;
             }
+            unchanged_clean = clean;
         }
         let whole = work
             .shadow
             .diff(&work.base, &head)
             .await
             .unwrap_or_default();
-        if whole.is_empty() && v.rounds == 0 {
+        if whole.is_empty() && v.rounds == 0 && v.deployed_apps.is_empty() {
             // Nothing changed after all: no verification to show.
             if let Some(iso) = work.iso.as_mut() {
                 worktree::put_away(iso, "No changes").await;
@@ -764,12 +767,17 @@ impl VerifyCheck {
                 .await
                 .unwrap_or_default()
         };
+        // A round of checks alone, with no reviewer: a deploy after a clean
+        // review, or one with no change to read and no finding for a
+        // reviewer to close. The first round that reviewed has lenses.
+        let checks_alone = unchanged_clean || (whole.is_empty() && v.open.as_array().is_none_or(|o| o.is_empty()));
         let first = store
             .verification_rounds(&v.id)
             .unwrap_or_default()
             .into_iter()
-            .find(|r| r.kind == "review");
+            .find(|r| r.kind == "review" && r.lenses.as_array().is_some_and(|l| !l.is_empty()));
         let lenses: Vec<Lens> = match &first {
+            _ if checks_alone => Vec::new(),
             None => lenses::assess(&whole).lenses,
             Some(r) => {
                 let all: Vec<Lens> = r
@@ -793,7 +801,7 @@ impl VerifyCheck {
         let nested = work.shadow.nested_repositories().await;
         match self
             .review_round(
-                &mut work, &v, round, &lenses, &whole, &reviewed, &head, notes, &nested,
+                &mut work, &v, round, &lenses, first.is_some(), &whole, &reviewed, &head, notes, &nested,
             )
             .await
         {
@@ -851,8 +859,10 @@ fn state_of<'a>(
 }
 
 impl VerifyCheck {
-    /// One round: the project's checks, then the reviewers; its record
-    /// written; what the builder, or the owner, does next.
+    /// One round: the project's checks, then the reviewers (none when
+    /// `lenses` is empty: a round of checks alone); its record written; what
+    /// the builder, or the owner, does next. `delta`: an earlier round
+    /// reviewed the change, so this one reviews what changed since.
     #[allow(clippy::too_many_arguments)]
     async fn review_round(
         &self,
@@ -860,6 +870,7 @@ impl VerifyCheck {
         v: &db::Verification,
         round: u32,
         lenses: &[Lens],
+        delta: bool,
         whole: &ChangeSet,
         reviewed: &ChangeSet,
         head: &Snapshot,
@@ -867,6 +878,14 @@ impl VerifyCheck {
         nested: &[String],
     ) -> RoundEnd {
         let store = self.store().clone();
+        // An app's pages no app is served from: it can't be checked live,
+        // and no round of checks proves otherwise.
+        let own = (work.kind == WorkKind::AppPages).then(|| super::work::app_served_from(&store, &work.work_dir));
+        if own.as_ref().is_some_and(Option::is_none) {
+            self.finish(v, "not_verified", Some(Why::new("live_failed")));
+            return RoundEnd::Finished;
+        }
+        let own = own.flatten();
         let started = Self::now();
         let prefix = format!("{}r{round}-", v.reviewer_prefix);
         // Its step in the history: after every step so far (a landing's
@@ -886,28 +905,28 @@ impl VerifyCheck {
         };
         // The plain-code step: the project's own build and tests, within
         // the build folders' disk cap. An app's own check is its live load,
-        // after the checks its `checks/` folder declares; the apps a deploy
-        // of this turn's changed have theirs among any other work's checks
-        // (`TurnWork::deployed_pages`). The round's record says, as it goes,
-        // which checks it runs and what each came to, then each reviewer's
-        // result as it arrives: the owner watches the round, not a spinner.
+        // after the checks its `checks/` folder declares; each app the work
+        // deployed into (kept on its row) has its live load among the
+        // work's checks. The round's record says, as it goes, which checks
+        // it runs and what each came to, then each reviewer's result as it
+        // arrives: the owner watches the round, not a spinner.
         super::work::cap_builds();
-        let (checks, lives): (Vec<checks::Check>, Vec<Live>) = match work.kind {
-            WorkKind::AppPages => {
-                let app = self.app_of(work);
-                let checks = app.as_ref().map(|a| app_checks(a, &work.work_dir)).unwrap_or_default();
-                (checks, vec![Live::own(app)])
-            }
-            _ => {
-                let deployed = self.verify.work.deployed_pages().await;
-                let lives = deployed
-                    .iter()
-                    .filter_map(|pages| super::work::app_served_from(&store, pages))
-                    .map(Live::deployed)
-                    .collect();
-                (checks::detect(&work.work_dir, &whole.paths()), lives)
-            }
+        let holds_reload =
+            !tools::app_dev::withheld(&store, &self.agent_id).iter().any(|t| t == tools::app_dev::APP_RELOAD);
+        let checks = match &own {
+            Some(app) => app_checks(app, &work.work_dir),
+            None => checks::detect(&work.work_dir, &whole.paths()),
         };
+        let mut lives: Vec<Live> = own.iter().map(|a| Live::new(a.clone(), true, holds_reload)).collect();
+        for id in &v.deployed_apps {
+            if own.as_ref().is_some_and(|a| &a.id == id) {
+                continue;
+            }
+            // An app removed since has nothing left to check.
+            if let Some(app) = store.get_agent(id).ok().flatten() {
+                lives.push(Live::new(app, false, holds_reload));
+            }
+        }
         let mut planned: Vec<String> = checks.iter().map(|c| c.label.clone()).collect();
         planned.extend(lives.iter().map(|l| l.label.clone()));
         row.detail = json!({ "whole": whole.stat(), "checksPlanned": planned });
@@ -952,64 +971,72 @@ impl VerifyCheck {
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
         }
+        // Its deploys' live loads ran: a deploy from now on is checked anew.
+        let _ = store.set_verification_deploys_checked(&v.id);
 
+        let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
+        let rules = self.review_rules(work).await;
         // The reviewers: fresh, one per lens, all at once, each reading the
         // round's copy of exactly what was snapshotted (a throwaway export
         // of `head`) and its patch, sharing the verification's one build
         // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
-        // change the builder's copy, the one that lands.
-        let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
-            Ok(scratch) => scratch,
-            Err(e) => return self.review_incomplete(v, &mut row, &e),
-        };
-        let round_dir = review::round_dir(&scratch, round);
-        let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
-        let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
-        let rules = self.review_rules(work).await;
-        let input = RoundInput {
-            verification_id: &v.id,
-            round,
-            delta: round > 1,
-            lenses,
-            spec: &v.spec,
-            change: reviewed,
-            whole_stat: &whole.stat(),
-            patch_file: &patch_file,
-            work_dir: &review_dir,
-            scratch: &scratch,
-            checks: &runs,
-            prior_open: &prior_open,
-            claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
-            check_files: &review::check_files(&reviewed.paths()),
-            rules: &rules,
-        };
-        let mut reviewers = serde_json::Map::new();
-        for lens in lenses {
-            reviewers.insert(lens.as_str().into(), json!("running"));
-        }
-        row.detail["reviewers"] = json!(reviewers);
-        self.record_round(&row);
-        let live = Mutex::new(row.clone());
-        let heard = |r: &LensReview| {
-            let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
-            let state = match &r.review {
-                Ok(review) => {
-                    append(&mut live.findings, json!(review.findings));
-                    append(&mut live.verified_ok, json!(review.verified_ok));
-                    if review.findings.is_empty() { "clean" } else { "found" }
-                }
-                Err(_) => "failed",
+        // change the builder's copy, the one that lands. A round of checks
+        // alone has none.
+        let reviews: Vec<LensReview> = if lenses.is_empty() {
+            Vec::new()
+        } else {
+            let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
+                Ok(scratch) => scratch,
+                Err(e) => return self.review_incomplete(v, &mut row, &e),
             };
-            live.detail["reviewers"][r.lens.as_str()] = json!(state);
-            self.record_round(&live);
+            let round_dir = review::round_dir(&scratch, round);
+            let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
+            let input = RoundInput {
+                verification_id: &v.id,
+                round,
+                delta,
+                lenses,
+                spec: &v.spec,
+                change: reviewed,
+                whole_stat: &whole.stat(),
+                patch_file: &patch_file,
+                work_dir: &review_dir,
+                scratch: &scratch,
+                checks: &runs,
+                prior_open: &prior_open,
+                claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
+                check_files: &review::check_files(&reviewed.paths()),
+                rules: &rules,
+            };
+            let mut reviewers = serde_json::Map::new();
+            for lens in lenses {
+                reviewers.insert(lens.as_str().into(), json!("running"));
+            }
+            row.detail["reviewers"] = json!(reviewers);
+            self.record_round(&row);
+            let live = Mutex::new(row.clone());
+            let heard = |r: &LensReview| {
+                let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
+                let state = match &r.review {
+                    Ok(review) => {
+                        append(&mut live.findings, json!(review.findings));
+                        append(&mut live.verified_ok, json!(review.verified_ok));
+                        if review.findings.is_empty() { "clean" } else { "found" }
+                    }
+                    Err(_) => "failed",
+                };
+                live.detail["reviewers"][r.lens.as_str()] = json!(state);
+                self.record_round(&live);
+            };
+            let reviews: Vec<LensReview> =
+                review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
+            row = live.into_inner().unwrap_or_else(|p| p.into_inner());
+            let _ = std::fs::remove_dir_all(&round_dir);
+            if self.cancel.is_cancelled() {
+                return self.stopped(v, &mut row);
+            }
+            reviews
         };
-        let reviews: Vec<LensReview> =
-            review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
-        row = live.into_inner().unwrap_or_else(|p| p.into_inner());
-        let _ = std::fs::remove_dir_all(&round_dir);
-        if self.cancel.is_cancelled() {
-            return self.stopped(v, &mut row);
-        }
         // What was reviewed and checked must be what is in the copy now: a
         // check that rewrote a file (a lockfile, generated code) changed it.
         let drifted = match work.shadow.snapshot().await {
@@ -1643,16 +1670,9 @@ impl VerifyCheck {
         None
     }
 
-    /// The app served from `work`'s pages, if one is.
-    fn app_of(&self, work: &Work) -> Option<db::models::Agent> {
-        self.store().list_agents(1_000, 0).unwrap_or_default().into_iter().find(|a| {
-            tools::app_dev::served_dir(a).is_some_and(|d| std::path::Path::new(d) == work.work_dir)
-        })
-    }
-
     /// An app's live check, run every round like any other check: its page
     /// loaded fresh on a phone and a desktop, in a view of its own, through
-    /// `app_reload(check: true)`, the one live check
+    /// `app_reload(app, check: true)`, the one live check
     /// ([`tools::app_publish::live_load`]). It passes only when every view
     /// loaded with zero errors of the app's own and drew something; what
     /// failed is its output, which the builder fixes, each error one open
@@ -1660,24 +1680,13 @@ impl VerifyCheck {
     /// a page without the check script).
     async fn live_check(&self, live: &Live) -> Result<CheckRun, Why> {
         let started = std::time::Instant::now();
-        let run = |passed: bool, output: &str, errors: Vec<String>| CheckRun {
-            label: live.label.clone(),
-            command: live.command.clone(),
-            passed,
-            tail: checks::tail(output),
-            duration_ms: started.elapsed().as_millis() as u64,
-            errors,
-        };
-        let Some(app) = live.app.as_ref() else {
-            return Ok(run(false, "No app is served from these pages.", Vec::new()));
-        };
         let mut ctx = self.tool_ctx();
         // Nobody answers a question in the middle of a check.
         ctx.cannot_wait = true;
         let result = self
             .harness
             .tools
-            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.id, "check": true }))
+            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": live.app.id, "check": true }))
             .await;
         let checked = result.payload.as_ref().filter(|p| p["kind"] == tools::app_dev::LIVE_CHECK);
         match checked.and_then(|p| p["couldNotRun"].as_str()) {
@@ -1690,40 +1699,46 @@ impl VerifyCheck {
             .and_then(|p| p["errors"].as_array())
             .map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        Ok(run(passed, &result.content, errors))
+        Ok(CheckRun {
+            label: live.label.clone(),
+            command: live.command.clone(),
+            passed,
+            tail: checks::tail(&result.content),
+            duration_ms: started.elapsed().as_millis() as u64,
+            errors,
+        })
     }
 }
 
-/// One app's live check in a round: the app being worked on (`None`: no
-/// app is served from its pages), or one a deploy of the turn changed.
+/// One app's live check in a round: of the app whose pages are the work,
+/// or of one the work deployed into.
 struct Live {
-    app: Option<db::models::Agent>,
+    app: db::models::Agent,
     /// Its row among the round's checks.
     label: String,
-    /// How the builder runs it itself.
+    /// How the builder runs it: the call when it holds `app_reload`.
     command: String,
 }
 
 impl Live {
-    /// The live check of the app whose pages are the work.
-    fn own(app: Option<db::models::Agent>) -> Self {
-        Live { app, label: LIVE_CHECK_LABEL.into(), command: LIVE_CHECK_COMMAND.into() }
-    }
-
-    /// The live check of an app a deploy changed: it names the app.
-    fn deployed(app: db::models::Agent) -> Self {
+    /// `app`'s live check: the work's own app (`own`), or one it deployed
+    /// into, named. `holds_reload`: the builder can run it itself.
+    fn new(app: db::models::Agent, own: bool, holds_reload: bool) -> Self {
         Live {
-            label: format!("Live load of {} on a phone and a desktop", app.name),
-            command: format!("app_reload(app: \"{}\", check: true)", app.id),
-            app: Some(app),
+            label: if own {
+                "Live load on a phone and a desktop".into()
+            } else {
+                format!("Live load of {} on a phone and a desktop", app.name)
+            },
+            command: if holds_reload {
+                super::work::live_check_call(&app.id)
+            } else {
+                "run by Nebo when you finish".into()
+            },
+            app,
         }
     }
 }
-
-/// The live check's row among a round's checks.
-const LIVE_CHECK_LABEL: &str = "Live load on a phone and a desktop";
-/// How the builder runs the live check itself.
-const LIVE_CHECK_COMMAND: &str = "app_reload(check: true)";
 
 /// The checks an app declares beside its live load: the project in its
 /// app folder's `checks/` (its tests, run by the same rules as any

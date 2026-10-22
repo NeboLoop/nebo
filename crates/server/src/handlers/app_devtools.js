@@ -51,15 +51,17 @@
 
   // Whether a failed load is the app's own: its own origin (a relative
   // address, a data: or blob: it made, inline code), or Nebo's app routes on
-  // the bot that serves it. Another site's failure (analytics, a CDN, no
+  // the bot that serves it, at every address the page was told for it (its
+  // API, and its socket's server: the desktop's app window is told both, on
+  // different origins). Another site's failure (analytics, a CDN, no
   // network) is noted, never counted as the app's error.
-  var neboOrigin = (function () {
+  var neboOrigins = [api, socketUrl.replace(/^ws(s?):/, 'http$1:')].map(function (base) {
     try {
-      return new URL(api, location.href).origin;
+      return new URL(base, location.href).origin;
     } catch (e) {
       return location.origin;
     }
-  })();
+  });
   function ours(url) {
     var u;
     try {
@@ -68,7 +70,7 @@
       return true;
     }
     if (u.protocol === 'data:' || u.protocol === 'blob:' || u.origin === location.origin) return true;
-    return u.origin === neboOrigin && /\/(api\/v1\/apps|apps|ws\/app)\//.test(u.pathname);
+    return neboOrigins.indexOf(u.origin) >= 0 && /\/(api\/v1\/apps|apps|ws\/app)\//.test(u.pathname);
   }
   // A failure: the app's own is an error; another site's is a note.
   function failed(url, message, source) {

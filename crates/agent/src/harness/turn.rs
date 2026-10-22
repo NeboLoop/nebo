@@ -10987,7 +10987,7 @@ mod tests {
                 // The builder heard the failed check, with its errors, as its
                 // next step in the same turn.
                 let heard = model.calls().iter().any(|c| {
-                    c.messages.iter().any(|m| m.content.contains("score is not defined") && m.content.contains("app_reload(check: true)"))
+                    c.messages.iter().any(|m| m.content.contains("score is not defined") && m.content.contains(r#"app_reload(app: "ops", check: true)"#))
                 });
                 assert!(heard, "the builder was told what the live load reported");
                 let checked = calls.lock().unwrap().clone();
@@ -11109,7 +11109,7 @@ mod tests {
                 let file = repo.join("score.js").to_string_lossy().into_owned();
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "export const score = () => 0;\n"})),
-                    Step::Call("deploy_command", serde_json::json!({"command": "make deploy"})),
+                    Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
                     Step::Say("Done: the score shows."),
                     Step::Say(CLEAN_PAGE),
                     Step::Say("The score shows; its deploy loaded clean. Verified."),
@@ -11145,6 +11145,72 @@ mod tests {
                     })
                 });
                 assert!(heard, "the builder heard its deploy is checked live");
+            })
+        })
+    }
+
+    /// Review 2026-10-22: a deploy with no change to the project's source
+    /// (only `make deploy`) is still checked: its work gets a round of
+    /// checks alone (no reviewer reads an empty change), the deployed page's
+    /// live load among them, and is Verified only when that load passes.
+    #[test]
+    fn a_deploy_with_no_source_change_is_checked_live() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let project = tempfile::tempdir().unwrap();
+                let repo = project.path().to_path_buf();
+                for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                    crate::worktree::git(&repo, &args).await.unwrap();
+                }
+                std::fs::write(repo.join("Makefile"), "test:\n\tnode score.test.js\n").unwrap();
+                std::fs::write(repo.join("score.js"), "export const score = () => 0;\n").unwrap();
+                crate::worktree::git(&repo, &["add", "-A"]).await.unwrap();
+                crate::worktree::git(&repo, &["commit", "-q", "-m", "base"]).await.unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
+                    Step::Say("Deployed."),
+                    // No reviewer: the round is the checks alone. The live
+                    // load fails; the builder deploys again.
+                    Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
+                    Step::Say("Deployed again."),
+                    Step::Say("Deployed; its live load passed. Verified."),
+                ]);
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let live = LiveChecks {
+                    results: Mutex::new(
+                        vec![
+                            Some((false, "Live check of Scoreboard: failed.\n- Phone (390×844): Uncaught Error: boom")),
+                            Some((true, "Live check of Scoreboard: passed.")),
+                        ]
+                        .into(),
+                    ),
+                    calls: calls.clone(),
+                };
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(Deployer(page.into())), Box::new(live)],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let ui = folder.path().join("ui");
+                h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+                h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                run_turn(&h, owner_of_app("Deploy the score")).await;
+
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.work_kind.as_str(), v.state.as_str(), v.rounds), ("isolated", "verified", 2), "{v:?}");
+                assert_eq!((v.deployed_apps.clone(), v.deploy_unchecked), (vec!["ops".to_string()], false));
+                let rounds: Vec<_> = h.store.verification_rounds(&v.id).unwrap().into_iter().filter(|r| r.kind == "review").collect();
+                assert_eq!(rounds.len(), 2, "{rounds:?}");
+                for r in &rounds {
+                    assert_eq!(r.lenses, serde_json::json!([]), "no reviewer reads an empty change");
+                    let labels: Vec<&str> = r.checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap()).collect();
+                    assert_eq!(labels, ["make test", "Live load of Scoreboard on a phone and a desktop"]);
+                }
+                assert_eq!(calls.lock().unwrap().len(), 2, "one live load a round");
             })
         })
     }
