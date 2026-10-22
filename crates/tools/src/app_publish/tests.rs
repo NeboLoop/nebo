@@ -56,6 +56,7 @@ fn seed_app(store: &db::Store, root: &Path, id: &str, name: &str) -> PathBuf {
     store
         .set_agent_napp_path(id, pkg.to_str().unwrap())
         .unwrap();
+    store.set_agent_built_here(id, true).unwrap();
     pkg
 }
 

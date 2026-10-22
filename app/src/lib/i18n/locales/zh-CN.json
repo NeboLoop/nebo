@@ -4545,7 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} 想做更多事",
 		"intro": "只有信任这个应用时才允许。之后可以在应用设置中更改。",
-		"origin": "这个应用来自应用市场，由你公司以外的人制作。",
+		"origin": "这个应用不是在这里制作的，由你公司以外的人制作。",
 		"wantsFiles": "{name} 想查看 {target} 中的文件",
 		"wantsWeb": "{name} 想与 {target} 通信",
 		"wantsWebAny": "{name} 想与任何网站通信",

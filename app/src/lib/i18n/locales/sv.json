@@ -4545,7 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} vill göra mer",
 		"intro": "Säg bara ja om du litar på appen. Du kan ändra dig senare i appens inställningar.",
-		"origin": "Appen kommer från marketplace. Någon utanför ditt företag har gjort den.",
+		"origin": "Appen är inte gjord här. Någon utanför ditt företag har gjort den.",
 		"wantsFiles": "{name} vill se filerna i {target}",
 		"wantsWeb": "{name} vill prata med {target}",
 		"wantsWebAny": "{name} vill prata med vilken webbplats som helst",

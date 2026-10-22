@@ -50,6 +50,7 @@ async fn a_screenshot_shows_the_app_as_the_bot_serves_it() {
     store
         .set_agent_app_fields("app-flip", true, Some(ui.to_str().unwrap()), None, None)
         .unwrap();
+    store.set_agent_built_here("app-flip", true).unwrap();
 
     let tool = tools::app_publish::AppScreenshotTool::new(store, Some(manager));
     let ctx = tools::ToolContext {

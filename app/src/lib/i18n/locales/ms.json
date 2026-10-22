@@ -4545,7 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} mahu buat lebih banyak",
 		"intro": "Setuju hanya jika anda mempercayai aplikasi ini. Anda boleh mengubahnya kemudian dalam tetapan aplikasi.",
-		"origin": "Aplikasi ini dari marketplace. Orang di luar syarikat anda yang membuatnya.",
+		"origin": "Aplikasi ini tidak dibuat di sini. Orang di luar syarikat anda yang membuatnya.",
 		"wantsFiles": "{name} mahu melihat fail dalam {target}",
 		"wantsWeb": "{name} mahu bercakap dengan {target}",
 		"wantsWebAny": "{name} mahu bercakap dengan mana-mana laman web",

@@ -103,7 +103,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -125,7 +125,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -197,7 +197,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
                  FROM agents",
             )
             .db_err("get_agent_by_slug")?;
@@ -260,7 +260,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -541,7 +541,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -748,6 +748,16 @@ impl Store {
         Ok(())
     }
 
+    /// Record where an app came from: made on this bot (`true`) or installed
+    /// (`false`, every row's start). Set once when the row is made; a
+    /// duplicate copies its source's (`tools::app_dev::is_own_app`).
+    pub fn set_agent_built_here(&self, id: &str, built_here: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE agents SET built_here = ?2 WHERE id = ?1", params![id, built_here as i64])
+            .db_err("set_agent_built_here")?;
+        Ok(())
+    }
+
     pub fn set_agent_napp_path(&self, id: &str, napp_path: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -815,7 +825,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents WHERE loop_agent_id = ?1",
             params![loop_agent_id],
             row_to_agent,
@@ -1285,6 +1295,7 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         reports_to: row.get(27)?,
         department_locked: row.get(28)?,
         shape: row.get(29)?,
+        built_here: row.get(30)?,
     })
 }
 

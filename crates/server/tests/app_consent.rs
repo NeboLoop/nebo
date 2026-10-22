@@ -44,9 +44,8 @@ async fn an_installed_app_does_only_what_the_owner_allowed() {
 
     let server = TestServer::boot().await;
     let store = server.db_store();
-    // The one from the marketplace: its package is under Nebo's agents.
-    let installed = home.join("nebo/agents/bought.napp");
-    store.set_agent_napp_path(BOUGHT, installed.to_str().unwrap()).unwrap();
+    // The one from the marketplace: its row says it was installed.
+    store.set_agent_built_here(BOUGHT, false).unwrap();
     store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).ok();
 
     let base = format!("http://127.0.0.1:{}", server.port);

@@ -60,6 +60,8 @@ async fn a_real_app_still_works_confined() {
         store.create_agent(&id, None, &name, "", "", "", None, None).unwrap();
     }
     store.set_agent_app_fields(&id, true, Some(dir.join("ui").to_str().unwrap()), None, None).unwrap();
+    // His studios are made here (`app_dev::is_own_app`).
+    store.set_agent_built_here(&id, true).unwrap();
     let base = format!("http://127.0.0.1:{}", server.port);
     let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 

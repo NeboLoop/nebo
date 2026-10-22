@@ -4545,7 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} wants to do more",
 		"intro": "Only say yes if you trust this app. You can change your mind later in the app's settings.",
-		"origin": "This app came from the marketplace. Someone outside your company made it.",
+		"origin": "This app wasn't made here. Someone outside your company made it.",
 		"wantsFiles": "{name} wants to see the files in {target}",
 		"wantsWeb": "{name} wants to talk to {target}",
 		"wantsWebAny": "{name} wants to talk to any website",

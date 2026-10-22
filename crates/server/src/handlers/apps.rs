@@ -2328,6 +2328,7 @@ mod developer_mode_tests {
     fn app(store: &db::Store, id: &str, name: &str) {
         store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
         store.set_agent_app_fields(id, true, Some("/tmp/ui"), None, None).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
     }
 
     const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
@@ -2345,6 +2346,7 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
 
         let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         assert_eq!(desktop_script(&store, 27895, "app-m", "p"), "", "installed: no developer tooling");
@@ -2563,6 +2565,7 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
         store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
 
         assert_eq!(devlog_target(&store, "app-a"), Ok(()), "an own app, mode off");

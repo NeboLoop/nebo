@@ -666,7 +666,13 @@ fn write_user_agent_files(
     agent_json: &str,
     app: Option<napp::AppFields>,
     ui: Vec<(std::path::PathBuf, Vec<u8>)>,
+    // Where the employee came from (`Store::set_agent_built_here`): made
+    // here, or a copy that keeps its source's.
+    built_here: bool,
 ) {
+    if let Err(e) = store.set_agent_built_here(id, built_here) {
+        warn!(name, error = %e, "failed to record where an employee came from");
+    }
     let Some(agent_dir) = user_agent_dir(name) else {
         return;
     };
@@ -893,6 +899,7 @@ pub async fn create_agent(
         &agent_json_content,
         None,
         Vec::new(),
+        true,
     );
 
     // Process agent.json workflow bindings if provided
@@ -3969,6 +3976,9 @@ pub async fn duplicate_agent(
         &source.frontmatter,
         source_app,
         source_ui,
+        // A copy of an installed app is still an install: it holds only what
+        // the owner allows, never what its manifest asks for.
+        source.built_here == 1,
     );
 
     // Copy agent_workflow bindings from source.
@@ -6689,6 +6699,7 @@ mod linked_hire_tests {
             reports_to: None,
             department_locked: 0,
             shape: None,
+            built_here: 0,
         }
     }
 

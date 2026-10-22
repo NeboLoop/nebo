@@ -647,6 +647,8 @@ impl PersonaTool {
                             None,
                         ) {
                             Ok(_) => {
+                                // Its folder is the owner's own (`user/agents/`).
+                                let _ = self.store.set_agent_built_here(&id, true);
                                 let agent_dir = self.agent_loader.user_dir().join(&agent_name);
                                 if agent_dir.exists() {
                                     let _ = self
@@ -1762,6 +1764,8 @@ impl PersonaTool {
             None,
         ) {
             Ok(_) => {
+                // Made here, by the owner's employee (`app_dev::is_own_app`).
+                let _ = self.store.set_agent_built_here(&id, true);
                 let _ = self
                     .store
                     .set_agent_napp_path(&id, &agent_dir.to_string_lossy());
@@ -2110,6 +2114,8 @@ impl PersonaTool {
                     let _ = std::fs::remove_dir_all(&dir);
                     return ToolResult::error(format!("Failed to record the app's folder: {}", e));
                 }
+                // Its page is made here, by the owner's employee.
+                let _ = self.store.set_agent_built_here(agent_id, true);
                 changes.push(format!("gave '{}' its own folder at {}", current_name, dir.display()));
                 dir
             } else {
