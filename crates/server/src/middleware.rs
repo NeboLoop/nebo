@@ -337,7 +337,7 @@ pub fn path_credential(mut request: Request) -> Request {
 
 /// The header an app's route reads a path credential from
 /// ([`app_view_admits`]).
-const APP_VIEW_PASS: &str = "x-nebo-app-view";
+pub(crate) const APP_VIEW_PASS: &str = "x-nebo-app-view";
 
 /// Whether the request carries a live app-view pass for `app_id`
 /// (`napp::app_view`): the page and routes of the one app Nebo's headless

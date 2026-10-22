@@ -1,23 +1,27 @@
 //! A sidecar for tests, compiled by `napp::test_sidecar` with the standard
-//! library only. It behaves like an app sidecar — serves `NEBO_APP_SOCK`,
-//! exits when Nebo's end of its stdin closes — and does what the files in
-//! `NEBO_APP_DIR` tell it:
+//! library only. It behaves like an app sidecar — listens on `127.0.0.1:0`,
+//! prints `nebo-app-listening <address>`, exits when Nebo's end of its stdin
+//! closes — and does what the files in `NEBO_APP_DIR` tell it:
 //!
 //! - `fixture-mode`: `serve` (default); `exit <code>` exits at once, before
-//!   serving; `deaf` binds the socket, then stops listening and stays alive —
-//!   a live process behind a socket file that refuses every connection.
-//! - `fixture-upstream`: a socket path each accepted connection is relayed to,
+//!   serving; `deaf` listens and announces, then stops listening and stays
+//!   alive — a live process whose address refuses every connection.
+//! - `fixture-upstream`: an address each accepted connection is relayed to,
 //!   so a test can answer the requests in-process.
 //! - `fixture-launches`: appended with this process's pid on every start.
+//! - `fixture-token`, `fixture-app-token`, `fixture-port`: written with the
+//!   `NEBO_SIDECAR_TOKEN` and `NEBO_APP_TOKEN` this launch was given and the
+//!   port it listens on, so the in-process server can refuse calls without
+//!   the sidecar token and answer the health challenge as the SDKs do.
 
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::{env, fs, thread};
 
 fn main() {
-    let sock = PathBuf::from(env::var("NEBO_APP_SOCK").expect("NEBO_APP_SOCK"));
     let dir = PathBuf::from(env::var("NEBO_APP_DIR").expect("NEBO_APP_DIR"));
+    let token = env::var("NEBO_SIDECAR_TOKEN").expect("NEBO_SIDECAR_TOKEN");
     let mode = fs::read_to_string(dir.join("fixture-mode")).unwrap_or_default();
     let mode = mode.trim().to_string();
     let mut launches = fs::OpenOptions::new()
@@ -26,6 +30,9 @@ fn main() {
         .open(dir.join("fixture-launches"))
         .expect("fixture-launches");
     writeln!(launches, "{}", std::process::id()).expect("record launch");
+    fs::write(dir.join("fixture-token"), &token).expect("fixture-token");
+    let app_token = env::var("NEBO_APP_TOKEN").expect("NEBO_APP_TOKEN");
+    fs::write(dir.join("fixture-app-token"), &app_token).expect("fixture-app-token");
 
     // Nebo holds the write end of our stdin: EOF means Nebo is gone.
     thread::spawn(|| {
@@ -40,9 +47,12 @@ fn main() {
         std::process::exit(code.trim().parse().unwrap_or(1));
     }
 
-    let _ = fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock).expect("bind");
-    eprintln!("fixture: listening on {}", sock.display());
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    fs::write(dir.join("fixture-port"), addr.port().to_string()).expect("fixture-port");
+    println!("nebo-app-listening {addr}");
+    std::io::stdout().flush().expect("announce");
+    eprintln!("fixture: listening on {addr}");
     if mode == "deaf" {
         drop(listener);
         eprintln!("fixture: stopped listening, staying alive");
@@ -57,11 +67,11 @@ fn main() {
     }
 }
 
-/// Pipe one connection to the upstream socket and back. With no upstream the
-/// connection is simply accepted and closed (a liveness probe).
-fn relay(down: UnixStream, upstream: Option<String>) {
-    let Some(path) = upstream else { return };
-    let Ok(up) = UnixStream::connect(path.trim()) else { return };
+/// Pipe one connection to the upstream address and back. With no upstream
+/// the connection is simply accepted and closed (a liveness probe).
+fn relay(down: TcpStream, upstream: Option<String>) {
+    let Some(addr) = upstream else { return };
+    let Ok(up) = TcpStream::connect(addr.trim()) else { return };
     let (mut down_r, mut up_w) = (down.try_clone().expect("clone"), up.try_clone().expect("clone"));
     let forward = thread::spawn(move || {
         let _ = std::io::copy(&mut down_r, &mut up_w);

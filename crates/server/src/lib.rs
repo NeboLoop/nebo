@@ -53,7 +53,7 @@ pub mod layers_update;
 mod liveness;
 #[cfg(test)]
 mod staffed_proof;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod sidecar_proof;
 #[cfg(test)]
 mod harness;
