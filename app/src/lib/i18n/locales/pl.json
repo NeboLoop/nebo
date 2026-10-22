@@ -4430,17 +4430,17 @@
 				"other": "Krok"
 			},
 			"time": "{seconds} s",
-			"lenses": "Recenzenci: {lenses}",
 			"findings": "Znaleziono: blokujące {blockers}, poważne {majors}, drobne {minors}",
 			"fixed": "Naprawione od poprzedniej rundy: {count}",
 			"held": "Sprawdzone i w porządku",
-			"checks": "Testy:",
-			"noChecks": "Nie udało się uruchomić kompilacji ani testów."
+			"noChecks": "Nie udało się uruchomić kompilacji ani testów.",
+			"since": "Zmiany od ostatniej rundy",
+			"reviewers": "Recenzenci",
+			"projectChecks": "Własne testy projektu"
 		},
 		"rounds": {
 			"heading": "Kontrole kodu"
 		},
-		"total": "Koszt recenzentów: {cost}",
 		"severity": {
 			"blocker": "Blokujące",
 			"major": "Poważne",
@@ -4501,6 +4501,41 @@
 			"helper": "Jest w kopii swojego pomocnika, dopóki rozmowa, która go uruchomiła, jej nie wdroży.",
 			"folder": "Została zrobiona na miejscu, w folderze, nad którym pracowano.",
 			"nothing": "Nie było nic do wdrożenia."
+		},
+		"line": {
+			"round": "runda {n}",
+			"issuesLeft": "{count, plural, one {został # problem} few {zostały # problemy} many {zostało # problemów} other {zostało # problemu}}"
+		},
+		"phase": {
+			"working": "Trwa pisanie zmiany. Sprawdzanie zacznie się, gdy będzie gotowa.",
+			"checks": "Trwają własne testy projektu.",
+			"reviewers": "Recenzenci czytają zmianę.",
+			"fixing": "Trwa poprawianie tego, co znaleźli recenzenci. Następna runda sprawdzi poprawki.",
+			"landing": "Trwa dodawanie zmiany do projektu.",
+			"live": "Trwa sprawdzanie na żywo."
+		},
+		"sheet": {
+			"elapsed": "{project} · na razie {time}",
+			"took": "{project} · zajęło {time}",
+			"changed": "Co jest sprawdzane",
+			"files": "{count, plural, one {# plik} few {# pliki} many {# plików} other {# pliku}} w {project}",
+			"open": "Wciąż otwarte"
+		},
+		"reviewer": {
+			"waiting": "czeka na testy",
+			"running": "czyta teraz",
+			"clean": "brak problemów",
+			"found": "{count, plural, one {znalazł # problem} few {znalazł # problemy} many {znalazł # problemów} other {znalazł # problemu}}",
+			"failed": "nie udało się skończyć"
+		},
+		"check": {
+			"waiting": "czeka",
+			"running": "trwa",
+			"passed": "przeszedł",
+			"failed": "nie przeszedł"
+		},
+		"time": {
+			"minutes": "{m} min {s} s"
 		}
 	}
 }

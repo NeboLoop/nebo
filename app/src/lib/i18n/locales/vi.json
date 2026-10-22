@@ -4430,17 +4430,17 @@
 				"other": "Bước"
 			},
 			"time": "{seconds} giây",
-			"lenses": "Người đánh giá: {lenses}",
 			"findings": "Tìm thấy: {blockers} chặn, {majors} nghiêm trọng, {minors} nhỏ",
 			"fixed": "Đã sửa kể từ vòng trước: {count}",
 			"held": "Đã kiểm tra và ổn",
-			"checks": "Kiểm tra:",
-			"noChecks": "Không chạy được bản dựng hay bài kiểm tra nào."
+			"noChecks": "Không chạy được bản dựng hay bài kiểm tra nào.",
+			"since": "Đã đổi từ vòng trước",
+			"reviewers": "Người đánh giá",
+			"projectChecks": "Các bài kiểm tra của chính dự án"
 		},
 		"rounds": {
 			"heading": "Kiểm tra mã"
 		},
-		"total": "Chi phí người đánh giá: {cost}",
 		"severity": {
 			"blocker": "Chặn",
 			"major": "Nghiêm trọng",
@@ -4501,6 +4501,41 @@
 			"helper": "Nó nằm trong bản sao của trợ lý cho đến khi cuộc trò chuyện đã khởi động trợ lý đưa nó vào.",
 			"folder": "Nó được làm tại chỗ, trong thư mục đang được xử lý.",
 			"nothing": "Không có gì để đưa vào."
+		},
+		"line": {
+			"round": "vòng {n}",
+			"issuesLeft": "{count, plural, other {còn # vấn đề}}"
+		},
+		"phase": {
+			"working": "Đang viết thay đổi. Việc kiểm tra bắt đầu khi viết xong.",
+			"checks": "Đang chạy các bài kiểm tra của chính dự án.",
+			"reviewers": "Người đánh giá đang đọc thay đổi.",
+			"fixing": "Đang sửa những gì người đánh giá tìm ra. Vòng sau sẽ kiểm tra các bản sửa.",
+			"landing": "Đang đưa thay đổi vào dự án.",
+			"live": "Đang kiểm tra trực tiếp."
+		},
+		"sheet": {
+			"elapsed": "{project} · đến giờ {time}",
+			"took": "{project} · mất {time}",
+			"changed": "Những gì đang được kiểm tra",
+			"files": "{count, plural, other {# tệp}} trong {project}",
+			"open": "Vẫn còn mở"
+		},
+		"reviewer": {
+			"waiting": "chờ các bài kiểm tra",
+			"running": "đang đọc",
+			"clean": "không có vấn đề",
+			"found": "{count, plural, other {tìm thấy # vấn đề}}",
+			"failed": "không thể hoàn tất"
+		},
+		"check": {
+			"waiting": "đang chờ",
+			"running": "đang chạy",
+			"passed": "đạt",
+			"failed": "không đạt"
+		},
+		"time": {
+			"minutes": "{m} phút {s} giây"
 		}
 	}
 }

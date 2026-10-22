@@ -9,7 +9,7 @@
 //! runs on the employee's own model and level, under the same limits as any
 //! of the employee's work, and the owner's Stop ends it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::checks::CheckRun;
@@ -36,12 +36,14 @@ pub struct RoundInput<'a> {
     pub change: &'a ChangeSet,
     /// The whole change's stat, for a delta round's context.
     pub whole_stat: &'a str,
-    /// Where the patch is saved whole.
+    /// Where the patch is saved whole ([`patch_file`]).
     pub patch_file: &'a Path,
-    /// The project with the change applied.
+    /// The project with the change applied ([`project_dir`]): read, never
+    /// changed.
     pub work_dir: &'a Path,
-    /// The reviewer's build folder.
-    pub build_dir: &'a Path,
+    /// The verification's folder with the working copies (`Work::copies`),
+    /// where the build folder its reviewers share is ([`build_dir`]).
+    pub scratch: &'a Path,
     /// The round's check results.
     pub checks: &'a [CheckRun],
     /// Findings still open from earlier rounds.
@@ -68,16 +70,45 @@ pub struct LensReview {
     pub session_key: String,
 }
 
+/// A round's folder for its reviewers, in the verification's folder
+/// `scratch`: the copy of the change and its patch.
+pub fn round_dir(scratch: &Path, round: u32) -> PathBuf {
+    scratch.join(format!("round-{round}"))
+}
+
+/// The round's copy of the project, the change applied.
+pub fn project_dir(round_dir: &Path) -> PathBuf {
+    round_dir.join("project")
+}
+
+/// The round's patch, whole.
+pub fn patch_file(round_dir: &Path) -> PathBuf {
+    round_dir.join("change.patch")
+}
+
+/// The build folder every reviewer of the verification shares, kept across
+/// its rounds and removed with its folder: what their builds write, never
+/// into the copy they read. One folder, so a verification builds the
+/// project once, not once per lens: cargo locks its build folder, so the
+/// lenses' builds in it take turns; a build that writes into the project
+/// itself runs on a lens's own copy inside it ([`brief`]).
+pub fn build_dir(scratch: &Path) -> PathBuf {
+    scratch.join("build")
+}
+
 /// The node a reviewer's session is named by.
 pub fn node(verification_id: &str, round: u32, lens: Lens) -> String {
     format!("verify-{verification_id}-r{round}-{}", lens.as_str())
 }
 
 /// Run one round: a reviewer per lens, all at once, for the turn `parent`.
+/// `done` hears each reviewer's result the moment it finishes, so the round's
+/// record shows it while the others still run.
 pub async fn run_round(
     helpers: &Arc<Helpers>,
     parent: &Parent<'_>,
     input: &RoundInput<'_>,
+    done: &(dyn Fn(&LensReview) + Sync),
 ) -> Vec<LensReview> {
     let asks = input.lenses.iter().map(|&lens| {
         let ask = Ask {
@@ -89,7 +120,7 @@ pub async fn run_round(
             tools: None,
             fence: vec![
                 input.work_dir.to_string_lossy().into_owned(),
-                input.build_dir.to_string_lossy().into_owned(),
+                build_dir(input.scratch).to_string_lossy().into_owned(),
             ],
             shown: true,
         };
@@ -110,11 +141,13 @@ pub async fn run_round(
                 true => Err("it found nothing and named nothing it checked".to_string()),
                 false => Ok(r),
             });
-            LensReview {
+            let reviewed = LensReview {
                 lens,
                 review: review.map(|r| numbered(r, input.round, lens)),
                 session_key: answered.session_key,
-            }
+            };
+            done(&reviewed);
+            reviewed
         }
     });
     futures::future::join_all(asks).await
@@ -188,14 +221,19 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
         ));
     }
     out.push_str(&format!("## The request\n{}\n\n", input.spec.trim()));
+    let build = build_dir(input.scratch);
     out.push_str(&format!(
-        "## Where the code is\nThe project, with the change applied, is at {}. Read anything in it. You may run its \
-         build and tests there, with {} as the build folder (for example CARGO_TARGET_DIR={}), and make read-only \
-         checks of live state. Change nothing: no edits, no commits, no installs into the project, no messages to \
-         anyone.\n\n",
+        "## Where the code is\nThe project, with the change applied, is at {}. Read anything in it, and change \
+         nothing in it: it is read-only. The build folder is {}, shared with the other reviewers of this change: \
+         everything you build or run writes there (for cargo, CARGO_TARGET_DIR={}; cargo waits its turn when \
+         another reviewer is building). A build or test that writes into the project itself (most JavaScript \
+         builds do) runs on a copy of your own: copy the project into {} and run it there. The project's own \
+         checks already ran on this exact change; their results are below. You may make read-only checks of live \
+         state. No commits, no installs into the project, no messages to anyone.\n\n",
         input.work_dir.display(),
-        input.build_dir.display(),
-        input.build_dir.display()
+        build.display(),
+        build.display(),
+        build.join(lens.as_str()).display()
     ));
     if input.delta {
         out.push_str(&format!("## The whole change\n{}\n\n", quoted(input.whole_stat)));
@@ -274,8 +312,10 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
          - blocker: wrong results, lost or corrupted data, a security hole, money wrong, or the build or tests fail.\n\
          - major: a real defect or regression someone will hit.\n\
          - minor: worth fixing, harmless meanwhile.\n\
-         - kind \"decision\": the change needs a product or business call only the owner can make (not a defect). Give \
-         the choices in `options` and the one you recommend in `recommended`.\n",
+         - kind \"decision\": only a product or business choice that is the owner's to make (what to offer, \
+         charge, promise or call something), never how to fix a bug: anything broken, missing or wrong with a clear \
+         fix is a defect, with that fix. A decision gives at least two concrete choices in `options` and the one you \
+         recommend in `recommended`; one without them is read as a defect.\n",
     );
     out
 }
@@ -285,6 +325,7 @@ mod tests {
     use super::*;
     use crate::harness::verify::findings::Severity;
     use crate::harness::verify::shadow::FileChange;
+    use serde_json::json;
 
     fn change() -> ChangeSet {
         ChangeSet {
@@ -314,9 +355,9 @@ mod tests {
             spec: "Show the invoice total.",
             change,
             whole_stat: "M src/total.rs (+1 -1)",
-            patch_file: Path::new("/data/verify/v1/r1.patch"),
-            work_dir: Path::new("/data/worktrees/site/v1"),
-            build_dir: Path::new("/data/verify/v1/build"),
+            patch_file: Path::new("/copies/verify/v1/round-1/change.patch"),
+            work_dir: Path::new("/copies/verify/v1/round-1/project"),
+            scratch: Path::new("/copies/verify/v1"),
             checks,
             prior_open: prior,
             claims: &[],
@@ -343,7 +384,13 @@ mod tests {
         assert!(b.contains("Show the invoice total."));
         assert!(b.contains("+let t = a + b;"));
         assert!(b.contains("Rust tests (cargo test): FAILED\n│ 1 failed"));
-        assert!(b.contains("CARGO_TARGET_DIR=/data/verify/v1/build"));
+        // The verification's one build folder, beside the read-only copy,
+        // never in it; a build that writes into the project copies it into
+        // a folder of the lens's own there.
+        assert!(b.contains("CARGO_TARGET_DIR=/copies/verify/v1/build;"), "{b}");
+        assert!(b.contains("copy the project into /copies/verify/v1/build/billing"), "{b}");
+        assert!(b.contains("is at /copies/verify/v1/round-1/project"));
+        assert!(b.contains("it is read-only"));
         assert!(b.contains("Read-only means read-only."));
         assert!(
             !b.contains("round 2"),
@@ -418,7 +465,7 @@ mod tests {
         let mut c = change();
         c.patch = "+x\n".repeat(INLINE_PATCH_CHARS);
         let b = brief(Lens::Correctness, &input(&c, false, &[], &[]));
-        assert!(b.contains("read it whole at /data/verify/v1/r1.patch"));
+        assert!(b.contains("read it whole at /copies/verify/v1/round-1/change.patch"));
         assert!(b.len() < INLINE_PATCH_CHARS);
     }
 
@@ -438,5 +485,58 @@ mod tests {
             ["r3-security-1", "r3-security-2"]
         );
         assert_eq!(r.verified_ok[0].lens, "security");
+    }
+
+    /// 2026-10-21 `v-e9e6a7defa6d`: every reviewer was refused its own copy
+    /// and patch ("one of Nebo's own files"), because they sat in Nebo's own
+    /// folder. They are with the working copies now: every lens reads both
+    /// with each tool it has, runs its commands in the copy, and builds in
+    /// the verification's one build folder; Nebo's own folder stays closed
+    /// to it.
+    #[test]
+    fn every_reviewer_reads_its_copy_and_patch() {
+        crate::test_home::with_home(|home| {
+            let scratch = crate::harness::verify::work::Work::copies("v-reads").unwrap();
+            assert!(!scratch.starts_with(home), "never in Nebo's own folder");
+            let round = round_dir(&scratch, 1);
+            let project = project_dir(&round);
+            std::fs::create_dir_all(project.join("src")).unwrap();
+            std::fs::write(project.join("src/total.rs"), "let t = a + b;\n").unwrap();
+            let patch = patch_file(&round);
+            std::fs::write(&patch, "+let t = a + b;\n").unwrap();
+
+            let ctx = tools::ToolContext { session_id: "sa-verify-v-reads-r1".into(), ..Default::default() };
+            let fence = tools::nebo_files::NeboFiles::of(&ctx).unwrap();
+            for lens in [Lens::Correctness, Lens::Security, Lens::Billing, Lens::Data, Lens::Performance, Lens::Experience] {
+                let build = build_dir(&scratch);
+                let folders = [project.to_string_lossy().into_owned(), build.to_string_lossy().into_owned()];
+                let p = project.to_string_lossy();
+                let reads = [
+                    ("read_file", json!({ "path": project.join("src/total.rs") })),
+                    ("read_file", json!({ "path": patch })),
+                    ("run_command", json!({ "command": format!("cat '{}'", patch.display()), "cwd": p })),
+                    ("run_command", json!({ "command": format!("grep -rn 'a + b' '{p}' && find '{p}' -name '*.rs'"), "cwd": p })),
+                    ("run_command", json!({ "command": format!("CARGO_TARGET_DIR='{}' cargo test", build.display()), "cwd": p })),
+                ];
+                for (key, input) in &reads {
+                    assert_eq!(tools::safeguard::check_safeguard(key, input, &ctx), None, "{lens:?} {key} {input}");
+                    assert_eq!(tools::safeguard::check_path_scope(key, input, &folders), None, "{lens:?} {key} {input}: inside its fence");
+                }
+                // What the operating system closes to its commands holds
+                // nothing of its copy, its patch or its build folder.
+                for closed in fence.closed_entries() {
+                    for own in [&project, &patch, &build] {
+                        assert!(!own.starts_with(&closed), "{} is closed by {}", own.display(), closed.display());
+                    }
+                }
+            }
+            // Nebo's own folder, the verification's own files among them, is
+            // as closed to a reviewer as to any employee.
+            let own = crate::harness::verify::work::Work::home("v-reads").join("shadow.git/config");
+            assert!(tools::safeguard::check_safeguard("read_file", &json!({ "path": own }), &ctx).is_some());
+            let cat = json!({ "command": format!("cat '{}'", home.join("settings.json").display()) });
+            assert!(tools::safeguard::check_safeguard("run_command", &cat, &ctx).is_some());
+            std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
+        })
     }
 }

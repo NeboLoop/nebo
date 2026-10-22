@@ -24,6 +24,7 @@
 //! fails closed: not verified), and Stop.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +45,7 @@ use crate::harness::{Harness, SeatRequest};
 use crate::worktree::{self, MergeOutcome};
 
 /// How a turn that ended before its checking did leaves its verifications.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Closed {
     /// Waiting on the owner: paused, for the turn that goes on.
     Waiting,
@@ -51,6 +53,12 @@ pub enum Closed {
     Stopped,
     /// Ended otherwise: not verified, with why.
     Ended(Why),
+    /// Answered without its end check (the owner's message ended the work,
+    /// a reply with no words, a compaction): what was still being checked is
+    /// not verified, the run having ended before its checking did; a question
+    /// waiting on the owner stays for the turn that goes on. After a normal
+    /// end check nothing is still being checked, and nothing changes.
+    Unchecked,
 }
 
 /// What one turn's verify loop keeps between its rounds.
@@ -202,9 +210,12 @@ impl Verify {
                 }
                 Closed::Stopped => ("stopped", String::new()),
                 Closed::Ended(w) => ("not_verified", w.text()),
+                Closed::Unchecked if v.state == "paused" => continue,
+                Closed::Unchecked => ("not_verified", Why::new("turn_ended").text()),
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
+            Work::clean_up_reviewers(&v.id);
             ended.push(v.id.clone());
         }
         ended
@@ -500,6 +511,32 @@ impl VerifyCheck {
         &self.harness.store
     }
 
+    /// Make a round's folder for its reviewers: the copy of `head` and the
+    /// patch, under the verification's folder with the working copies.
+    /// Returns that folder.
+    async fn review_folder(&self, id: &str, round: u32, reviewed: &ChangeSet, work: &Work, head: &Snapshot) -> Result<PathBuf, String> {
+        let scratch = Work::copies(id)?;
+        let round_dir = review::round_dir(&scratch, round);
+        let _ = std::fs::remove_dir_all(&round_dir);
+        std::fs::create_dir_all(&round_dir).map_err(|e| format!("create {}: {e}", round_dir.display()))?;
+        let patch = review::patch_file(&round_dir);
+        std::fs::write(&patch, &reviewed.patch).map_err(|e| format!("write {}: {e}", patch.display()))?;
+        work.shadow.export(head, &review::project_dir(&round_dir)).await?;
+        Ok(scratch)
+    }
+
+    /// A round whose reviewers could not be given what they read ends the
+    /// verification unreviewed: nothing passes on a review that didn't
+    /// happen.
+    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, error: &str) -> RoundEnd {
+        tracing::warn!(verification = %v.id, error = %error, "the reviewers' copy could not be made");
+        row.outcome = Why::new("review_incomplete").text();
+        row.finished_at = Some(Self::now());
+        let _ = self.store().put_verification_round(row);
+        self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
+        RoundEnd::Finished
+    }
+
     fn tool_ctx(&self) -> tools::ToolContext {
         self.verify.shared().tool_ctx.clone().unwrap_or_default()
     }
@@ -511,7 +548,8 @@ impl VerifyCheck {
     /// Ask the owner one question with choices, the recommended one first,
     /// on the conversation's card (and the mobile app). `None` when nobody
     /// can answer in this run. The question waits on the row while it is
-    /// asked, so a restart asks it again.
+    /// asked, so a restart asks it again. A question with no choices is
+    /// never asked: the owner would have nothing to pick but Skip.
     async fn ask_owner(
         &self,
         id: &str,
@@ -520,6 +558,10 @@ impl VerifyCheck {
         options: &[&str],
         purpose: &Purpose,
     ) -> Option<String> {
+        if options.iter().all(|o| o.trim().is_empty()) {
+            tracing::error!(verification = %id, question, "a question for the owner with no choices was not asked");
+            return None;
+        }
         let ask = json!({ "question": question, "context": context, "options": options, "purpose": purpose });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
@@ -575,6 +617,12 @@ impl VerifyCheck {
         RoundEnd::Finished
     }
 
+    /// Write a round's record as it stands and tell the apps.
+    fn record_round(&self, row: &db::VerificationRound) {
+        let _ = self.store().put_verification_round(row);
+        self.harness.verification_changed(&row.verification_id);
+    }
+
     /// Finish a verification: its state and why written (a code the apps
     /// word), its copy kept or landed as the caller left it.
     fn finish(&self, v: &db::Verification, state: &str, why: Option<Why>) {
@@ -582,6 +630,8 @@ impl VerifyCheck {
         let _ =
             self.store()
                 .set_verification_state(&v.id, &state_of(v, state, &reason), Self::now());
+        // Its reviewers are done: their copies and shared build folder go.
+        Work::clean_up_reviewers(&v.id);
     }
 
     /// One work's next step.
@@ -831,43 +881,47 @@ impl VerifyCheck {
             started_at: started,
             ..Default::default()
         };
-        let _ = store.put_verification_round(&row);
-
         // The plain-code step: the project's own build and tests, within
-        // the build folders' disk cap.
+        // the build folders' disk cap. The round's record says, as it goes,
+        // which checks it runs and what each came to, then each reviewer's
+        // result as it arrives: the owner watches the round, not a spinner.
         super::work::cap_builds();
         let checks = checks::detect(&work.work_dir, &whole.paths());
+        row.detail = json!({
+            "whole": whole.stat(),
+            "checksPlanned": checks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+        });
+        self.record_round(&row);
         let mut ctx = self.tool_ctx();
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
-        let runs = checks::run(
-            &self.harness.tools,
-            &ctx,
-            &checks,
-            &checks::build_cache(&work.project_root),
-        )
-        .await;
+        let build = match checks::build_cache(&work.project_root) {
+            Ok(build) => build,
+            Err(e) => return self.review_incomplete(v, &mut row, &e),
+        };
+        let mut runs: Vec<CheckRun> = Vec::with_capacity(checks.len());
+        for check in &checks {
+            runs.extend(checks::run(&self.harness.tools, &ctx, std::slice::from_ref(check), &build).await);
+            row.checks = json!(runs);
+            self.record_round(&row);
+            if self.cancel.is_cancelled() {
+                break;
+            }
+        }
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
         }
 
-        // The reviewers: fresh, one per lens, all at once, each reading its
-        // own copy of exactly what was snapshotted (a throwaway export of
-        // `head`) with a build folder of their own: nothing a reviewer runs
-        // can change the builder's copy, the one that lands.
-        let patch_file = Work::home(&v.id).join(format!("round-{round}.patch"));
-        let _ = std::fs::create_dir_all(Work::home(&v.id));
-        let _ = std::fs::write(&patch_file, &reviewed.patch);
-        let review_dir = Work::home(&v.id).join(format!("review-r{round}"));
-        let _ = std::fs::remove_dir_all(&review_dir);
-        if let Err(e) = work.shadow.export(head, &review_dir).await {
-            tracing::warn!(verification = %v.id, error = %e, "the reviewers' copy could not be made");
-            row.outcome = Why::new("review_incomplete").text();
-            row.finished_at = Some(Self::now());
-            let _ = store.put_verification_round(&row);
-            self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
-            return RoundEnd::Finished;
-        }
-        let review_build = checks::build_cache(&work.project_root).join("review");
+        // The reviewers: fresh, one per lens, all at once, each reading the
+        // round's copy of exactly what was snapshotted (a throwaway export
+        // of `head`) and its patch, sharing the verification's one build
+        // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
+        // change the builder's copy, the one that lands.
+        let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
+            Ok(scratch) => scratch,
+            Err(e) => return self.review_incomplete(v, &mut row, &e),
+        };
+        let round_dir = review::round_dir(&scratch, round);
+        let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
         let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
         let rules = self.review_rules(work).await;
         let input = RoundInput {
@@ -880,16 +934,37 @@ impl VerifyCheck {
             whole_stat: &whole.stat(),
             patch_file: &patch_file,
             work_dir: &review_dir,
-            build_dir: &review_build,
+            scratch: &scratch,
             checks: &runs,
             prior_open: &prior_open,
             claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
             check_files: &review::check_files(&reviewed.paths()),
             rules: &rules,
         };
+        let mut reviewers = serde_json::Map::new();
+        for lens in lenses {
+            reviewers.insert(lens.as_str().into(), json!("running"));
+        }
+        row.detail["reviewers"] = json!(reviewers);
+        self.record_round(&row);
+        let live = Mutex::new(row.clone());
+        let heard = |r: &LensReview| {
+            let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
+            let state = match &r.review {
+                Ok(review) => {
+                    append(&mut live.findings, json!(review.findings));
+                    append(&mut live.verified_ok, json!(review.verified_ok));
+                    if review.findings.is_empty() { "clean" } else { "found" }
+                }
+                Err(_) => "failed",
+            };
+            live.detail["reviewers"][r.lens.as_str()] = json!(state);
+            self.record_round(&live);
+        };
         let reviews: Vec<LensReview> =
-            review::run_round(&self.helpers, &self.parent(), &input).await;
-        let _ = std::fs::remove_dir_all(&review_dir);
+            review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
+        row = live.into_inner().unwrap_or_else(|p| p.into_inner());
+        let _ = std::fs::remove_dir_all(&round_dir);
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
         }
@@ -921,6 +996,21 @@ impl VerifyCheck {
             held.extend(r.verified_ok.iter().cloned());
             priors.extend(r.prior.iter().cloned());
         }
+        // Progress, against the best so far.
+        let earlier = store.verification_rounds(&v.id).unwrap_or_default();
+        // The owner's calls already made, by the finding that asked each: the
+        // same call is never asked twice, and one that keeps coming back
+        // counts against progress.
+        let asked_before: Vec<(Finding, String)> = earlier
+            .iter()
+            .filter(|r| r.round < at)
+            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
+            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
+            .collect();
+        // Settled only now, against the calls he already made: one raised
+        // again without its choices still carries his answer.
+        let answered: Vec<Finding> = asked_before.iter().map(|(f, _)| f.clone()).collect();
+        findings::settle(&mut new, &answered);
         let (decisions, defects): (Vec<Finding>, Vec<Finding>) =
             new.iter().cloned().partition(|f| f.kind == Kind::Decision);
         let open = findings::open_after(&prior_open, &priors, &defects);
@@ -933,17 +1023,6 @@ impl VerifyCheck {
         let checks_failed = runs.iter().filter(|r| !r.passed).count();
         let blocking_now = findings::blocking(&open) + checks_failed;
 
-        // Progress, against the best so far.
-        let earlier = store.verification_rounds(&v.id).unwrap_or_default();
-        // The owner's calls already made, by the finding that asked each: the
-        // same call is never asked twice, and one that keeps coming back
-        // counts against progress.
-        let asked_before: Vec<(Finding, String)> = earlier
-            .iter()
-            .filter(|r| r.round < at)
-            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
-            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
-            .collect();
         let mut calls: Vec<Finding> = Vec::new();
         for d in decisions {
             if !calls.iter().any(|c| c.same_call(&d)) {
@@ -978,8 +1057,14 @@ impl VerifyCheck {
         row.prior = json!(priors);
         row.checks = json!(runs);
         row.fixed = json!(fixed);
-        row.detail =
-            json!({ "openBlocking": progress_count, "nested": nested, "failedReviewers": failed, "rulesHash": rules_hash(&rules) });
+        for (key, value) in [
+            ("openBlocking", json!(progress_count)),
+            ("nested", json!(nested)),
+            ("failedReviewers", json!(failed)),
+            ("rulesHash", json!(rules_hash(&rules))),
+        ] {
+            row.detail[key] = value;
+        }
         row.outcome = if !failed.is_empty() {
             Why::new("review_incomplete")
         } else if blocking_now == 0 {
@@ -1003,15 +1088,7 @@ impl VerifyCheck {
                 asked.push(json!({ "finding": d, "answer": answer }));
                 continue;
             }
-            let mut options: Vec<&str> = Vec::new();
-            if let Some(r) = d.recommended.as_deref() {
-                options.push(r);
-            }
-            for o in &d.options {
-                if Some(o.as_str()) != d.recommended.as_deref() {
-                    options.push(o);
-                }
-            }
+            let options = d.choices();
             let context = format!(
                 "{}\n\nWhy it matters: {}\n\nWhere: {}",
                 d.repro, d.impact, d.evidence
@@ -1234,7 +1311,7 @@ impl VerifyCheck {
             Box::pin(async move {
                 let changed = worktree::changed_files(&iso).await;
                 let found = checks::detect(&work_dir, &changed);
-                let done = checks::run(&tools, &ctx, &found, &build).await;
+                let done = checks::run(&tools, &ctx, &found, &build?).await;
                 let failed: Vec<String> = done.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
                 *ran.lock().unwrap_or_else(|p| p.into_inner()) = done;
                 if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
@@ -1588,6 +1665,13 @@ impl VerifyCheck {
 
 /// The rules a review read, as a hash kept on its step: a review is skipped
 /// on unchanged work only under the same rules.
+/// `items` (a JSON array) added to the end of the array `into`.
+fn append(into: &mut serde_json::Value, items: serde_json::Value) {
+    let mut all = into.as_array().cloned().unwrap_or_default();
+    all.extend(items.as_array().cloned().unwrap_or_default());
+    *into = serde_json::Value::Array(all);
+}
+
 fn rules_hash(rules: &str) -> String {
     format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }

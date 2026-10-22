@@ -72,13 +72,20 @@ pub(crate) fn note(kind: Kind, filename: &str, size: u64, body: &str) -> String 
 /// notes stored before this module existed.
 const NOTE_RE: &str = r"\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]";
 
+static NOTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(NOTE_RE).unwrap());
+
+/// Whether `text` holds anything but attachment notes: the words someone
+/// wrote, as a bubble shows them once the one reader strips the notes.
+pub(crate) fn has_words(text: &str) -> bool {
+    !NOTE.replace_all(text, "").trim().is_empty()
+}
+
 /// `text` with each attachment note cut to what it names: the kind, the
 /// file and its size ("[Attached: deck.pdf (3.1 MB)]"). The path, the
 /// instructions and any transcript the note carries are left out. What a
 /// voice call is given of a message: the owner's own words, and a short
 /// reference to each file, never the file.
 pub(crate) fn references(text: &str) -> String {
-    static NOTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(NOTE_RE).unwrap());
     NOTE.replace_all(text, |m: &regex::Captures| {
         let note = &m[0];
         let open = note.find('[').unwrap_or(0);
@@ -239,6 +246,8 @@ mod tests {
             "read my post\n[Attached: manual.pdf (49.6 MB)]\n[Attached: photo.jpg (1.2 MB)]\n[Audio: memo.m4a (29 KB)]"
         );
         assert_eq!(references("no files here"), "no files here");
+        assert!(has_words(&stored));
+        assert!(!has_words(&note(Kind::File, "shot.png", 300_000, "an image, shown above — saved at /tmp/u/shot.png")));
     }
 
     /// Sizes read the way they always did: KB under a megabyte, MB above.

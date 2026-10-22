@@ -2617,10 +2617,7 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
-    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} />
-    {#each inProgress($verifications, chatSessionKey) as v (v.id)}
-      <VerifiedBadge verification={v} />
-    {/each}
+    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} />
     <ChatComposer
       {agentName}
       {agentId}
