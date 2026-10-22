@@ -1,6 +1,6 @@
 # The rest of the SDK
 
-The calls SKILL.md's table leaves out: the owner's files, sharing a file, streaming, cards, the embedded chat, and pages served outside Nebo.
+The calls SKILL.md's table leaves out: the owner's files, sharing a file, streaming, cards, the page's chat with its employee, and pages served outside Nebo.
 
 | Call | Does |
 |------|------|
@@ -9,7 +9,8 @@ The calls SKILL.md's table leaves out: the owner's files, sharing a file, stream
 | `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
 | `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |
-| `chat.mount(el, {placeholder?, theme?, height?, borderless?, contextId?, scope?})` | Nebo's chat with this employee, inside the page. `chat.send`, `chat.setContext`, `chat.onMessage`, `chat.newThread`, `chat.unmount` drive it. |
+| `chat.mount(el, {placeholder?, name?, theme?, height?, borderless?, contextId?, scope?})` | A ready chat with this app's own employee, drawn in the page (history, the reply streaming, Enter to send, Stop). `contextId` keeps a conversation per document or record (letters, digits, `-`, `_`, `.`); `scope` is a tool scope agent.json declares. `chat.unmount` removes it. |
+| `chat.history({thread?})`, `chat.send(text, {thread?})`, `chat.stop()`, `chat.newThread()`, `chat.onMessage(handler)`, `chat.setContext(ctx)` | The same conversation, to draw your own chat. `onMessage` hears `message`, `stream` (the reply as it comes), `complete`, `error`, `stopped`. The page talks to its own employee only, never another, and its words are the app's, not the owner's: codes, slash commands, file paths and @mentions are just words, and the employee works as for any app request (no shell). The owner reads the same conversation among the employee's chats. |
 | `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo; at the top level `NeboAppSDK.setAppId(id)` / `NeboAppSDK.setBaseUrl(url)`, read back with `getAppId()` / `getBaseUrl()`. |
 | `window.share_menu` entry `{"label": "Share a link", "say": "Share this as a link.", "share": true}` | A link from the header's Share: its `say` is sent into the chat; answer with ONE file, handed over in your reply (or by the page with `share`), and Nebo opens its Share dialog on it on the device it was picked on. |
 

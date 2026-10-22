@@ -113,12 +113,12 @@ pub const PERMISSIONS_POLICY_WITH_MOTION: &str =
 /// HSTS, Permissions-Policy, X-Frame-Options, X-Content-Type-Options,
 /// X-XSS-Protection, Referrer-Policy.
 pub async fn security_headers(request: Request, next: Next) -> Response {
-    // Frameable surfaces: the chat-embed page (app SDK iframes), run-produced
-    // files (rendered in the Work panel's sandboxed iframe), and the
-    // standalone /work document viewer (framed by the web Library so the
-    // owner stays on the console while the bot's renderer does the formats).
-    let is_embed = request.uri().path().starts_with("/chat-embed/")
-        || request.uri().path().starts_with("/api/v1/files/")
+    // Frameable surfaces: run-produced files (rendered in the Work panel's
+    // sandboxed iframe) and the standalone /work document viewer (framed by
+    // the web Library so the owner stays on the console while the bot's
+    // renderer does the formats). Nebo's own pages never are: an app talks
+    // to its employee through its own chat (`nebo.chat`), not a frame of them.
+    let is_embed = request.uri().path().starts_with("/api/v1/files/")
         || request.uri().path().starts_with("/work/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();

@@ -329,7 +329,7 @@ The full top-level list is `nebo`, `identity`, `storage`, `agents`,
 | `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. `send`, `close`, `onopen/onmessage/onerror/onclose`. |
 
 Streaming (`agents.stream`, `janus.stream`), cards from the employee
-(`surfaces`), Nebo's chat inside the page (`chat.mount`) and pages served
+(`surfaces`), the page's chat with its employee (`chat`) and pages served
 outside Nebo (`nebo.configure`): `references/sdk-more.md`.
 
 The SDK finds the app and the address prefix itself; a page never sets them.

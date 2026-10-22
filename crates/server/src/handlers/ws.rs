@@ -458,47 +458,18 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     )
                 };
 
-                let entity_config = crate::entity_config::resolve_for_chat(
-                    &state_clone.store, "agent", &agent_id
-                );
-
-                let config = ChatConfig {
+                // The click is the app's, not the owner's words: it runs as
+                // the app's request (`apps::app_run_config`), a hidden prompt
+                // (the model reads it, the owner sees only the reply).
+                let run = super::apps::AppRun {
                     session_key,
                     prompt,
-                    user_id: String::new(),
-                    channel: "app".to_string(),
-                    // The page wrote this action and its context, not the
-                    // owner: it runs as the app's input, as `invoke` does.
-                    origin: Origin::App,
-                    door: types::permissions::Door::Chat,
-                    narrow: None,
-                    agent_id: agent_id.clone(),
-                    cancel_token: CancellationToken::new(),
-                    lane: lanes::EVENTS.to_string(),
-                    comm_reply: None,
-                    entity_config,
-                    images: vec![],
-                    attachments: vec![],
-                    entity_name: String::new(),
-                    origin_agent_id: None,
-                    mention_context: None,
-                    tool_scope: None,
-                    channel_ctx: None,
-                    handoff_depth: 0,
-                    seed_taint: vec![],
-                    tool_allowlist: None,
-                    // The house describing a click: the model reads it, the owner sees
-                    // only the reply (a hidden prompt, `isMeta`).
-                    hidden_prompt: true,
-                    coworker: None,
-                    audience: None,
-                    cwd: None,
-                    model_override: None,
-                    client_id: None,
-                    platform: None,
-                    message_id: None,
+                    context: None,
+                    scope: None,
+                    lane: lanes::EVENTS,
+                    hidden: true,
                 };
-
+                let config = super::apps::app_run_config(&state_clone, &agent_id, "", run);
                 run_chat(&state_clone, config).await;
 
                 // Action complete — re-enable

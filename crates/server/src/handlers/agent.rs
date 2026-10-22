@@ -44,24 +44,32 @@ pub async fn get_session_messages(
     Path(id): Path<String>,
     Query(q): Query<SessionMessagesQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    // Look up session by UUID first, then by name (session key).
-    // The embed chat passes the session key (e.g. "agent:brief:app:docId")
-    // not the internal UUID.
-    let session = state
-        .store
-        .get_session(&id)
-        .map_err(to_error_response)?
-        .or_else(|| {
-            state.store.get_session_by_name(&id).ok().flatten()
-        });
+    let limit = q.limit.map(|l| l.clamp(0, u32::MAX as i64) as u32);
+    let (messages, has_more) = session_messages(&state, &id, limit, q.before.as_deref()).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({
+        "messages": messages,
+        "hasMore": has_more,
+    })))
+}
 
-    // When no session exists yet (e.g. app just installed, no messages sent),
-    // return an empty list instead of 404.
+/// A session's current conversation as the owner reads it (rows only the
+/// model reads left out), the last `limit` (50 by default, at most 200)
+/// before the message `before`, or the last ones; and whether older ones
+/// remain. `id` is the session's id or its key (an app's page names its
+/// conversation by key, `agent:<id>:app:<thread>`). A session that does not
+/// exist yet has no messages.
+pub(crate) fn session_messages(
+    state: &AppState,
+    id: &str,
+    limit: Option<u32>,
+    before: Option<&str>,
+) -> Result<(Vec<db::models::ChatMessage>, bool), types::NeboError> {
+    let session = match state.store.get_session(id)? {
+        Some(s) => Some(s),
+        None => state.store.get_session_by_name(id).ok().flatten(),
+    };
     let Some(session) = session else {
-        return Ok(Json(serde_json::json!({
-            "messages": [],
-            "hasMore": false,
-        })));
+        return Ok((Vec::new(), false));
     };
 
     // Sessions are decoupled from chats: the current conversation lives at
@@ -75,42 +83,24 @@ pub async fn get_session_messages(
         .filter(|n| !n.is_empty())
         .or_else(|| session.name.as_deref().filter(|n| !n.is_empty()))
         .or(session.scope_id.as_deref())
-        .unwrap_or(&id);
+        .unwrap_or(id);
 
-    let limit = q.limit.unwrap_or(50).min(200) as usize;
-    let mut all_messages = state
-        .store
-        .get_chat_messages(chat_id)
-        .map_err(to_error_response)?;
+    let limit = limit.unwrap_or(50).min(200) as usize;
+    let mut all_messages = state.store.get_chat_messages(chat_id)?;
     all_messages.retain(super::chat::is_owner_visible);
     for m in all_messages.iter_mut() {
         super::chat::for_owner(m);
     }
 
-    if let Some(ref before_id) = q.before {
+    let end = match before {
         // Find cursor position and return messages before it
-        let cursor_pos = all_messages
-            .iter()
-            .position(|m| m.id == *before_id)
-            .unwrap_or(0);
-        let start = cursor_pos.saturating_sub(limit);
-        let slice = &all_messages[start..cursor_pos];
-        let has_more = start > 0;
-        Ok(Json(serde_json::json!({
-            "messages": slice,
-            "hasMore": has_more,
-        })))
-    } else {
-        // Return the last N messages
-        let total = all_messages.len();
-        let start = total.saturating_sub(limit);
-        let slice = &all_messages[start..];
-        let has_more = start > 0;
-        Ok(Json(serde_json::json!({
-            "messages": slice,
-            "hasMore": has_more,
-        })))
-    }
+        Some(before_id) => all_messages.iter().position(|m| m.id == before_id).unwrap_or(0),
+        None => all_messages.len(),
+    };
+    let start = end.saturating_sub(limit);
+    all_messages.truncate(end);
+    let page = all_messages.split_off(start);
+    Ok((page, start > 0))
 }
 
 #[derive(Debug, serde::Deserialize)]
