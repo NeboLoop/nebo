@@ -12,7 +12,7 @@ through tools declared in `agent.json`. Most needs are met without one.
 | To call an outside service | `nebo.fetch('https://...')` through Nebo's proxy, with `network:<host>` in the manifest |
 | To react when files land in a folder | A workflow with a `folder` trigger (below); its run writes what the page shows with `app_data`, and the page hears it through `storage.onChange` |
 | Work on a schedule, or while the page is closed | The employee's own workflows (`automations`) |
-| A plugin's work (Nebo Media, Gmail) | The employee runs the plugin with its tools; the page asks it with `agents.invoke` |
+| A plugin's work (Nebo Media, Gmail) | `plugins.run` on the page with `plugin:<slug>` for work at once; the employee with its tools (`agents.invoke`) for work that needs judgment |
 | AI: text, a judgment, a picture | `janus.complete`, `decide`, the employee's `generate_media` |
 | A file made for the owner | The employee hands it over with `share_file`, the page with `share` |
 | Another employee's help | `agents.invoke` (needs `subagent:<id>`) |
@@ -35,17 +35,12 @@ starts a run with the files in `_watch_payload.files`):
 
 ## Tell the owner these limits first
 
-- **macOS and Linux only.** On Windows, Nebo can't reach a sidecar: every
-  `nebo.fetch` to it answers 503.
-- **Not on macOS for an app made on this bot, today.** Its socket is
-  `<app folder>/<app id>.sock`, and under
-  `~/Library/Application Support/Nebo/user/agents/` that path is longer than
-  macOS allows a socket (103 bytes), so the program can't listen. Say so;
-  never work around it.
+- **It runs on the bot's own computer** (macOS, Linux or Windows): one
+  native program per platform, built for each one the app runs on.
 - **Not published from a conversation.** `app_listing` and `app_submit`
   refuse an app that runs a program; that needs the full publishing tools.
-- **It needs a compiler on the bot** (for Rust: `cargo`, and `protoc` for the
-  SDK's build). Never install one (hard rule 4).
+- **It needs a compiler on the bot** (for Rust: `cargo`). Never install one
+  (hard rule 4).
 
 ## What Nebo does with it
 
@@ -56,14 +51,20 @@ starts a run with the files in `_watch_payload.files`):
   and when the file changes (a rebuild is a restart).
 - **Gives it** `NEBO_APP_ID`, `NEBO_APP_NAME`, `NEBO_APP_VERSION`,
   `NEBO_APP_DIR` (the app folder), `NEBO_DATA_DIR` (the one place to
-  write, kept across updates; also its working directory), `NEBO_APP_SOCK`, `NEBO_API_URL`,
-  `NEBO_APP_TOKEN`, plus `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` and `TZ`.
-  Nothing else.
+  write, kept across updates; also its working directory), `NEBO_API_URL`,
+  `NEBO_APP_TOKEN` (for calling Nebo), `NEBO_SIDECAR_TOKEN` (what Nebo's
+  calls to it carry; the SDK checks it and keeps it from your code), plus
+  `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ` and, on Windows,
+  `SystemRoot`, `TEMP`, `TMP` and `USERPROFILE`. Nothing else.
 - **Logs** its stdout and stderr to `$NEBO_DATA_DIR/sidecar.log`: read it
   first when it fails.
-- **Holds its stdin open.** End of input means Nebo is gone: exit.
-- **Talks to it** over gRPC on `NEBO_APP_SOCK`: the `UIService` in Nebo's
-  `proto/apps/v0/ui.proto`, one `HandleRequest` per request.
+- **Holds its stdin open.** End of input means Nebo is gone: the SDK exits.
+- **Talks to it** over gRPC on loopback: the SDK listens on `127.0.0.1` on a
+  port the system picks and tells Nebo where; Nebo calls the `UIService` in
+  `proto/apps/v0/ui.proto`, one `HandleRequest` per request, and proves it is
+  the program it started (the SDK answers a health check). Use the SDK: a
+  program that skips it is stopped. Nothing of the owner's (his sign-in, the
+  page's pass) ever reaches it.
 
 ## How `nebo.fetch` reaches it
 
@@ -104,7 +105,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nebo-sdk = { git = "https://github.com/NeboLoop/nebo-sdk-rust", rev = "022c85bd21813ee2bdc280f701ac5e983497c001" }
+nebo-sdk = { git = "https://github.com/NeboLoop/nebo-sdk-rust", rev = "075f6cd2ba0521d05e7e3f010a99c6c7480bd85f" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
@@ -117,7 +118,6 @@ use async_trait::async_trait;
 use nebo_sdk::ui::{HttpRequest, HttpResponse, UiHandler};
 use nebo_sdk::{NeboApp, NeboError};
 use std::collections::HashMap;
-use std::io::Read;
 
 struct Api;
 
@@ -138,19 +138,14 @@ impl UiHandler for Api {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Nebo holds stdin open; end of input means Nebo is gone.
-    std::thread::spawn(|| {
-        let mut buf = [0u8; 64];
-        while matches!(std::io::stdin().read(&mut buf), Ok(n) if n > 0) {}
-        std::process::exit(0);
-    });
+    // Listens on loopback, answers Nebo's health check, and returns when
+    // Nebo closes its stdin.
     NeboApp::new()?.register_ui(Api).run().await?;
     Ok(())
 }
 ```
 
 Build it in `<app folder>/sidecar` with `cargo build --release`; Nebo runs
-`sidecar/target/release/notes-sidecar`. Read the data folder from
-`NEBO_DATA_DIR` yourself: the SDK's `env().data_dir` reads an old name and is
-empty. The page calls `NeboAppSDK.neboFetch('hello')`; prove it with
+`sidecar/target/release/notes-sidecar`. The data folder is `NEBO_DATA_DIR`
+(the SDK's `env().data_dir`). The page calls `NeboAppSDK.neboFetch('hello')`; prove it with
 `app_screenshot`, and `sidecar.log` when it fails.

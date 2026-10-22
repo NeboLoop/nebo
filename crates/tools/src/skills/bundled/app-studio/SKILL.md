@@ -32,29 +32,57 @@ the check passes. When looks matter, Design Depth adds the studio method.
 
 ## How Nebo Runs a Page
 
-Nebo serves `ui/` at three addresses at once, each with its own prefix:
+Nebo serves `ui/` at several addresses, each with its own prefix:
 
 | Where it opens | Address of `ui/index.html` |
 |---|---|
 | Desktop app window | `neboapp://<id>/index.html` |
-| Mobile app and web, through the hub's tunnel | `https://neboai.com/t/<bot>/apps/<id>/ui/index.html` |
-| `app_screenshot` and the Verified check (a view pass) | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
+| A browser on this computer | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
+| Mobile app and web, through the hub's tunnel | `https://neboai.com/t/<bot>/k/<pass>/apps/<id>/ui/index.html` |
+| `app_screenshot` and the Verified check | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
 
+- **The page is confined to its own app.** It runs sandboxed, in an origin
+  of its own: no cookies, never the owner's sign-in. `/k/<pass>/` is the
+  page's pass: Nebo adds it when the page opens, everything the page loads
+  from its own address carries it, and it opens this app's routes alone.
 - **Files are relative** (`./app.js`, `./assets/hero.webp`): nothing the
   page loads starts with `/`.
 - **The SDK makes every call to Nebo** (`storage`, `agents`, `janus`,
-  `decide`, `share`, `identity`, `nebo.fetch`): it finds the prefix itself.
-  Never write an `/api/v1/...` or `api/v1/...` address yourself. An absolute
-  one misses the prefix (the hub's root in the mobile app, refused in a
-  screenshot); a relative one lands inside `ui/` and gets the page back as
-  HTML. Both can work in the desktop window and fail everywhere else.
-- **A page reaches only its own app**: its storage and its routes
-  (`/api/v1/apps/<id>/...`). Never `/api/v1/files`, another app, or any
-  other Nebo API, and a page served from anywhere else gets no CORS answer.
-  The owner's own files (photos, video in his Work) are out of a page's
-  reach: never copy them into `ui/` or storage to get around it.
-- **A page never runs a plugin.** It asks its employee
-  (`agents.invoke`), and the employee runs the plugin with its tools.
+  `decide`, `share`, `files`, `plugins`, `chat`, `identity`, `nebo.fetch`):
+  it finds the prefix and the pass itself. Never write an `/api/v1/...` or
+  `api/v1/...` address yourself. An absolute one misses the prefix (the
+  hub's root in the mobile app, refused in a screenshot); a relative one
+  lands inside `ui/` and gets the page back as HTML. Both can work in the
+  desktop window and fail everywhere else.
+- **`localStorage` works, kept by Nebo** in the app's store under the key
+  `localStorage`; `sessionStorage` lasts as long as the page. Records the
+  employee also reads go in `storage`.
+- **A link out opens a new window** (`target="_blank"` or `window.open`);
+  the page can't move the window it is in.
+- **A page reaches only its own app**: its storage, its routes
+  (`/api/v1/apps/<id>/...`) and its socket, which carries its data changes,
+  its cards and its own chat's words, nothing else of the owner's. Never
+  `/api/v1/files`, another app, or any other Nebo API.
+- **The owner's files** reach a page only through `files.url(path)`, inside
+  folders its manifest grants with `filesystem:read:<folder>`
+  (`references/sdk-more.md`). Never copy them into `ui/` or storage.
+- **A plugin's work at once** (a thumbnail, a waveform, a trim):
+  `plugins.run(slug, command, args)` with `plugin:<slug>` in the manifest
+  (`references/sdk-more.md`). Work that needs judgment goes to the employee
+  with `agents.invoke`; the page hears its words and which tools ran, never
+  what a tool gave back.
+- **The page's chat** (`chat.mount`) is drawn in the page and talks only to
+  this app's own employee. Its words are the app's, not the owner's: codes,
+  slash commands, file paths and @mentions are just words.
+- **The owner's OK.** An app built here holds what its manifest asks for.
+  One installed from the marketplace or shared through a loop gets
+  `filesystem:`, `network:`, `subagent:` and `plugin:` only once the owner
+  allows each, and he can take it back. A refused call answers 403 naming
+  the permission: the page says plainly what it can't do yet. Never ask the
+  owner to get around it.
+- **`nebo.fetch('https://...')`** reaches public sites only, with
+  `network:<host>`: never this computer or its network, whatever a granted
+  name points to, and every redirect is held to the granted hosts.
 
 ## Who Does What
 
@@ -156,7 +184,10 @@ create_employee(draft_id: "<the id it returned>")
   `open_on_work`, `isolated` (only for a threaded engine export, games.md)
   and `share_menu` (up to 6 `{label, say}`, sdk-more.md), nothing else.
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
-  or `network:*` (the proxy fetch), `device:motion` (tilt).
+  or `network:*` (the proxy fetch), `device:motion` (tilt),
+  `filesystem:read:<folder>` (the owner's files) and `plugin:<slug>` (a
+  plugin run at once), both in `references/sdk-more.md`. An app built here
+  holds them as written; an installed one only once the owner allows them.
 
 The starter page, exactly:
 
@@ -181,7 +212,7 @@ The starter page, exactly:
 ```
 
 `../../../sdk/nebo.global.js` reaches the SDK (served at `/sdk/nebo.global.js`)
-from `ui/index.html` at all three addresses: copy it as written.
+from `ui/index.html` at every address: copy it as written.
 
 **Check 1.** Run `app_status`. It names the folder the page is served from
 (`<data>/user/agents/<folder>/ui`); the app folder is the one above it. Write
@@ -271,13 +302,14 @@ The full Vite lane: `read_skill_file(name: "app-studio", path:
 Then tell the owner in product words: "Your Orbit app is ready. Open it from
 your workforce."
 
-**The Verified badge.** Nebo's own check on code work runs the build and
-tests it finds in the work's folder, then, for an app, reloads and loads the
-page fresh: Verified only with checks passing and zero console errors. An
-app's folder is its `ui/`, which holds only served files, so app work has no
-checks to run and reads Not verified ("no tests or build could run"). Say so
-plainly and give the proof from this step; never add project files to `ui/`
-to earn the badge.
+**The Verified badge.** Nebo's own check on app work loads the page fresh,
+in a view of its own, on a phone and a desktop size, in every round: it
+passes only with zero console errors, uncaught exceptions and failed loads
+of the app's own files, and a page that drew something. Another site's
+failures (a CDN, analytics) are listed as notes, never counted. It never
+reloads the owner's open views. Checks of your own go in a `checks/` folder
+in the app folder, outside `ui/`; they run before the live load and are
+never published. Never add project files to `ui/` to earn the badge.
 
 ## Your App's Data
 
@@ -305,7 +337,7 @@ The page reads the SDK from `NeboAppSDK`. `NeboAppSDK.nebo` (a
 two are renamed there: `nebo.fetch` is `NeboAppSDK.neboFetch`,
 `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`. The full top-level list is
 `nebo`, `identity`, `storage`, `agents`, `janus`, `decide`, `share`,
-`surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`, `NeboSDK`,
+`files`, `plugins`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`, `NeboSDK`,
 `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
 `setBaseUrl`. Nebo sets the app and its address on every page it serves;
 a page never sets them.
@@ -317,13 +349,14 @@ a page never sets them.
 | `storage.setItem(key, value): Promise<void>` | Write one key. Non-strings are JSON-encoded. |
 | `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
 | `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write: `source` is `"employee"` (`app_data`) or `"page"` (another open view). Returns an unsubscribe. |
-| `agents.invoke(message, {agent?, data?}): Promise<{text, tools?}>` | Ask an employee, wait for the answer. `agent` names another employee (needs `subagent:<id>`). |
+| `agents.invoke(message, {agent?, data?}): Promise<{text, tools?}>` | Ask an employee, wait for the answer: its words, and which tools ran (never what they gave back). `agent` names another employee (needs `subagent:<id>`). |
 | `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, memory or tools. |
 | `decide({state, questions}): Promise<{model, answers, usage}>` | Typed decisions in one fast call (Typed Decisions). Throws with the reason on 400, 429 or 503. |
 | `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | A relative path goes to the app's sidecar; `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
 | `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. |
 
-Sharing a file, streaming, cards, the embedded chat: `references/sdk-more.md`.
+The owner's files (`files`), running a plugin (`plugins`), sharing a file,
+streaming, cards and the page's chat (`chat`): `references/sdk-more.md`.
 
 ## Version History
 
