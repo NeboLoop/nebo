@@ -1,5 +1,6 @@
 <!--
-  The one line above the composer: shown while the turn works or any of the
+  The last line of the conversation, after the newest message (it scrolls
+  with the messages): shown while the turn works or any of the
   work this conversation launched runs, after the turn ends too. A mark, the
   turn's time, the conversation's running tasks (a button that opens them), its
   code work being checked (each a button that opens its sheet), and what the
@@ -15,6 +16,7 @@
   import BackgroundTranscript from '$lib/components/background/BackgroundTranscript.svelte';
   import type { BackgroundTask } from '$lib/api/neboComponents';
   import { widthFade } from '$lib/components/background/widthFade';
+  import { slide } from 'svelte/transition';
   import type { VerificationView } from '$lib/api/neboComponents';
   import type { VerificationAnswer } from '$lib/stores/verifications';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
@@ -53,6 +55,12 @@
   });
 
   let open = $state(false);
+  let popover = $state<HTMLDivElement | null>(null);
+  // The list opens under its line, at the end of the conversation: brought
+  // into view it lands above the composer (the scroller's scroll padding).
+  $effect(() => {
+    popover?.scrollIntoView({ block: 'nearest' });
+  });
   let transcript = $state<BackgroundTask | null>(null);
   let flash = $state(0);
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -104,20 +112,9 @@
 <svelte:window onkeydown={onKey} />
 
 {#if shown}
-  <div class="bg-status">
-    {#if open && count > 0}
-      <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
-      <div class="bg-status-popover">
-        <BackgroundPanel
-          tasks={mine}
-          {finished}
-          now={Math.floor(nowMs / 1000)}
-          collapsible={false}
-          ontranscript={showTranscript}
-          onclose={() => (open = false)}
-        />
-      </div>
-    {/if}
+  <!-- Comes and goes smoothly: at the end of the conversation, the list
+       anchored to the bottom moves with it, never in a jump. -->
+  <div class="bg-status" transition:slide={{ duration: 200 }}>
     <div class="bg-status-row">
       {#if isLoading || count > 0 || checking.length > 0}
         <span class="bg-status-piece" transition:widthFade><span class="loading loading-spinner loading-xs text-primary"></span></span>
@@ -144,6 +141,21 @@
         <span class="bg-status-piece bg-status-phrase {thinking ? 'bg-status-thinking' : ''}" transition:widthFade>{phrase}</span>
       {/if}
     </div>
+    <!-- Opens in the conversation, under the line: never clipped by a short
+         chat's edge, and scrolled into view above the composer. -->
+    {#if open && count > 0}
+      <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
+      <div class="bg-status-popover" bind:this={popover}>
+        <BackgroundPanel
+          tasks={mine}
+          {finished}
+          now={Math.floor(nowMs / 1000)}
+          collapsible={false}
+          ontranscript={showTranscript}
+          onclose={() => (open = false)}
+        />
+      </div>
+    {/if}
   </div>
 {/if}
 
