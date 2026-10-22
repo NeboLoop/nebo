@@ -1,0 +1,7 @@
+id: sc147-a-timer-answered-just-before-a-restart-is-pointed-at-and-never-asked-again
+name: "SC147 — A timer answered just before a restart is pointed at and never asked again"
+description: |
+  A one-shot asked for in a conversation whose final reply was written just before the process ended, before its turn's end settled the follow-up: at the restart the follow-up finds that reply, the Inbox points at it once, and the conversation is never asked to answer the request again.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_timer_answered_just_before_a_restart_is_pointed_at_and_never_asked_again
+conversation: []

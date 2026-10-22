@@ -567,12 +567,12 @@ pub(crate) async fn hand_over(state: &AppState, session_key: &str, job: &CronJob
         // ended. A turn still running, or whose end is not told yet, settles
         // it itself (`turn_ended` reads the open rows once its slot is free).
         HandOver::InTurn(fired) if !state.harness.is_session_busy(session_key) => {
-            if let Some(end) = last_end(session_key).filter(|end| end.at >= fired) {
+            if let Some(end) = state.turn_ends.last(session_key).filter(|end| end.at >= fired) {
                 settle(state, &follow_up, &end).await;
             }
         }
         HandOver::InTurn(_) => {}
-        HandOver::AfterRestart => ask_again(state, &follow_up),
+        HandOver::AfterRestart => ask_again(state, &follow_up).await,
     }
     true
 }
@@ -588,14 +588,23 @@ struct TurnEnd {
     resume_after: Option<i64>,
 }
 
-/// How each session's last turn ended: what [`hand_over`] reads for a turn
-/// that ended before its follow-up was kept. Entries older than ten minutes
-/// are dropped as new ones come.
-static TURN_ENDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, TurnEnd>>> =
-    std::sync::LazyLock::new(Default::default);
+/// How each session's last turn ended (`AppState::turn_ends`): what
+/// [`hand_over`] reads for a turn that ended before its follow-up was kept.
+/// [`turn_ended`] writes it; entries older than ten minutes are dropped as
+/// new ones come.
+#[derive(Default)]
+pub struct TurnEnds(std::sync::Mutex<std::collections::HashMap<String, TurnEnd>>);
 
-fn last_end(session_key: &str) -> Option<TurnEnd> {
-    TURN_ENDS.lock().unwrap_or_else(|p| p.into_inner()).get(session_key).cloned()
+impl TurnEnds {
+    fn last(&self, session_key: &str) -> Option<TurnEnd> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).get(session_key).cloned()
+    }
+
+    fn record(&self, session_key: &str, end: TurnEnd) {
+        let mut ends = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        ends.retain(|_, e| e.at.elapsed() < Duration::from_secs(600));
+        ends.insert(session_key.to_string(), end);
+    }
 }
 
 /// A turn's run on `session_key` ended, `exit` its `TurnExit::label` (the
@@ -609,11 +618,7 @@ pub(crate) fn turn_ended(state: &AppState, session_key: &str, exit: &str) {
         at: std::time::Instant::now(),
         resume_after: (kind == EndOf::AwaitingOwner).then(|| state.store.session_last_message_rowid(session_key).ok().flatten().unwrap_or_default()),
     };
-    {
-        let mut ends = TURN_ENDS.lock().unwrap_or_else(|p| p.into_inner());
-        ends.retain(|_, e| e.at.elapsed() < Duration::from_secs(600));
-        ends.insert(session_key.to_string(), end.clone());
-    }
+    state.turn_ends.record(session_key, end.clone());
     if kind == EndOf::Untouched {
         return;
     }
@@ -676,7 +681,7 @@ pub(crate) async fn follow_up_after_restart(state: &AppState, booted: i64) {
         match (f.resume_after, f.asked_again_at) {
             (Some(_), _) if waited_too_long(&f, now_secs()) => settle(state, &f, &closed).await,
             (Some(_), _) => {}
-            (None, None) => ask_again(state, &f),
+            (None, None) => ask_again(state, &f).await,
             (None, Some(at)) if at < booted => settle(state, &f, &closed).await,
             (None, Some(_)) => {}
         }
@@ -688,8 +693,15 @@ pub(crate) async fn follow_up_after_restart(state: &AppState, booted: i64) {
 /// is not an answer). The conversation answers what it holds, as any
 /// stopped thread does (`wake::answer_thread`), and that turn's end settles
 /// the follow-up. Once per follow-up: only the call that marks it asked
-/// again asks.
-fn ask_again(state: &AppState, f: &db::ScheduleFollowUp) {
+/// again asks. When its answer is there already (the process ended after
+/// the reply was written, before its turn's end settled the follow-up), the
+/// owner is pointed at it and the conversation is never asked again.
+async fn ask_again(state: &AppState, f: &db::ScheduleFollowUp) {
+    if answer_to(&state.store, f).is_some() {
+        let answered = TurnEnd { exit: "text_response".to_string(), at: std::time::Instant::now(), resume_after: None };
+        settle(state, f, &answered).await;
+        return;
+    }
     match state.store.ask_schedule_follow_up_again(&f.request_id, now_secs()) {
         Ok(true) => {}
         Ok(false) => return,
@@ -751,7 +763,7 @@ fn settle_with(store: &Store, hub: &crate::handlers::ws::ClientHub, api_url: &st
             agent_id: &f.agent_id,
             started: f.asked_at,
             text: &answer.content,
-            place: tools::owner_notify::link::chat(&f.agent_id, &answer.chat_id),
+            session_key: &f.session_key,
             link: tools::owner_notify::link::message(&f.agent_id, &answer.chat_id, &answer.id),
             in_conversation: Some((&answer.chat_id, watching)),
         },
@@ -839,12 +851,13 @@ pub(crate) fn deliver_reply(store: &Store, hub: &crate::handlers::ws::ClientHub,
         return;
     }
     let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID);
-    let place = tools::owner_notify::link::session_chat(store, agent_id, &job_session_key(job));
+    let session_key = job_session_key(job);
+    let link = tools::owner_notify::link::session_chat(store, agent_id, &session_key);
     post_reply(
         store,
         hub,
         api_url,
-        &Reply { job_id: job.id, title: &job.name, agent_id, started, text: reply, link: place.clone(), place, in_conversation: None },
+        &Reply { job_id: job.id, title: &job.name, agent_id, started, text: reply, session_key: &session_key, link, in_conversation: None },
     );
 }
 
@@ -858,11 +871,11 @@ struct Reply<'a> {
     /// are this run's.
     started: i64,
     text: &'a str,
-    /// The conversation the reply is in: an item the run posted itself
-    /// points there (`push_notification`, `message_owner`), and so does
-    /// this one. Another item of the same employee's, about other work, is
+    /// The session the run ran on: an item it posted itself
+    /// (`push_notification`, `message_owner`) was made there, whatever it
+    /// links to. Another item of the same employee's, from other work, is
     /// not it.
-    place: String,
+    session_key: &'a str,
     /// Where the item opens.
     link: String,
     /// Answered in the owner's own conversation (its chat id), and whether
@@ -881,14 +894,7 @@ fn post_reply(store: &Store, hub: &crate::handlers::ws::ClientHub, api_url: &str
     if text.is_empty() {
         return;
     }
-    let user = store.ensure_local_user_id().unwrap_or_default();
-    let posted_itself = store
-        .list_user_notifications(&user, db::models::InboxView::All, Some(r.agent_id), 20, 0)
-        .unwrap_or_default()
-        .iter()
-        // Another schedule's pointer to the same conversation is not this run's own.
-        .any(|n| n.created_at >= r.started && !n.id.starts_with("schedule:") && n.action_url.as_deref().is_some_and(|url| url.starts_with(&r.place)));
-    if posted_itself {
+    if store.posted_from_session(r.session_key, r.started).unwrap_or(false) {
         info!(job = r.title, "scheduler: the run already posted to the Inbox; no second item");
         return;
     }
@@ -1716,36 +1722,44 @@ mod tests {
     }
 
     /// The run already posted to the Inbox itself (push_notification or
-    /// message_owner): its own item is the only one.
+    /// message_owner): its own item is the only one, whatever it links to
+    /// (a file, a page, the conversation). An item made from another
+    /// session, even one linking to this conversation, and a schedule's own
+    /// pointer are not the run's.
     #[tokio::test]
     async fn a_run_that_reached_the_owner_itself_is_not_repeated() {
         let hub = crate::handlers::ws::ClientHub::new();
+        let posted = |store: &Store, id: &str, link: &str, made_in: Option<&str>| {
+            tools::owner_notify::emit(
+                store,
+                None,
+                &tools::owner_notify::OwnerNotification { id, kind: "info", title: "Timer", body: Some("up"), action_url: Some(link), agent_id: Some("ava"), made_in, ..Default::default() },
+            );
+        };
+        // In the owner's conversation: the run's item opens a file.
         let (_d, store, job) = delivery_rig(true, true);
         let request = ask_in_x(&store);
-        tools::owner_notify::emit(
-            &store,
-            None,
-            &tools::owner_notify::OwnerNotification { id: "own", kind: "info", title: "Timer", body: Some("up"), action_url: Some("/ava/threads/X"), agent_id: Some("ava"), ..Default::default() },
-        );
-        // Another item of the same employee's, about other work, is not it.
-        tools::owner_notify::emit(
-            &store,
-            None,
-            &tools::owner_notify::OwnerNotification { id: "other", kind: "info", title: "Report", body: Some("sent"), action_url: Some("/ava/threads/Z"), agent_id: Some("ava"), ..Default::default() },
-        );
+        posted(&store, "own", "/ava/files/oven.pdf", Some("agent:ava:thread:X"));
         reply_in_x(&store, "Ding!");
         settle_with(&store, &hub, "", &handed_over(&store, &job, &request), true, false);
-        assert_eq!(inbox(&store).len(), 2, "the run's own Inbox item is the only one about it");
+        assert_eq!(inbox(&store).len(), 1, "the run's own Inbox item is the only one about it");
+
+        // In the job's own thread: the same.
+        let (_d, store, job) = delivery_rig(true, false);
+        let started = now_secs();
+        posted(&store, "own", "/ava/pages/oven", Some(&job_session_key(&job)));
+        deliver_reply(&store, &hub, "", &job, started, "Ding!");
+        assert_eq!(inbox(&store).len(), 1, "the run's own Inbox item is the only one about it");
+
+        // Items from other work, even one opening this conversation, and
+        // another schedule's pointer here never stand in for the timer's.
         let (_d, store, job) = delivery_rig(true, true);
         let request = ask_in_x(&store);
-        tools::owner_notify::emit(
-            &store,
-            None,
-            &tools::owner_notify::OwnerNotification { id: "other", kind: "info", title: "Report", body: Some("sent"), action_url: Some("/ava/threads/Z"), agent_id: Some("ava"), ..Default::default() },
-        );
+        posted(&store, "other", "/ava/threads/X", Some("agent:ava:thread:Z"));
+        posted(&store, "schedule:9:1", "/ava/threads/X?message=m-0", None);
         reply_in_x(&store, "Ding!");
         settle_with(&store, &hub, "", &handed_over(&store, &job, &request), true, false);
-        assert!(inbox(&store).iter().any(|n| n.id.starts_with("schedule:")), "an unrelated item never stands in for the timer's");
+        assert!(inbox(&store).iter().any(|n| n.id.starts_with(&format!("schedule:{}:", job.id))), "an unrelated item never stands in for the timer's");
     }
 
     /// Made outside a conversation, a one-shot runs in its own thread,

@@ -45,6 +45,9 @@ pub struct OwnerNotification<'a> {
     pub link_label: Option<&'a str>,
     /// The session an employee's own question is answered into.
     pub reply_to: Option<&'a str>,
+    /// The session an employee's run posted it from (`push_notification`,
+    /// `message_owner`); None for Nebo's own items.
+    pub made_in: Option<&'a str>,
     /// The item stands for a conversation (an email thread, a text thread,
     /// an employee's messages): a newer message restates it and brings it
     /// back unread to the top, so a conversation is one item, never fifty.
@@ -119,6 +122,7 @@ pub fn emit(
         options: n.options,
         link_label: n.link_label,
         reply_to: n.reply_to,
+        made_in: n.made_in,
     }) {
         Ok(()) => true,
         Err(e) => {

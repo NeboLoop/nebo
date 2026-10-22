@@ -2962,6 +2962,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         linked_apps: Default::default(),
         live_calls: Default::default(),
         sheets: Default::default(),
+        turn_ends: Default::default(),
     };
 
     // The assistant's side of the guided first-run chat: it reads the step

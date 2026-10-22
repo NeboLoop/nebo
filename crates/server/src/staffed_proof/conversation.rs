@@ -5533,6 +5533,78 @@ async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
     assert_eq!(rig.thread(KEY).iter().filter(|m| m.content.starts_with("REPORT-144")).count(), 1, "answered once");
 }
 
+/// A timer whose answer was written just before the process ended, before
+/// its turn's end settled the follow-up: the restart finds the answer in the
+/// conversation and points the owner at it. The conversation is never asked
+/// again, so the owner is never answered twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timer_answered_just_before_a_restart_is_pointed_at_and_never_asked_again() {
+    let nebo = session().await;
+    const KEY: &str = "agent:assistant:thread:timer-147";
+    let rules: Vec<Rule> = vec![Box::new(|t| t.new_text().contains("OWNER-147 ").then(|| Step::say("Timer set.")))];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(KEY, "assistant", None, "OWNER-147 tell me the oven in a minute").await;
+    rig.until(20, "the owner is answered", || rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content == "Timer set.")).await;
+    let store = nebo.store();
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "")
+        .in_run(Some("run-147"), KEY)
+        .asked_in_chat(&tools::owner_notify::link::conversation(store, KEY));
+    let job = store
+        .create_cron_job("oven-147", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-147 check the oven"), None, None, true, Some("assistant"), None, None, &made)
+        .unwrap();
+
+    // The last process: the fire handed its request over, the turn wrote
+    // its final reply, and the process ended before that turn's end
+    // settled the follow-up.
+    let sessions = nebo.state.harness.sessions();
+    let session_id = sessions.resolve_session_id_by_key(KEY).unwrap();
+    sessions
+        .append_message(
+            &session_id,
+            "user",
+            "The schedule \"oven-147\" set in this conversation is due now. Do what it asks.\n\nMARK-147 check the oven",
+            None,
+            None,
+            Some(r#"{"isMeta":true,"hiddenPrompt":true}"#),
+        )
+        .unwrap();
+    let request = rig.thread(KEY).into_iter().rfind(|m| m.content.contains("MARK-147")).expect("the request is in the conversation");
+    sessions.append_message(&session_id, "assistant", "REPORT-147: the oven is at 350.", None, None, None).unwrap();
+    let answer = rig.thread(KEY).into_iter().rfind(|m| m.role == "assistant").unwrap();
+    let kept = db::NewScheduleFollowUp {
+        request_id: &request.id,
+        session_key: KEY,
+        chat_id: &request.chat_id,
+        job_id: job.id,
+        job_name: &job.name,
+        agent_id: "assistant",
+        asked_at: request.created_at,
+    };
+    assert_eq!(store.keep_schedule_follow_up(&kept).unwrap().state, "pending");
+    let before = rig.thread(KEY).len();
+
+    // The restart.
+    crate::scheduler::follow_up_after_restart(&nebo.state, i64::MAX).await;
+    let settled = store.keep_schedule_follow_up(&kept).unwrap();
+    assert_eq!((settled.state.as_str(), settled.answer_id.as_deref()), ("pointed", Some(answer.id.as_str())), "{settled:?}");
+    let user = store.ensure_local_user_id().unwrap();
+    let items: Vec<_> = store
+        .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.id.starts_with(&format!("schedule:{}:", job.id)))
+        .collect();
+    let chat = tools::owner_notify::link::conversation(store, KEY);
+    assert_eq!(items.len(), 1, "{items:#?}");
+    assert_eq!(items[0].action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)));
+
+    // Nothing asks the conversation again.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert!(!rig.busy(KEY), "no turn was started to answer it again");
+    let thread = rig.thread(KEY);
+    assert_eq!(thread.len(), before, "never asked again: {thread:#?}");
+}
+
 /// A timer that joined a busy turn the owner then stops: the stopped turn's
 /// end closes its follow-up unanswered. No Inbox item points at the
 /// half-said reply, nothing later in the conversation is taken for the

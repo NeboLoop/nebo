@@ -692,6 +692,8 @@ pub struct NewNotification<'a> {
     pub options: &'a [ItemOption],
     pub link_label: Option<&'a str>,
     pub reply_to: Option<&'a str>,
+    /// The session an employee's run posted it from; None for Nebo's own.
+    pub made_in: Option<&'a str>,
 }
 
 /// Which part of the Inbox a list reads.
