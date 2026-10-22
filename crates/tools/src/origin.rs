@@ -241,6 +241,9 @@ impl ToolSlot {
 pub struct Waiting {
     count: std::sync::atomic::AtomicUsize,
     changed: tokio::sync::Notify,
+    /// When the last wait ended: the idle clock counts from here, not from
+    /// the event before the wait, however often its reader is re-polled.
+    ended: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
 impl Waiting {
@@ -256,6 +259,13 @@ impl Waiting {
         self.count.load(std::sync::atomic::Ordering::SeqCst) == 0
     }
 
+    /// Since when the run has been quiet: the later of `last_event` and the
+    /// end of the last wait.
+    pub fn quiet_since(&self, last_event: tokio::time::Instant) -> tokio::time::Instant {
+        let ended = *self.ended.lock().unwrap_or_else(|e| e.into_inner());
+        ended.map_or(last_event, |e| e.max(last_event))
+    }
+
     /// Resolves at the next start or end of a wait. Enable it before
     /// reading [`Self::is_idle`] so a change in between is not missed.
     pub fn changed(&self) -> tokio::sync::futures::Notified<'_> {
@@ -268,6 +278,7 @@ pub struct WaitGuard(std::sync::Arc<Waiting>);
 
 impl Drop for WaitGuard {
     fn drop(&mut self) {
+        *self.0.ended.lock().unwrap_or_else(|e| e.into_inner()) = Some(tokio::time::Instant::now());
         self.0.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         self.0.changed.notify_waiters();
     }

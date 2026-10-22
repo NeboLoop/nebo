@@ -43,22 +43,21 @@ pub async fn next_event<T>(
     waiting: &tools::Waiting,
     limit: std::time::Duration,
 ) -> Next<T> {
-    let mut quiet_since = last_event;
     loop {
         let changed = waiting.changed();
         tokio::pin!(changed);
         changed.as_mut().enable();
         let idle = waiting.is_idle();
+        // Read from the run's waits, not kept here: a caller that drops this
+        // future and polls again (the chat dispatcher's keepalive, every few
+        // seconds) must not lose the end of a wait.
+        let quiet_since = waiting.quiet_since(last_event);
         tokio::select! {
             ev = rx.recv() => return match ev {
                 Some(e) => Next::Event(e),
                 None => Next::Closed,
             },
-            _ = &mut changed => {
-                if waiting.is_idle() {
-                    quiet_since = tokio::time::Instant::now();
-                }
-            }
+            _ = &mut changed => {}
             _ = tokio::time::sleep_until(quiet_since + limit), if idle => return Next::Stalled,
         }
     }
@@ -104,6 +103,42 @@ mod next_event_tests {
         let quiet = tokio::time::Instant::now();
         assert!(matches!(next_event(&mut rx, quiet, &waiting, RUN_IDLE_LIMIT).await, Next::Stalled));
         assert!(tokio::time::Instant::now() - quiet >= RUN_IDLE_LIMIT);
+    }
+
+    /// Live 2026-10-21: a verification question sat "Waiting on you" for 20
+    /// minutes, and the moment it ended the chat dispatcher, which polls
+    /// again every few seconds for its keepalive, ended the run as stalled:
+    /// each new poll counted from the event before the question. A run
+    /// parked on the owner past the limit is never ended as stalled, before
+    /// or after the answer, however often it is polled; a silent run still is.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_wait_on_the_owner_survives_a_dispatcher_that_polls_again() {
+        let waiting = Arc::new(tools::Waiting::default());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
+        let last_event = tokio::time::Instant::now();
+        let asked = waiting.enter();
+        let keepalive = std::time::Duration::from_secs(4);
+        // Twenty minutes parked, polled every four seconds as the dispatcher does.
+        let parked_until = last_event + std::time::Duration::from_secs(20 * 60);
+        while tokio::time::Instant::now() < parked_until {
+            tokio::select! {
+                next = next_event(&mut rx, last_event, &waiting, RUN_IDLE_LIMIT) => panic!("ended while parked: {}", matches!(next, Next::Stalled)),
+                _ = tokio::time::sleep(keepalive) => {}
+            }
+        }
+        drop(asked);
+        let answered = tokio::time::Instant::now();
+        // The answer is in: polls keep coming, and the run is not ended at once.
+        while tokio::time::Instant::now() < answered + RUN_IDLE_LIMIT - keepalive {
+            tokio::select! {
+                next = next_event(&mut rx, last_event, &waiting, RUN_IDLE_LIMIT) => panic!("ended right after the answer: {}", matches!(next, Next::Stalled)),
+                _ = tokio::time::sleep(keepalive) => {}
+            }
+        }
+        // Silent for the whole limit after the wait: a stall.
+        assert!(matches!(next_event(&mut rx, last_event, &waiting, RUN_IDLE_LIMIT).await, Next::Stalled));
+        assert!(tokio::time::Instant::now() - answered >= RUN_IDLE_LIMIT);
+        drop(tx);
     }
 }
 
