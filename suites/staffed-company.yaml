@@ -123,3 +123,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc143-a-timer-due-while-its-conversation-is-busy-is-answered-by-the-running-turn.yaml
   - ../fixtures/staffed-company/conversation/sc144-a-timer-cut-off-by-a-restart-is-asked-once-and-pointed-at-once.yaml
   - ../fixtures/staffed-company/conversation/sc145-a-timer-whose-turn-the-owner-stops-is-closed-and-never-asked-again.yaml
+  - ../fixtures/staffed-company/conversation/sc146-a-timer-waiting-on-the-owner-outlives-compact-and-closes-after-a-day.yaml

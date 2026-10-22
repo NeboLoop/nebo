@@ -5486,7 +5486,9 @@ async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
         .unwrap();
     // The dead turn had said a first line before its tool call: that is
     // not the answer.
-    sessions.append_message(&session_id, "assistant", "Let me check the oven…", None, None, None).unwrap();
+    sessions
+        .append_message(&session_id, "assistant", "Let me check the oven…", Some(r#"[{"id":"c1","name":"web","input":{}}]"#), None, None)
+        .unwrap();
 
     // The restart: the boot sweep queues the cut-off fire again.
     let t = chrono::Utc::now().timestamp();
@@ -5582,4 +5584,78 @@ async fn a_timer_whose_turn_the_owner_stops_is_closed_and_never_asked_again() {
     assert!(items.is_empty(), "no pointer for a stopped timer: {items:#?}");
     let thread = rig.thread(KEY);
     assert_eq!(thread.iter().filter(|m| m.content.contains("MARK-145")).count(), 1, "never asked again: {thread:#?}");
+}
+
+/// A timer whose turn ended waiting on the owner (an approval, a question)
+/// keeps its follow-up waiting: his `/compact` leaves it as it is. A wait
+/// past a day is closed unanswered when the next turn ends, so that turn's
+/// reply, about something else, is never pointed at as the timer's answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timer_waiting_on_the_owner_outlives_compact_and_closes_after_a_day() {
+    let nebo = session().await;
+    const KEY: &str = "agent:assistant:thread:timer-146";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if t.new_text().contains("OWNER-146 hi") {
+            return Some(Step::say("Hello."));
+        }
+        t.new_text().contains("OWNER-146 calendar").then(|| Step::say("Two meetings."))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(KEY, "assistant", None, "OWNER-146 hi").await;
+    rig.until(20, "the owner is answered", || rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content == "Hello.")).await;
+    let store = nebo.store();
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "")
+        .in_run(Some("run-146"), KEY)
+        .asked_in_chat(&tools::owner_notify::link::conversation(store, KEY));
+    let job = store
+        .create_cron_job("oven-146", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-146 check the oven"), None, None, true, Some("assistant"), None, None, &made)
+        .unwrap();
+    let sessions = nebo.state.harness.sessions();
+    let session_id = sessions.resolve_session_id_by_key(KEY).unwrap();
+    let request = sessions
+        .append_message(
+            &session_id,
+            "user",
+            "The schedule \"oven-146\" set in this conversation is due now. Do what it asks.\n\nMARK-146 check the oven",
+            None,
+            None,
+            Some(r#"{"isMeta":true,"hiddenPrompt":true}"#),
+        )
+        .unwrap();
+    store
+        .keep_schedule_follow_up(&db::NewScheduleFollowUp {
+            request_id: &request.id,
+            session_key: KEY,
+            chat_id: &request.chat_id,
+            job_id: job.id,
+            job_name: &job.name,
+            agent_id: "assistant",
+            asked_at: request.created_at,
+        })
+        .unwrap();
+    let open = || store.open_schedule_follow_ups(Some(KEY)).unwrap();
+
+    // The turn that took it in ended asking the owner.
+    crate::scheduler::turn_ended(&nebo.state, KEY, "awaiting_approval");
+    rig.until(10, "the follow-up waits on the owner", || open().first().is_some_and(|f| f.resume_after.is_some())).await;
+    let waiting = open().remove(0);
+
+    // His /compact leaves it waiting.
+    crate::scheduler::turn_ended(&nebo.state, KEY, "compacted");
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert_eq!(open(), vec![waiting.clone()], "still waiting, as it was");
+
+    // A day passes; his next message is about something else.
+    let day_ago = chrono::Utc::now().timestamp() - 25 * 3600;
+    store.await_schedule_follow_up(&waiting.request_id, waiting.resume_after.unwrap(), day_ago).unwrap();
+    rig.owner_writes(KEY, "assistant", None, "OWNER-146 calendar for today?").await;
+    rig.until(20, "the next turn's end closes the follow-up", || open().is_empty()).await;
+    let user = store.ensure_local_user_id().unwrap();
+    let items: Vec<_> = store
+        .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.id.starts_with(&format!("schedule:{}:", job.id)))
+        .collect();
+    assert!(items.is_empty(), "the next day's reply is not the timer's answer: {items:#?}");
 }

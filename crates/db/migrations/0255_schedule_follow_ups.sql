@@ -12,7 +12,8 @@
 -- ended without answering it: stopped, failed, or the owner wrote first).
 -- resume_after: set when a turn that took it in ended waiting on the owner
 -- (an approval, a question): the last message row then. The answer comes
--- after it, from the turn his reply resumes.
+-- after it, from the turn his reply resumes. awaited_at: when that wait
+-- began; a wait past a day is closed unanswered.
 -- +goose Up
 CREATE TABLE schedule_follow_ups (
     request_id TEXT PRIMARY KEY,
@@ -25,6 +26,7 @@ CREATE TABLE schedule_follow_ups (
     state TEXT NOT NULL DEFAULT 'pending',
     asked_again_at INTEGER,
     resume_after INTEGER,
+    awaited_at INTEGER,
     answer_id TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     settled_at INTEGER

@@ -25,6 +25,8 @@ pub struct ScheduleFollowUp {
     /// Set when a turn that took it in ended waiting on the owner: the
     /// last message row (its rowid) then. The answer comes after it.
     pub resume_after: Option<i64>,
+    /// When that wait on the owner began.
+    pub awaited_at: Option<i64>,
     pub answer_id: Option<String>,
     pub created_at: i64,
 }
@@ -40,7 +42,7 @@ pub struct NewScheduleFollowUp<'a> {
     pub asked_at: i64,
 }
 
-const COLUMNS: &str = "request_id, session_key, chat_id, job_id, job_name, agent_id, asked_at, state, asked_again_at, resume_after, answer_id, created_at";
+const COLUMNS: &str = "request_id, session_key, chat_id, job_id, job_name, agent_id, asked_at, state, asked_again_at, resume_after, awaited_at, answer_id, created_at";
 
 fn row_to_follow_up(r: &rusqlite::Row) -> rusqlite::Result<ScheduleFollowUp> {
     Ok(ScheduleFollowUp {
@@ -54,8 +56,9 @@ fn row_to_follow_up(r: &rusqlite::Row) -> rusqlite::Result<ScheduleFollowUp> {
         state: r.get(7)?,
         asked_again_at: r.get(8)?,
         resume_after: r.get(9)?,
-        answer_id: r.get(10)?,
-        created_at: r.get(11)?,
+        awaited_at: r.get(10)?,
+        answer_id: r.get(11)?,
+        created_at: r.get(12)?,
     })
 }
 
@@ -108,13 +111,14 @@ impl Store {
 
     /// A turn that took the request in ended waiting on the owner (an
     /// approval, a question), with `resume_after` the last message row then:
-    /// the follow-up stays open for the turn his reply resumes.
-    pub fn await_schedule_follow_up(&self, request_id: &str, resume_after: i64) -> Result<bool, NeboError> {
+    /// the follow-up stays open for the turn his reply resumes. `at`: when
+    /// the wait began.
+    pub fn await_schedule_follow_up(&self, request_id: &str, resume_after: i64, at: i64) -> Result<bool, NeboError> {
         let n = self
             .conn()?
             .execute(
-                "UPDATE schedule_follow_ups SET resume_after = ?2 WHERE request_id = ?1 AND state IN ('pending', 'asked_again')",
-                params![request_id, resume_after],
+                "UPDATE schedule_follow_ups SET resume_after = ?2, awaited_at = ?3 WHERE request_id = ?1 AND state IN ('pending', 'asked_again')",
+                params![request_id, resume_after, at],
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(n == 1)
@@ -149,8 +153,9 @@ mod tests {
         assert_eq!(s.keep_schedule_follow_up(&new).unwrap(), kept, "kept once");
         assert_eq!(s.open_schedule_follow_ups(Some("agent:a:web")).unwrap().len(), 1);
         assert!(s.open_schedule_follow_ups(Some("other")).unwrap().is_empty());
-        assert!(s.await_schedule_follow_up("r1", 42).unwrap());
-        assert_eq!(s.open_schedule_follow_ups(None).unwrap()[0].resume_after, Some(42), "it waits on the owner, open");
+        assert!(s.await_schedule_follow_up("r1", 42, 150).unwrap());
+        let waiting = &s.open_schedule_follow_ups(None).unwrap()[0];
+        assert_eq!((waiting.resume_after, waiting.awaited_at), (Some(42), Some(150)), "it waits on the owner, open");
         assert!(s.ask_schedule_follow_up_again("r1", 200).unwrap());
         assert!(!s.ask_schedule_follow_up_again("r1", 201).unwrap(), "asked again once");
         assert!(s.settle_schedule_follow_up("r1", Some("m9"), 300).unwrap());

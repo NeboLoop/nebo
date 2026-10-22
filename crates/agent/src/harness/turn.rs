@@ -316,6 +316,10 @@ pub enum TurnExit {
     GoalPaused(goal::Pause),
 }
 
+/// How a run that panicked ended, as [`Harness::turn_ended`] tells it
+/// (there is no [`TurnExit`] for it: the run never reached one).
+pub const PANICKED: &str = "panicked";
+
 impl TurnExit {
     /// The word stored on the run's usage row and read by the workflow
     /// engine and `test runs`.
@@ -645,7 +649,13 @@ async fn run(
     h.tools.close_browser_session(&session_id).await;
     let (exit, taint, carried, heard_through) = match ended {
         Ok(ended) => ended,
-        Err(panic) => std::panic::resume_unwind(panic),
+        Err(panic) => {
+            // Its end is still told, freed first, as any end is: what waits
+            // on this turn (a schedule's answer) is not left waiting.
+            drop(guard);
+            h.turn_ended(&session_key, PANICKED);
+            std::panic::resume_unwind(panic)
+        }
     };
     // The slot is closing, so no row is written into this turn from here:
     // what the owner sent while it ran is in the thread now.
@@ -5304,6 +5314,50 @@ mod tests {
         let tab = seen.iter().find(|r| !r.is_command).and_then(|r| r.session_id.clone()).expect("the run opened a tab");
         let closes: Vec<Option<String>> = seen.iter().filter(|r| r.tool == "close_session_tabs").map(|r| r.session_id.clone()).collect();
         assert_eq!(closes, vec![Some(tab)], "the panicked run's tab closes");
+    }
+
+    /// A run that panics still tells its end, so nothing waiting on the
+    /// turn (a schedule's answer) waits forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_panics_still_tells_its_end() {
+        struct Boom;
+        impl tools::registry::DynTool for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            fn description(&self) -> String {
+                "fails hard".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move { panic!("the tool broke") })
+            }
+        }
+        let model = Scripted::new(vec![Step::Call("boom", serde_json::json!({}))]);
+        let h = harness_with(&model, vec![Box::new(Boom)]).await;
+        let ends = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let told = ends.clone();
+        h.bind(crate::harness::Outlets {
+            turn_ended: Some(Arc::new(move |key: &str, exit: &str| told.lock().unwrap().push((key.to_string(), exit.to_string())))),
+            ..Default::default()
+        });
+        let req = owner("Do the thing");
+        let key = req.session_key.clone();
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        assert_eq!(*ends.lock().unwrap(), vec![(key, PANICKED.to_string())]);
     }
 
     /// A tab the run left open for the owner stays open when it ends.
