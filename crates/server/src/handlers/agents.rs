@@ -899,7 +899,8 @@ pub async fn create_agent(
         &agent_json_content,
         None,
         Vec::new(),
-        true,
+        // The owner's own, unless it came with a marketplace code.
+        body.get("code").and_then(|c| c.as_str()).is_none_or(str::is_empty),
     );
 
     // Process agent.json workflow bindings if provided

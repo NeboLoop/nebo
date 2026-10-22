@@ -7,10 +7,12 @@
 -- A duplicate keeps its source's.
 ALTER TABLE agents ADD COLUMN built_here INTEGER NOT NULL DEFAULT 0;
 -- Rows made before this: what the folder says (a sealed .napp, or a package
--- in nebo/agents/, is an install).
+-- in nebo/agents/, is an install). An app with no folder recorded stays
+-- an install: at worst the owner is asked once about an old app of his.
 UPDATE agents SET built_here = 1
- WHERE napp_path IS NULL OR trim(napp_path) = ''
-    OR (lower(napp_path) NOT LIKE '%.napp'
+ WHERE (coalesce(trim(napp_path), '') = '' AND coalesce(is_app, 0) = 0)
+    OR (coalesce(trim(napp_path), '') <> ''
+        AND lower(napp_path) NOT LIKE '%.napp'
         AND lower(replace(napp_path, '\', '/')) NOT LIKE '%/nebo/agents/%');
 
 -- +goose Down
