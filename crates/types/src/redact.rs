@@ -17,6 +17,8 @@
 //! - `Bearer <x>` anywhere.
 //! - anything shaped like a JWT (three base64url segments, the first one
 //!   `eyJ…` — the encoding of `{"`, which every JWT header starts with).
+//! - a path's credential, `/k/<credential>/` (an app page's pass, the install
+//!   key in a path): it is the address's secret, and a request line is logged.
 //!
 //! JSON is walked structurally (nested objects, arrays, and strings that are
 //! themselves JSON); anything else — headers, query strings, Debug output,
@@ -93,6 +95,9 @@ static KEY_VALUE: LazyLock<Regex> = LazyLock::new(|| {
 static BEARER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+").unwrap());
 
+/// `/k/<credential>` in a path (`middleware::path_credential`).
+static PATH_CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/k/[^/?#\s]+").unwrap());
+
 static JWT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*").unwrap());
 
@@ -100,6 +105,7 @@ fn redact_text(s: &str) -> String {
     let s = HEADER_LINE.replace_all(s, |c: &Captures| format!("{} {REDACTED}", &c[1]));
     let s = redact_pairs(&s);
     let s = BEARER.replace_all(&s, |c: &Captures| format!("{} {REDACTED}", &c[1]));
+    let s = PATH_CREDENTIAL.replace_all(&s, format!("/k/{REDACTED}"));
     JWT.replace_all(&s, REDACTED).into_owned()
 }
 
@@ -209,11 +215,14 @@ mod tests {
             format!(r#"{{"type":"auth","data":{{"token":"{FAKE}","cli"#),
             format!(r#"Frame {{ token: "{FAKE}", id: 3 }}"#),
             format!(r#"payload={{\"token\":\"{FAKE}\"}}"#),
+            format!("/k/{FAKE}/apps/a/ui/index.html"),
+            format!("/t/bot/k/{FAKE}/api/v1/apps/a/storage?x=1"),
         ] {
             let out = redact(&raw);
             clean(&out);
         }
         assert_eq!(redact("version 0.16.7 at a.b.c"), "version 0.16.7 at a.b.c");
         assert_eq!(redact("plain text, nothing secret"), "plain text, nothing secret");
+        assert_eq!(redact("/k/abc/apps/a/ui/"), "/k/[redacted]/apps/a/ui/");
     }
 }

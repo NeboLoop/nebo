@@ -230,23 +230,30 @@ pub async fn app_ws_handler(
     }
 }
 
-/// Whether a hub event belongs on app `agent_id`'s page. An event that
-/// names an app (`appId`: its data changed, a reload) or a surface of an
-/// employee (`agent:<id>:<view>`, an A2UI message) reaches only that app's
-/// page; one app never sees another's data or cards. Every other event
-/// passes as before.
+/// Whether a hub event belongs on app `agent_id`'s page. Only what is the
+/// app's own reaches it: an event that names the app (`appId`: its data
+/// changed, a reload), one of its surfaces (`agent:<id>:<view>`, an A2UI
+/// message or an action's status), and the turns of its own conversations
+/// (`session_id` of `agent:<id>:app[:<ctx>]` or `app:<id>:…`). Nothing
+/// else: never the owner's other conversations, his approvals, his roster,
+/// another app's data or cards.
 pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
     let p = &event.payload;
-    if let Some(app) = p.get("appId").and_then(|v| v.as_str()) {
+    let field = |k: &str| p.get(k).and_then(|v| v.as_str());
+    if let Some(app) = field("appId") {
         return app == agent_id;
     }
-    if event.event_type == "a2ui_message" {
-        let surface = p.get("surface_id").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(owner) = surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) {
-            return owner == agent_id;
-        }
+    if let Some(surface) = field("surface_id").or_else(|| field("surfaceId")) {
+        return surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) == Some(agent_id);
     }
-    true
+    field("session_id").or_else(|| field("session_key")).is_some_and(|key| is_app_session(agent_id, key))
+}
+
+/// Whether `key` is one of app `agent_id`'s own conversations: its page's
+/// (`agent:<id>:app`, `agent:<id>:app:<ctx>`) or its SDK's (`app:<id>:…`).
+pub(crate) fn is_app_session(agent_id: &str, key: &str) -> bool {
+    let page = format!("agent:{agent_id}:app");
+    key == page || key.strip_prefix(&page).is_some_and(|r| r.starts_with(':')) || key.strip_prefix(&format!("app:{agent_id}:")).is_some()
 }
 
 async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
@@ -3144,8 +3151,9 @@ mod app_event_tests {
         HubEvent { event_type: kind.to_string(), payload }
     }
 
-    /// One app's data changes, reloads and cards reach that app's page only;
-    /// events that name no app pass as before.
+    /// One app's data changes, reloads and cards reach that app's page only,
+    /// and so do its own conversations' turns; nothing else of the owner's
+    /// reaches any app.
     #[test]
     fn an_app_page_hears_only_its_own_apps_events() {
         let changed = ev("app_data_changed", serde_json::json!({ "appId": "crm", "keys": ["contacts"] }));
@@ -3155,10 +3163,29 @@ mod app_event_tests {
         let card = ev("a2ui_message", serde_json::json!({ "surface_id": "agent:crm:main", "message": {} }));
         assert!(reaches_app("crm", &card));
         assert!(!reaches_app("notes", &card));
+        let status = ev("a2ui_action_status", serde_json::json!({ "surface_id": "agent:crm:main", "status": "running" }));
+        assert!(reaches_app("crm", &status));
+        assert!(!reaches_app("notes", &status));
 
         let other = ev("a2ui_message", serde_json::json!({ "surface_id": "chat-1", "message": {} }));
-        assert!(reaches_app("notes", &other));
-        assert!(reaches_app("crm", &ev("a2ui_action_status", serde_json::json!({ "surface_id": "x" }))));
+        assert!(!reaches_app("notes", &other));
+
+        for key in ["agent:crm:app", "agent:crm:app:doc-1", "app:crm:api"] {
+            let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
+            assert!(reaches_app("crm", &turn), "{key}");
+            assert!(!reaches_app("notes", &turn), "{key}");
+        }
+        for key in ["agent:crm:web", "agent:crm:thread:t1", "agent:crm:apple", "agent:crmx:app", "default"] {
+            let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
+            assert!(!reaches_app("crm", &turn), "the owner's own conversation {key}");
+        }
+        for (kind, payload) in [
+            ("approval_request", serde_json::json!({ "id": "a1", "tool": "system" })),
+            ("agent_roster_changed", serde_json::json!({})),
+            ("notification", serde_json::json!({ "title": "x" })),
+        ] {
+            assert!(!reaches_app("crm", &ev(kind, payload)), "{kind}");
+        }
     }
 }
 

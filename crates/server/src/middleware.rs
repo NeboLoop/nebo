@@ -161,6 +161,7 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     // runs with an opaque origin and cannot reach the API or storage.
     let is_served_file = request.uri().path().starts_with("/files/")
         || request.uri().path().starts_with("/api/v1/files/");
+    let is_app_route = is_app_route(request.uri().path());
     let mut response = next.run(request).await;
 
     let is_html = response
@@ -169,7 +170,14 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
 
-    let csp = if is_served_file {
+    let csp = if is_app_route {
+        // Whatever an app's routes answer (its page's files, its sidecar's
+        // replies, its data) is the app's, never Nebo's: it goes out in the
+        // app's sandbox, an origin of its own, whatever the handler or the
+        // sidecar set. Opened at the top, a page there never runs as
+        // Nebo's origin with the owner's session.
+        crate::handlers::apps::APP_PAGE_CSP
+    } else if is_served_file {
         "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri:"
     } else if is_html {
         // 'self' so app UIs served over HTTP (browser popups, cloud bots via the
@@ -190,6 +198,16 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     );
     headers.insert("pragma", "no-cache".parse().unwrap());
     response
+}
+
+/// One of an app's routes (`/apps/<id>/…`, as the `/api/v1` nest sees it,
+/// or whole).
+fn is_app_route(path: &str) -> bool {
+    path.strip_prefix("/api/v1")
+        .unwrap_or(path)
+        .strip_prefix("/apps/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(id, _)| !id.is_empty())
 }
 
 /// Who may reach this server and how each caller proves itself, fixed when
