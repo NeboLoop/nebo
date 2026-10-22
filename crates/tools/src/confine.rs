@@ -455,8 +455,9 @@ mod tests {
     }
 
     /// A reviewer's commands, as the operating system holds them: they
-    /// read the round's copy and patch and change neither, build in their
-    /// own folder, and reach no other verification's copy or a helper's;
+    /// read the round's copy and patch and change neither, build in the
+    /// folder their verification's lenses share, and reach no other
+    /// verification's copy or a helper's;
     /// the tools a build runs still resolve their own folder (`realpath`,
     /// git). An employee's own turn reaches every copy.
     #[test]
@@ -468,7 +469,7 @@ mod tests {
         let (d, root) = home();
         let copies = std::fs::canonicalize(d.path()).unwrap().join("copies");
         let round = copies.join("verify/v-1/round-1");
-        let build = copies.join("verify/v-1/build-security");
+        let build = copies.join("verify/v-1/build");
         let theirs = copies.join("verify/v-2/round-1");
         let helper = copies.join("worktrees/site/sa-1");
         for dir in [&round.join("project"), &build, &theirs, &helper] {

@@ -816,12 +816,12 @@ mod tests {
     #[test]
     fn a_run_works_under_the_nearest_fence() {
         let mut parent = Grant::new("dev", Mode::Automatic);
-        parent.fence = Some(vec!["/copies/round/project".into(), "/copies/build-data".into()]);
+        parent.fence = Some(vec!["/copies/round/project".into(), "/copies/build".into()]);
         parent.reads = vec!["/copies/round".into()];
         let mut run = Grant::new("dev", Mode::Automatic);
         run.ceiling = Some(Ceiling::Parent { grant: Box::new(parent) });
         let (fence, reads) = run.run_fence().unwrap();
-        assert_eq!(fence, [PathBuf::from("/copies/round/project"), PathBuf::from("/copies/build-data")]);
+        assert_eq!(fence, [PathBuf::from("/copies/round/project"), PathBuf::from("/copies/build")]);
         assert_eq!(reads, [PathBuf::from("/copies/round")]);
         let checks = run.with_fenced_folder(std::path::Path::new("/copies/build/abc"));
         assert_eq!(checks.run_fence().unwrap().0.last(), Some(&PathBuf::from("/copies/build/abc")));

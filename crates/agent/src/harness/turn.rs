@@ -11096,6 +11096,8 @@ mod tests {
                 assert_eq!(v.open_blockers, 1, "the deferral closed nothing");
                 assert!(v.landed_ref.is_empty());
                 assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n");
+                let scratch = crate::harness::verify::work::Work::copies(&v.id).unwrap();
+                assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it ended unverified");
             })
         })
     }
@@ -11133,13 +11135,14 @@ mod tests {
                 let calls = model.calls();
                 let reviewer = calls.iter().find(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).unwrap();
                 let heard: String = reviewer.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
-                // Its round's own copy and its own build folder, with the
-                // working copies: never Nebo's own folder.
+                // Its round's own copy and the verification's one build
+                // folder, with the working copies: never Nebo's own folder.
                 let scratch = crate::harness::verify::work::Work::copies(&v.id).unwrap();
                 assert!(heard.contains(&format!("{}/round-1/project", scratch.display())), "the reviewer works in its own copy");
-                assert!(heard.contains(&format!("{}/build-", scratch.display())), "and builds in its own folder");
+                assert!(heard.contains(&format!("CARGO_TARGET_DIR={}/build;", scratch.display())), "and builds in the verification's one folder");
                 assert!(!heard.contains(&v.work_dir), "never the builder's copy");
                 assert!(calls[3].messages.iter().any(|m| m.content.contains("changed files in your working copy while this round ran")));
+                assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it landed");
             })
         })
     }
