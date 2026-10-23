@@ -447,14 +447,34 @@ const CUT_OFF_MIN_WORDS: usize = 20;
 /// Words of a cut-off message's end quoted back.
 const CUT_OFF_TAIL_WORDS: usize = 8;
 
+/// Words that never end a sentence: an article or a possessive still needs
+/// its noun, a conjunction its next clause. Prepositions and auxiliaries are
+/// left out on purpose: an unpunctuated question or instruction strands them
+/// ("who should I send it to", "do it if you can").
+const NEVER_LAST: &[&str] = &[
+    "a", "an", "the", "my", "your", "our", "their", "its", "and", "or", "but", "nor", "because", "although", "unless",
+    "whether", "if", "than",
+];
+/// Words that open a phrase. Dictation capitalizes the first word of each
+/// piece it hears, so these capitalized inside a sentence ("All mix The And
+/// then That needs") are pieces run together, not a sentence someone wrote.
+const PHRASE_OPENERS: &[&str] = &["the", "a", "an", "and", "or", "but", "if", "so", "then", "that", "because"];
+/// Fewest capitalized [`PHRASE_OPENERS`] inside the last sentence that read
+/// as run-together pieces: one can be a title ("Pride And Prejudice").
+const RUN_TOGETHER_MIN: usize = 2;
+
 /// The last words of an owner message that stops mid-sentence, the way
 /// dictation does when it cuts out: one paragraph of at least
 /// [`CUT_OFF_MIN_WORDS`] words whose earlier sentences end in punctuation and
-/// whose last one ends on a bare word. `None` for anything else: a short
-/// typed line, a paste or list over several lines, a message that ends its
-/// sentence (or on a link, an address or a symbol). Live 2026-10-07: "…Video
-/// can actually And if we Still images" started the work; the owner stopped
-/// it and said "My instructions got cut off".
+/// whose last sentence ends on a bare word and visibly is not finished: it
+/// ends on a word that never ends a sentence ([`NEVER_LAST`]), or it is
+/// dictation's run-together pieces ([`PHRASE_OPENERS`]). A missing final
+/// stop alone is not a cut-off: plenty of people never type one ("…please
+/// study it out and let's create a PRD" is a whole instruction). `None` for
+/// anything else: a short typed line, a paste or list over several lines, a
+/// message that ends its sentence (or on a link, an address or a symbol).
+/// Live 2026-10-07: "…Video can actually And if we Still images" started the
+/// work; the owner stopped it and said "My instructions got cut off".
 pub(crate) fn cut_off_tail(text: &str) -> Option<String> {
     let text = text.trim();
     if text.contains('\n') {
@@ -466,9 +486,19 @@ pub(crate) fn cut_off_tail(text: &str) -> Option<String> {
     }
     let ends_sentence = |c: char| matches!(c, '.' | '!' | '?' | '…' | ':' | ';' | '。' | '！' | '？' | '؟' | '।');
     let last = words[words.len() - 1];
-    let bare = last.chars().all(|c| c.is_alphanumeric() || c == '\'' || c == '’');
-    let punctuated = words[..words.len() - 1].iter().any(|w| w.trim_end_matches(['"', '\'', '”', '’', ')']).ends_with(ends_sentence));
-    (bare && punctuated).then(|| words[words.len().saturating_sub(CUT_OFF_TAIL_WORDS)..].join(" "))
+    if !last.chars().all(|c| c.is_alphanumeric() || c == '\'' || c == '’') {
+        return None;
+    }
+    // The last sentence starts after the last word that ends one; its own
+    // first word is capitalized anyway.
+    let stop = words[..words.len() - 1].iter().rposition(|w| w.trim_end_matches(['"', '\'', '”', '’', ')']).ends_with(ends_sentence))?;
+    let dangling = NEVER_LAST.contains(&last.to_lowercase().as_str());
+    let run_together = words[stop + 2..]
+        .iter()
+        .filter(|w| w.chars().next().is_some_and(char::is_uppercase) && PHRASE_OPENERS.contains(&w.to_lowercase().as_str()))
+        .count()
+        >= RUN_TOGETHER_MIN;
+    (dangling || run_together).then(|| words[words.len().saturating_sub(CUT_OFF_TAIL_WORDS)..].join(" "))
 }
 
 /// How far apart two owner messages can be and still be pieces of one
@@ -1425,6 +1455,25 @@ mod cut_off_tests {
         ] {
             assert_eq!(cut_off_tail(whole), None, "{whole}");
         }
+    }
+
+    /// A whole instruction without a final period is not cut off: plenty of
+    /// people never type one. Live 2026-10-23: the owner's PRD request below
+    /// got "Your message looks cut off" instead of the work. Only a last
+    /// sentence that visibly isn't finished reads as cut off.
+    #[test]
+    fn a_missing_final_period_alone_is_not_a_cut_off() {
+        for whole in [
+            "let's create a new project. I want it to do what Going.com does and support the same features. please \
+             study it out and let's create a PRD",
+            "I looked at the numbers from last week and they look off. please pull the invoices from the shared folder \
+             and the receipts from my email and match them for me",
+        ] {
+            assert_eq!(cut_off_tail(whole), None, "{whole}");
+        }
+        let dangling = "I looked at the numbers from last week and they look off. please pull the invoices from the \
+                        shared folder and put them in the sheet and then the";
+        assert_eq!(cut_off_tail(dangling).as_deref(), Some("put them in the sheet and then the"));
     }
 
     /// The turn's opening hears both: the latest message cut off, and the
