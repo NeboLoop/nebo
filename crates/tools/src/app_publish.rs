@@ -1191,7 +1191,7 @@ impl AppScreenshotTool {
         // What the page logs while it loads lands in the app's console ring
         // (its developer script posts it); the shot reports this load's lines.
         let console_mark = crate::app_console::recent(&app.id, None, 1).last().map(|e| e.seq);
-        let opened = AppPage::open(&executor, &app, &page, (width, height), &[], Duration::from_secs(120)).await;
+        let opened = AppPage::open(&executor, &app, &page, Some((width, height)), &[], Duration::from_secs(120), None).await;
         let shot = match &opened {
             Ok(view) => {
                 tokio::time::sleep(wait).await;
@@ -1491,7 +1491,7 @@ async fn load_view(
     let view_id = format!("live-{}", uuid::Uuid::new_v4().simple());
     let tag = format!("window.__neboViewId={};", serde_json::to_string(&view_id).unwrap_or_default());
     let mark = crate::app_console::mark();
-    let view = AppPage::open(executor, app, page, size, &[&tag], Duration::from_secs(60))
+    let view = AppPage::open(executor, app, page, Some(size), &[&tag], Duration::from_secs(60), None)
         .await
         .map_err(LiveLoadError::NotOpened)?;
     let checked = async {
@@ -1521,41 +1521,52 @@ async fn load_view(
     Ok(seen)
 }
 
-/// An app's page open in the bot's own headless browser, for a pack tool
-/// (`app_screenshot`, `app_record`): one tab of its own, behind a pass that
-/// opens this app alone, laid out at the size it is drawn at before its
-/// first script runs, and watched for errors from the start
+/// An app's page open in the bot's own headless browser: for a pack tool
+/// (`app_screenshot`, `app_record`, the live check) or an employee working
+/// the page with its browser steps (`browser_open`, `web_tool`). The one
+/// way any app page opens there: one tab, behind a pass that opens this app
+/// alone, kept to the app's page, laid out at the size it is drawn at before
+/// its first script runs, and watched for errors from the start
 /// ([`ON_REOPEN`], [`PAGE_PROBE`]). Closed with [`AppPage::close`].
-pub(crate) struct AppPage<'a> {
-    executor: &'a browser::ActionExecutor,
+pub(crate) struct AppPage {
+    executor: browser::ActionExecutor,
     session: String,
     pass: String,
 }
 
-impl<'a> AppPage<'a> {
-    /// Open `page` (from [`page_path`]) at `size`. `scripts` run before the
-    /// page's own, after the probe; the pass lasts `ttl`.
+impl AppPage {
+    /// Open `page` (from [`page_path`], or an address under the app's
+    /// `ui/`) in a tab of its own, kept to the app's page: nothing it does
+    /// opens another address (`stay_within`). `size`: the viewport, or the
+    /// browser's own. `scripts` run before the page's own, after the probe;
+    /// the pass lasts `ttl` past its last use. `session`: the tab's session,
+    /// an employee's own (a page it works, [`crate::web_tool`]) or, when
+    /// none, one of the page's own; a tab the session had there before is
+    /// closed first.
     pub(crate) async fn open(
-        executor: &'a browser::ActionExecutor,
+        executor: &browser::ActionExecutor,
         app: &db::models::Agent,
         page: &str,
-        (width, height): (u64, u64),
+        size: Option<(u64, u64)>,
         scripts: &[&str],
         ttl: Duration,
-    ) -> Result<AppPage<'a>, String> {
+        session: Option<&str>,
+    ) -> Result<AppPage, String> {
         let view = AppPage {
-            executor,
-            session: format!("app-page-{}", uuid::Uuid::new_v4().simple()),
+            executor: executor.clone(),
+            session: session
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("app-page-{}", uuid::Uuid::new_v4().simple())),
             pass: napp::page_pass::grant(napp::page_pass::Scope::App(app.id.to_string()), ttl),
         };
-        let url = format!(
-            "http://127.0.0.1:{}/k/{}/apps/{}/ui/{page}",
-            local_port(),
-            view.pass,
-            app.id
-        );
+        executor.close_headless(&view.session).await;
+        let root = format!("http://127.0.0.1:{}/k/{}/apps/{}/ui", local_port(), view.pass, app.id);
+        let url = format!("{root}/{page}");
         let opened = async {
-            view.call("viewport", &json!({ "width": width, "height": height })).await?;
+            if let Some((width, height)) = size {
+                view.call("viewport", &json!({ "width": width, "height": height })).await?;
+            }
+            view.call("stay_within", &json!({ "prefix": root })).await?;
             for source in [ON_REOPEN, PAGE_PROBE].into_iter().chain(scripts.iter().copied()) {
                 view.call("init_script", &json!({ "source": source })).await?;
             }
@@ -1565,10 +1576,16 @@ impl<'a> AppPage<'a> {
         match opened {
             Ok(_) => Ok(view),
             Err(e) => {
+                let e = e.replace(&format!("/k/{}", view.pass), "");
                 view.close().await;
                 Err(format!("The browser could not open {}: {e}", app.name))
             }
         }
+    }
+
+    /// The credential in the page's address.
+    pub(crate) fn pass(&self) -> &str {
+        &self.pass
     }
 
     /// One browser action in this page's tab.
@@ -1611,7 +1628,7 @@ impl<'a> AppPage<'a> {
 
     /// Close the tab and drop the pass.
     pub(crate) async fn close(self) {
-        self.executor.close_session(&self.session).await;
+        self.executor.close_headless(&self.session).await;
         napp::page_pass::revoke(&self.pass);
     }
 }

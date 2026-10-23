@@ -18,6 +18,10 @@ use std::time::Duration;
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::browser::CloseParams;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::fetch::{
+    ContinueRequestParams, EnableParams as FetchEnableParams, EventRequestPaused, FailRequestParams, RequestPattern,
+};
+use chromiumoxide::cdp::browser_protocol::network::{ErrorReason, ResourceType};
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
 use chromiumoxide::page::ScreenshotParams;
@@ -451,6 +455,45 @@ impl CdpBridge {
                     .map_err(|e| BrowserError::Other(format!("cdp viewport: {e}")))?;
                 Ok(json!({ "width": width, "height": height }))
             }
+            // The tab's pages stay at addresses under `prefix` from now on:
+            // any other page it would open (a link, a script setting
+            // `location`, a form) is refused before it loads (`Fetch`
+            // interception of documents). A page opened for an employee to
+            // work on is never a door to another address.
+            "stay_within" => {
+                let prefix = args
+                    .get("prefix")
+                    .and_then(|v| v.as_str())
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| BrowserError::Other("stay_within requires 'prefix'".into()))?
+                    .to_string();
+                let page = self.page_for(session_id).await?;
+                let mut paused = page
+                    .event_listener::<EventRequestPaused>()
+                    .await
+                    .map_err(|e| BrowserError::Other(format!("cdp stay_within: {e}")))?;
+                let documents = RequestPattern::builder().url_pattern("*").resource_type(ResourceType::Document).build();
+                tokio::time::timeout(EVAL_TIMEOUT, page.execute(FetchEnableParams::builder().pattern(documents).build()))
+                    .await
+                    .map_err(|_| BrowserError::Timeout("cdp stay_within timed out".into()))?
+                    .map_err(|e| BrowserError::Other(format!("cdp stay_within: {e}")))?;
+                let watched = page.clone();
+                tokio::spawn(async move {
+                    while let Some(ev) = paused.next().await {
+                        let id = ev.request_id.clone();
+                        let answered = if within(&ev.request.url, &prefix) {
+                            watched.execute(ContinueRequestParams::new(id)).await.map(|_| ())
+                        } else {
+                            warn!("a page kept to its own address tried to open another; refused");
+                            watched.execute(FailRequestParams::new(id, ErrorReason::BlockedByClient)).await.map(|_| ())
+                        };
+                        if answered.is_err() {
+                            break;
+                        }
+                    }
+                });
+                Ok(json!({ "ok": true }))
+            }
             // A script every page the tab opens from now runs before its
             // own (`Page.addScriptToEvaluateOnNewDocument`).
             "init_script" => {
@@ -676,6 +719,16 @@ impl CdpBridge {
         self.launched.load(Ordering::Relaxed)
     }
 
+    /// Whether `session_id` has a tab open in this browser now: none once
+    /// the idle reaper shut the browser down, or the tab was closed.
+    pub async fn has_session(&self, session_id: &str) -> bool {
+        let core = self.core.lock().await.clone();
+        match core {
+            Some(core) => core.pages.lock().await.contains_key(session_id),
+            None => false,
+        }
+    }
+
     /// Close the tab a session opened (best-effort) — mirrors the extension's `close_session_tabs`.
     pub async fn close_session(&self, session_id: &str) {
         // Snapshot the core out of the lock, then close the page without holding it.
@@ -687,6 +740,13 @@ impl CdpBridge {
             }
         }
     }
+}
+
+/// Whether `url` is under `prefix` ("stay_within"): the address itself, or
+/// one below it (the next character a `/`, `?` or `#`), never one that only
+/// starts the same (`/ui` holds `/ui/a.js`, never `/uix`).
+fn within(url: &str, prefix: &str) -> bool {
+    url.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
 }
 
 /// The viewport a call asks for: `width` and `height` (100 to 4000 CSS
@@ -813,6 +873,25 @@ mod tests {
     //! skip cleanly when the binary isn't present. They guard the wedge fix:
     //! many fresh tabs + concurrent agents must not hang or trap the backend.
     use super::*;
+
+    /// A tab kept to an address opens that address and what is below it,
+    /// never one that only starts the same, and nothing else.
+    #[test]
+    fn a_kept_tab_opens_its_address_and_below_alone() {
+        let p = "http://127.0.0.1:27895/k/av1/apps/a1/ui";
+        for ok in ["", "/", "/index.html", "/levels/1.html?x=1", "?play=1", "#top"] {
+            assert!(within(&format!("{p}{ok}"), p), "{ok}");
+        }
+        for no in [
+            "http://127.0.0.1:27895/k/av1/apps/a1/uix",
+            "http://127.0.0.1:27895/k/av1/apps/a2/ui/",
+            "http://127.0.0.1:27895/api/v1/agents",
+            "http://169.254.169.254/metadata/v1/",
+            "about:blank",
+        ] {
+            assert!(!within(no, p), "{no}");
+        }
+    }
 
     fn try_bridge() -> Option<CdpBridge> {
         let bin = find_obscura(".")?;

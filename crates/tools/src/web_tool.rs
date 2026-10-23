@@ -1097,20 +1097,25 @@ impl WebCore {
         }
     }
 
-    /// Open one of this bot's own app pages (`/apps/<id>/ui/…`, from
+    /// Open one of this bot's own app pages (`page` under its `ui/`, from
     /// [`own_app_page`]) for an employee to see it run, click, type and
     /// play-test it: when the caller may work on the app (the check
     /// `app_screenshot` applies, `app_publish::permitted_app`), the page
-    /// opens behind a pass to that app alone (`napp::page_pass`, as every
-    /// app page), in the browser that opens this computer's own pages
-    /// (`browser::ActionExecutor::open_own_page`). The pass dies
-    /// [`APP_PAGE_PASS_IDLE`] after the page last used it, and at once when
-    /// the session leaves the page or its tab closes. Never the owner's
-    /// session or install key.
+    /// opens the one way an app page opens in the bot's own browser
+    /// (`app_publish::AppPage`: behind a pass to that app alone, kept to the
+    /// app's page, watched for errors) in this session's tab, and every later
+    /// step of the session runs there (`browser::ActionExecutor::open_own_page`).
+    /// No answer names the pass. The pass dies [`APP_PAGE_PASS_IDLE`] after
+    /// the page last used it, and at once when the session leaves the page or
+    /// its tab closes. Never the owner's session or install key.
     async fn open_app_page(&self, ctx: &ToolContext, app_id: &str, page: &str) -> ToolResult {
         let Some(store) = self.store.as_deref() else {
             return ToolResult::error("This bot's apps are not reachable from the browser here.");
         };
+        let session_id = ctx.session_id.as_str();
+        if session_id.is_empty() {
+            return ToolResult::error("An app's page opens only in a session of its own.");
+        }
         let app = match crate::app_publish::permitted_app(store, ctx, Some(app_id)) {
             Ok(app) if app.id == app_id => app,
             Ok(_) => return ToolResult::error(format!("There is no app with the id {app_id} on this bot.")),
@@ -1119,21 +1124,33 @@ impl WebCore {
         let Some(executor) = self.browser.as_ref().and_then(|m| m.executor()) else {
             return ToolResult::error(format!("Browser automation is not available here. {NO_BROWSER_NEXT}"));
         };
-        let session_id = ctx.session_id.as_str();
-        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(app.id.to_string()), APP_PAGE_PASS_IDLE);
-        let held = pass.clone();
-        if let Err(e) = executor.open_own_page(session_id, Box::new(move || napp::page_pass::revoke(&held))) {
-            napp::page_pass::revoke(&pass);
+        // An app page the session was on closes first, the way it opened.
+        executor.leave_own_page(session_id).await;
+        let view = match crate::app_publish::AppPage::open(
+            &executor,
+            &app,
+            page,
+            None,
+            &[],
+            APP_PAGE_PASS_IDLE,
+            Some(session_id),
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(e) => return ToolResult::error(e),
+        };
+        let pass = view.pass().to_string();
+        if let Err(e) = executor.open_own_page(session_id, pass, Box::new(move || Box::pin(view.close()))).await {
             return ToolResult::error(format!("The browser could not open {}: {e}", app.name));
         }
-        let url = format!("http://127.0.0.1:{}/k/{pass}{page}", napp::plugin::local_port());
-        let opened = self
-            .handle_browser_via_extension(&executor, "navigate", &serde_json::json!({ "url": url }), Some(session_id))
-            .await;
-        if opened.is_error {
-            executor.leave_own_page(session_id).await;
-        }
-        opened
+        ToolResult::ok(format!(
+            "Opened {}'s page (http://127.0.0.1:{}/apps/{}/ui/{page}) in this computer's own browser. Click, type, \
+             read and run scripts on it as on any page; it stays on the app's own page.",
+            app.name,
+            napp::plugin::local_port(),
+            app.id
+        ))
     }
 
     /// Take the session off the app page [`Self::open_app_page`] opened: its
@@ -1170,7 +1187,7 @@ impl WebCore {
         // A session on one of this bot's own app pages works it in the
         // browser for this computer's own pages ([`Self::open_app_page`]):
         // which browsing backend is connected, or chosen, is not its concern.
-        if action != "status" && executor.on_own_page(session_id) {
+        if action != "status" && executor.on_own_page(session_id).await {
             return self.handle_browser_via_extension(&executor, action, input, Some(session_id)).await;
         }
 
@@ -3125,7 +3142,8 @@ const APP_PAGE_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(6
 /// bot's server (`127.0.0.1`, `localhost` or `[::1]` at its port) at
 /// `/apps/<id>/ui[/…]`, with or without a credential before it
 /// (`/k/<credential>/`, which never carries over). The app's id, and the
-/// page's address from `/apps/` on with its query and fragment.
+/// page under its `ui/` with its query and fragment (empty for the app's
+/// own entry page).
 fn own_app_page(url: &str) -> Option<(String, String)> {
     let parsed = url::Url::parse(url).ok()?;
     let local = match parsed.host()? {
@@ -3145,7 +3163,8 @@ fn own_app_page(url: &str) -> Option<(String, String)> {
         return None;
     }
     let app = napp::page_pass::app_of_path(path)?.to_string();
-    let mut page = path.to_string();
+    let under = path.strip_prefix(&format!("/apps/{app}/ui"))?.trim_start_matches('/');
+    let mut page = under.to_string();
     if let Some(q) = parsed.query() {
         page.push('?');
         page.push_str(q);
@@ -4692,18 +4711,29 @@ mod own_app_page_tests {
     fn an_own_app_page_is_found_by_its_address() {
         let port = napp::plugin::local_port();
         let page = |rest: &str| own_app_page(&format!("http://127.0.0.1:{port}{rest}"));
-        assert_eq!(
-            page("/apps/a1/ui/index.html?play=1#top"),
-            Some(("a1".into(), "/apps/a1/ui/index.html?play=1#top".into()))
-        );
-        assert_eq!(own_app_page(&format!("http://localhost:{port}/apps/a1/ui/")), Some(("a1".into(), "/apps/a1/ui/".into())));
-        assert_eq!(own_app_page(&format!("http://[::1]:{port}/apps/a1/ui")), Some(("a1".into(), "/apps/a1/ui".into())));
+        assert_eq!(page("/apps/a1/ui/index.html?play=1#top"), Some(("a1".into(), "index.html?play=1#top".into())));
+        assert_eq!(own_app_page(&format!("http://localhost:{port}/apps/a1/ui/")), Some(("a1".into(), "".into())));
+        assert_eq!(own_app_page(&format!("http://[::1]:{port}/apps/a1/ui")), Some(("a1".into(), "".into())));
+        // Loopback however it is written, and a user part, are this bot.
+        for host in ["127.1", "127.0.0.2", "x@127.0.0.1"] {
+            assert_eq!(
+                own_app_page(&format!("http://{host}:{port}/apps/a1/ui/index.html")),
+                Some(("a1".into(), "index.html".into())),
+                "{host}"
+            );
+        }
         // A credential in front never carries over: a pass of its own is minted.
-        assert_eq!(page("/k/old-or-key/apps/a1/ui/index.html"), Some(("a1".into(), "/apps/a1/ui/index.html".into())));
+        assert_eq!(page("/k/old-or-key/apps/a1/ui/index.html"), Some(("a1".into(), "index.html".into())));
+        // Climbing is resolved before the app is named: the other app's page,
+        // judged as that app.
+        assert_eq!(page("/apps/a1/ui/%2e%2e/%2e%2e/a2/ui/index.html"), Some(("a2".into(), "index.html".into())));
         for other in [
             format!("http://127.0.0.1:{}/apps/a1/ui/index.html", port.wrapping_add(1)),
             format!("https://127.0.0.1:{port}/apps/a1/ui/index.html"),
             format!("http://example.com:{port}/apps/a1/ui/index.html"),
+            format!("http://[::ffff:127.0.0.1]:{port}/apps/a1/ui/index.html"),
+            format!("http://0.0.0.0:{port}/apps/a1/ui/index.html"),
+            format!("http://127.0.0.1:{port}/k/a/k/b/apps/a1/ui/index.html"),
             format!("http://127.0.0.1:{port}/api/v1/apps/a1/storage"),
             format!("http://127.0.0.1:{port}/apps/a1/chat-embed"),
             format!("http://127.0.0.1:{port}/agents"),
