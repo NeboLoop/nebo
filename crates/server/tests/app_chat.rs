@@ -115,7 +115,15 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
         if !main_call(purpose) {
             return Reply::Text("ok");
         }
-        let last = messages.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        // The page's words: what the user side said since the model last
+        // answered (the words, and any reminder the house adds after them).
+        let since = messages.iter().rposition(|m| m["role"] == "assistant").map_or(0, |i| i + 1);
+        let last: String = messages[since..]
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .map(|m| m["content"].as_str().map(str::to_string).unwrap_or_else(|| m["content"].to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
         if last.contains("MARK-TOOL") && !has_result(messages) {
             let name: &'static str = Box::leak(offered.lock().unwrap().clone().into_boxed_str());
             Reply::Call(vec![(name, json!({}))])
@@ -218,7 +226,10 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
         .iter()
         .rev()
         .find(|(p, _)| main_call(p))
-        .and_then(|(_, b)| b["tools"].as_array()?.first()?["function"]["name"].as_str().map(str::to_string))
+        .and_then(|(_, b)| {
+            // One that answers at once: never a tool that waits on the owner.
+            b["tools"].as_array()?.iter().filter_map(|t| t["function"]["name"].as_str()).find(|n| !n.starts_with("ask")).map(str::to_string)
+        })
         .expect("the employee is offered a tool");
     *tool.lock().unwrap() = first_tool;
     let before = page.replies(APP, None, 1).await.len();
