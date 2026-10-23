@@ -126,7 +126,7 @@ impl AppRecordTool {
         let console_mark = crate::app_console::recent(&app.id, None, 1).last().map(|e| e.seq);
         // The pass lasts the load and a second of work per frame.
         let ttl = wait + Duration::from_secs(120 + count);
-        let recorded = match AppPage::open(&executor, &app, &page, size, &[CLOCK], ttl).await {
+        let recorded = match AppPage::open(&executor, &app, &page, Some(size), &[CLOCK], ttl, None).await {
             Ok(view) => {
                 let r = play(&view, &app, &page, wait, fps, count, &folder).await;
                 view.close().await;
@@ -161,7 +161,7 @@ impl AppRecordTool {
 /// while it plays, is an error; so is a picture that did not load, checked
 /// after the load and again at the end.
 async fn play(
-    view: &AppPage<'_>,
+    view: &AppPage,
     app: &db::models::Agent,
     page: &str,
     wait: Duration,
