@@ -6,7 +6,8 @@
 //! Tier 3 (direct HTTP) lives in the caller (`web_tool`). Failover is per-call: if the extension
 //! errors or times out (e.g. the native-host relay dropped), the same action is retried on CDP.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tracing::{info, warn};
@@ -22,7 +23,19 @@ pub struct ActionExecutor {
     /// The built-in browser that opens this computer's own pages
     /// ([`ActionExecutor::execute_headless`]).
     own_pages: Option<Arc<CdpBridge>>,
+    /// The sessions whose tab is one of this computer's own pages, open in
+    /// [`Self::own_pages`] ([`ActionExecutor::open_own_page`]): every step
+    /// of theirs runs there until they leave it.
+    own_page_tabs: OwnPageTabs,
 }
+
+/// What [`ActionExecutor::open_own_page`] runs when the session's own page
+/// closes: what the page was opened with goes with it.
+pub type OnClose = Box<dyn FnOnce() + Send>;
+
+/// The sessions on one of this computer's own pages, shared by every
+/// executor of one [`crate::Manager`].
+pub type OwnPageTabs = Arc<Mutex<HashMap<String, OnClose>>>;
 
 /// True when an extension error is a TRANSPORT failure (disconnect / timeout / not connected)
 /// — the only case where falling back to the built-in CDP browser helps. Tool-level errors
@@ -38,8 +51,72 @@ fn is_transport_failure(err: &str) -> bool {
 }
 
 impl ActionExecutor {
-    pub fn new(bridge: Arc<ExtensionBridge>, cdp: Option<Arc<CdpBridge>>, own_pages: Option<Arc<CdpBridge>>) -> Self {
-        Self { bridge, cdp, own_pages }
+    pub fn new(
+        bridge: Arc<ExtensionBridge>,
+        cdp: Option<Arc<CdpBridge>>,
+        own_pages: Option<Arc<CdpBridge>>,
+        own_page_tabs: OwnPageTabs,
+    ) -> Self {
+        Self { bridge, cdp, own_pages, own_page_tabs }
+    }
+
+    /// Put `session_id`'s tab on one of this computer's own pages (an app as
+    /// the bot serves it on 127.0.0.1, which an employee works and tests):
+    /// from now on every step of the session runs in [`Self::execute_headless`]'s
+    /// browser, never the owner's Chrome or the browsing browser, until the
+    /// session leaves it ([`Self::leave_own_page`], [`Self::close_session`]).
+    /// `on_close` runs when it does, or when another own page takes its
+    /// place. Errors when this machine has no Chrome or Chromium.
+    pub fn open_own_page(&self, session_id: &str, on_close: OnClose) -> Result<(), BrowserError> {
+        if self.own_pages.is_none() {
+            return Err(BrowserError::Other(
+                "this computer has no Chrome or Chromium, which opening its own pages takes. Install Google Chrome \
+                 and try again"
+                    .into(),
+            ));
+        }
+        let replaced = self
+            .own_page_tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(session_id.to_string(), on_close);
+        if let Some(close) = replaced {
+            close();
+        }
+        Ok(())
+    }
+
+    /// Whether `session_id`'s tab is on one of this computer's own pages.
+    pub fn on_own_page(&self, session_id: &str) -> bool {
+        self.own_page_tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(session_id)
+    }
+
+    /// Take `session_id` off its own page: the page's tab closes, what it
+    /// was opened with goes ([`Self::open_own_page`]'s `on_close`), and the
+    /// session's next step runs where browsing runs. False when it was on
+    /// none.
+    pub async fn leave_own_page(&self, session_id: &str) -> bool {
+        let close = self
+            .own_page_tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(session_id);
+        let Some(close) = close else { return false };
+        if let Some(ref own) = self.own_pages {
+            own.close_session(session_id).await;
+        }
+        close();
+        true
+    }
+
+    /// The browser a session on its own page runs in.
+    fn own_page_browser<'a>(&'a self, session_id: Option<&'a str>) -> Option<(&'a Arc<CdpBridge>, &'a str)> {
+        let sid = session_id?;
+        let own = self.own_pages.as_ref()?;
+        self.on_own_page(sid).then_some((own, sid))
     }
 
     /// Check if any browser backend is available.
@@ -79,6 +156,10 @@ impl ActionExecutor {
         args: &serde_json::Value,
         session_id: Option<&str>,
     ) -> Result<serde_json::Value, BrowserError> {
+        if let Some((own, sid)) = self.own_page_browser(session_id) {
+            info!(tool = tool, backend = "cdp", "executing browser action on this computer's own page");
+            return own.execute(tool, args, sid).await;
+        }
         if self.bridge.is_connected() {
             info!(tool = tool, backend = "extension", "executing browser action");
             match self.bridge.execute(tool, args, session_id).await {
@@ -137,6 +218,9 @@ impl ActionExecutor {
         opts: BatchOptions,
         session_id: Option<&str>,
     ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
+        if let Some((own, _)) = self.own_page_browser(session_id) {
+            return Self::run_batch(own, actions, opts, session_id).await;
+        }
         if self.bridge.is_connected() {
             match self
                 .bridge
@@ -166,6 +250,16 @@ impl ActionExecutor {
         session_id: Option<&str>,
     ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
         let cdp = self.cdp.as_ref().ok_or(BrowserError::ExtensionNotConnected)?;
+        Self::run_batch(cdp, actions, opts, session_id).await
+    }
+
+    /// Run a batch step by step in one built-in browser.
+    async fn run_batch(
+        cdp: &CdpBridge,
+        actions: Vec<BatchAction>,
+        opts: BatchOptions,
+        session_id: Option<&str>,
+    ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
         let sid = session_id.unwrap_or("_default");
         let mut out = Vec::with_capacity(actions.len());
         for a in &actions {
@@ -242,6 +336,7 @@ impl ActionExecutor {
     /// one served the calls; each is a no-op if it never opened anything for the
     /// session, so this is safe to call unconditionally.
     pub async fn close_session(&self, session_id: &str) {
+        self.leave_own_page(session_id).await;
         self.bridge.end_session(session_id, false).await;
         if let Some(ref cdp) = self.cdp {
             cdp.close_session(session_id).await;

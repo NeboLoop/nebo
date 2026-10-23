@@ -156,3 +156,118 @@ async fn the_live_check_fails_errors_and_a_blank_page_and_passes_a_clean_one() {
     assert!(!clean.is_error, "{}", clean.content);
     assert_eq!(clean.payload.as_ref().unwrap()["passed"], true);
 }
+
+/// An employee opens its own app's page with `browser_open`, as the owner
+/// would type its address: the page opens behind a pass to that app alone
+/// (`napp::page_pass`), in the bot's own headless browser, so the employee
+/// sees it run, clicks, types and play-tests it. The page reaches its own
+/// routes and neither another app's nor Nebo's API; closing the tab drops
+/// the pass; an app the employee may not work on is refused.
+///
+/// 2026-10-22: an employee built an app, opened its page in the browser,
+/// landed on the owner's sign-in and went looking for the install key.
+/// Skipped when this machine has no Chrome or Chromium.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
+    if !common::in_own_process().await {
+        return;
+    }
+    let server = TestServer::boot().await;
+    if browser::chrome::find_chrome().is_none() {
+        eprintln!("no Chrome or Chromium on this machine — skipping");
+        return;
+    }
+    let manager = Arc::new(browser::Manager::new(
+        browser::BrowserConfig::default(),
+        server.data_dir.to_string_lossy().into_owned(),
+    ));
+    let store = Arc::new(server.db_store());
+    let app = |id: &str, name: &str, built_here: bool, html: &str| {
+        let ui = server.data_dir.join("apps").join(id).join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), html).unwrap();
+        store.create_agent(id, None, name, "An app", "", "", None, None).unwrap();
+        store.set_agent_app_fields(id, true, Some(ui.to_str().unwrap()), None, None).unwrap();
+        store.set_agent_built_here(id, built_here).unwrap();
+    };
+    // The page asks, from its own address, for its own store, another
+    // app's, and Nebo's own API.
+    app(
+        "app-league",
+        "League",
+        true,
+        "<!doctype html><html><body><h1>League</h1><script>\
+         (async () => {\
+           const r = {};\
+           const ask = async (k, path, init) => {\
+             try { r[k] = (await fetch('../../../' + path, init)).ok; } catch (e) { r[k] = 'refused'; }\
+           };\
+           await ask('own', 'api/v1/apps/app-league/storage/score', { method: 'PUT',\
+             headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: 3 }) });\
+           await ask('other', 'api/v1/apps/app-notes/storage');\
+           await ask('nebo', 'api/v1/agents');\
+           window.__asked = r;\
+         })();\
+         </script></body></html>",
+    );
+    app("app-notes", "Notes", true, "<!doctype html><html><body>Notes</body></html>");
+    app("app-bought", "Bought", false, "<!doctype html><html><body>Bought</body></html>");
+
+    let tools = tools::web_tool::tools(
+        tools::web_tool::WebCore::new().with_browser(manager).with_store(store.clone()),
+    );
+    let tool = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+    let ctx = tools::ToolContext {
+        origin: tools::origin::Origin::User,
+        session_key: "agent:app-league:web".into(),
+        session_id: "s-league".into(),
+        ..Default::default()
+    };
+    let page = |id: &str| format!("http://127.0.0.1:{}/apps/{id}/ui/index.html", server.port);
+
+    let opened = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-league") })).await;
+    assert!(!opened.is_error, "{}", opened.content);
+
+    let run_js = tool("browser_run_js");
+    let drawn = run_js.execute_dyn(&ctx, json!({ "expression": "document.querySelector('h1')?.textContent" })).await;
+    assert!(drawn.content.contains("League"), "the page, not the sign-in: {}", drawn.content);
+    let mut asked = String::new();
+    for _ in 0..50 {
+        let r = run_js
+            .execute_dyn(&ctx, json!({ "expression": "JSON.stringify(window.__asked || null)" }))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        if r.content.contains("own") {
+            asked = r.content;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(asked.contains(r#""own":true"#), "its own routes: {asked}");
+    assert!(!asked.contains(r#""other":true"#), "never another app's: {asked}");
+    assert!(!asked.contains(r#""nebo":true"#), "never Nebo's API: {asked}");
+
+    let at = run_js.execute_dyn(&ctx, json!({ "expression": "location.pathname" })).await;
+    let pass = at
+        .content
+        .split("/k/")
+        .nth(1)
+        .and_then(|r| r.split('/').next())
+        .unwrap_or_else(|| panic!("the page is under a pass: {}", at.content))
+        .to_string();
+    let league = napp::page_pass::Scope::App("app-league".into());
+    assert!(napp::page_pass::admits(&pass, &league));
+    assert!(!napp::page_pass::admits(&pass, &napp::page_pass::Scope::App("app-notes".into())));
+
+    // Closing the tab drops the pass.
+    let closed = tool("browser_close_tab").execute_dyn(&ctx, json!({})).await;
+    assert!(!closed.is_error, "{}", closed.content);
+    assert!(!napp::page_pass::admits(&pass, &league), "the pass goes with the tab");
+
+    // Apps it may not work on: another of the owner's (App Developer mode
+    // is off) and one from the marketplace.
+    let other = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-notes") })).await;
+    assert!(other.is_error && other.content.contains("App Developer mode is off"), "{}", other.content);
+    let bought = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-bought") })).await;
+    assert!(bought.is_error && bought.content.contains("installed from the marketplace"), "{}", bought.content);
+}
