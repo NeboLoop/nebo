@@ -145,6 +145,25 @@ impl RosterOrder {
         }
     }
 
+    /// This order with each list [change] names replaced and the others
+    /// kept as they are: a pin sent alone never freezes the teams' or the
+    /// employees' order, and an empty list puts that list back to A to Z
+    /// (the phone's "Sort A to Z").
+    pub fn changed(self, change: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        let Some(change) = change.as_object() else {
+            return Err(<serde_json::Error as serde::de::Error>::custom("expected an object"));
+        };
+        let mut merged = serde_json::to_value(self)?;
+        if let Some(into) = merged.as_object_mut() {
+            for key in ["pinned", "teams", "employees"] {
+                if let Some(list) = change.get(key) {
+                    into.insert(key.to_string(), list.clone());
+                }
+            }
+        }
+        Ok(serde_json::from_value::<Self>(merged)?.normalized())
+    }
+
     /// Where a row sits in the Pinned list, or None when it is not pinned.
     /// [primary] (the primary employee's id) is always first; the rest keep
     /// the order they were pinned or dragged to. Positions are comparable
