@@ -497,10 +497,11 @@ impl NeboAIPlugin {
     }
 
 
-    /// Queue a raw encoded frame for sending.
+    /// Queue a raw encoded frame for sending. The sender is taken out of
+    /// the lock first: a full queue (a stalled socket) must never keep
+    /// `disconnect` from the lock.
     async fn queue_send(&self, data: Vec<u8>) -> Result<(), CommError> {
-        let inner = self.inner.read().await;
-        let tx = inner.send_tx.as_ref().ok_or(CommError::NotConnected)?;
+        let tx = self.inner.read().await.send_tx.clone().ok_or(CommError::NotConnected)?;
         tx.send(data)
             .await
             .map_err(|_| CommError::NotConnected)
@@ -2456,6 +2457,60 @@ mod tests {
             Some((1001, "sleep".to_string()))
         );
         assert_eq!(close_seen(None).await, None);
+    }
+
+    /// A hub that stopped reading, with the send queue full and senders
+    /// waiting behind it: closing for sleep still returns within its limit,
+    /// so the watcher is never stuck through the sleep, and the senders are
+    /// let go.
+    #[tokio::test]
+    async fn closing_for_sleep_returns_in_time_when_the_socket_is_stalled() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _ = ws.next().await; // CONNECT
+            ws.send(server_frame(frame::TYPE_AUTH_OK, [0; 16], 0, serde_json::json!({"ok": true})))
+                .await
+                .unwrap();
+            // Then read nothing more, holding the socket open.
+            futures::future::pending::<()>().await;
+        });
+        let plugin = Arc::new(NeboAIPlugin::new(Arc::new(MemOffsets::default())));
+        let config = HashMap::from([
+            ("gateway".to_string(), format!("ws://{addr}/ws")),
+            ("bot_id".to_string(), "bot-under-test".to_string()),
+            ("token".to_string(), "test-token".to_string()),
+            ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+        ]);
+        plugin.connect(config).await.unwrap();
+
+        // More than the queue holds, each larger than the socket takes.
+        let flood = {
+            let plugin = plugin.clone();
+            tokio::spawn(async move {
+                for _ in 0..400 {
+                    if plugin.queue_send(vec![0u8; 256 * 1024]).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(!flood.is_finished(), "the queue is full and a sender waits");
+
+        let limit = crate::reconnect::SLEEP_CLOSE_LIMIT;
+        let started = std::time::Instant::now();
+        tokio::time::timeout(limit * 2, plugin.disconnect(Some(crate::reconnect::Disconnect::Sleep)))
+            .await
+            .expect("the sleep close returns")
+            .unwrap();
+        assert!(started.elapsed() < limit + std::time::Duration::from_millis(500), "{:?}", started.elapsed());
+        tokio::time::timeout(std::time::Duration::from_secs(2), flood)
+            .await
+            .expect("the waiting senders are let go")
+            .unwrap();
     }
 
     /// The hub's refusal of a removed bot is `Revoked`; any other refusal

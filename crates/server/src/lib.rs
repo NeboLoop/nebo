@@ -3567,9 +3567,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     power.idle(tokio::time::sleep(std::time::Duration::from_secs(60))).await;
                     continue;
                 };
-                // Never dial while the computer is going to sleep.
+                // Never dial while the computer is going to sleep: after
+                // the wake, the lease and the token are looked at again.
                 if power.is_asleep() {
                     power.sleep_through().await;
+                    continue;
                 }
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
