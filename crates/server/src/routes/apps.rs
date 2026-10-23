@@ -33,6 +33,13 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
             "/apps/{agent_id}/agents/stream",
             routing::post(apps::stream_agent),
         )
+        // nebo.chat: the page's conversation with its own employee.
+        .route(
+            "/apps/{agent_id}/chat",
+            routing::get(apps::get_chat).post(apps::post_chat),
+        )
+        .route("/apps/{agent_id}/chat/stop", routing::post(apps::stop_chat))
+        .route("/apps/{agent_id}/chat/new", routing::post(apps::new_chat))
         .route(
             "/apps/{agent_id}/janus/complete",
             routing::post(apps::janus_complete),

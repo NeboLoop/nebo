@@ -1645,46 +1645,323 @@ async fn start_app_agent_run(
     agent_name: &str,
     body: InvokeRequest,
 ) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
-    let session_key = format!("app:{}:api", agent_id);
-    let cancel_token = CancellationToken::new();
-    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
-    let mention_context = body.data.map(|data| format!("App data context: {}", data));
-    crate::chat_dispatch::run_chat_events(
-        state,
-        crate::chat_dispatch::ChatConfig {
-            session_key,
-            prompt: body.message,
-            user_id: String::new(),
-            channel: "app".to_string(),
-            origin: tools::Origin::App,
-            door: types::permissions::Door::Chat,
-            narrow: None,
-            agent_id: agent_id.to_string(),
-            cancel_token,
-            lane: types::constants::lanes::EVENTS.to_string(),
-            comm_reply: None,
-            entity_config,
-            images: vec![],
-            attachments: vec![],
-            entity_name: agent_name.to_string(),
-            origin_agent_id: None,
-            mention_context,
-            tool_scope: None,
-            channel_ctx: None,
-            handoff_depth: 0,
-            seed_taint: vec![],
-            tool_allowlist: None,
-            hidden_prompt: false,
-            coworker: None,
-            audience: None,
-            cwd: None,
-            model_override: None,
-            client_id: None,
-            platform: None,
-            message_id: None,
-        },
-    )
-    .await
+    let run = AppRun {
+        session_key: format!("app:{}:api", agent_id),
+        prompt: body.message,
+        context: body.data.map(|data| format!("App data context: {}", data)),
+        scope: None,
+        lane: types::constants::lanes::EVENTS,
+        hidden: false,
+    };
+    crate::chat_dispatch::run_chat_events(state, app_run_config(state, agent_id, agent_name, run)).await
+}
+
+/// One turn an app asks of an employee: from its page (its chat, a click on
+/// one of its cards) or its sidecar (`agents/invoke`).
+pub(crate) struct AppRun {
+    /// The conversation it runs in: one of the app's own (`keyparser::app_page_key`,
+    /// `app:<id>:api`).
+    pub session_key: String,
+    pub prompt: String,
+    /// What the app says about what is on its page, read beside the prompt.
+    pub context: Option<String>,
+    /// One of the tool scopes the employee's agent.json declares.
+    pub scope: Option<String>,
+    pub lane: &'static str,
+    /// The words are the house's, not a person's: the model reads them, no
+    /// one sees them (a click described).
+    pub hidden: bool,
+}
+
+/// The ONE run configuration of an app's request: whatever the page or its
+/// sidecar sends runs as `Origin::App` (an app's words, never the owner's:
+/// no shell, no owner's answer to an open question, no relay as his
+/// message), on the app's own conversation, with nothing of the owner's
+/// composer (codes, slash commands, local paths, @mentions, a folder or a
+/// model of his choosing).
+pub(crate) fn app_run_config(state: &AppState, agent_id: &str, agent_name: &str, run: AppRun) -> crate::chat_dispatch::ChatConfig {
+    crate::chat_dispatch::ChatConfig {
+        session_key: run.session_key,
+        prompt: run.prompt,
+        user_id: String::new(),
+        channel: "app".to_string(),
+        origin: tools::Origin::App,
+        door: types::permissions::Door::Chat,
+        narrow: None,
+        agent_id: agent_id.to_string(),
+        cancel_token: CancellationToken::new(),
+        lane: run.lane.to_string(),
+        comm_reply: None,
+        entity_config: crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id),
+        images: vec![],
+        attachments: vec![],
+        entity_name: agent_name.to_string(),
+        origin_agent_id: None,
+        mention_context: run.context,
+        tool_scope: run.scope,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: run.hidden,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+        client_id: None,
+        platform: None,
+        message_id: None,
+    }
+}
+
+/// Whether chat `chat_id` is an app page's conversation with its employee
+/// (`keyparser::Conversation::App`): the app's, never opened as one of the
+/// owner's.
+pub(crate) fn is_app_chat(store: &db::Store, chat_id: &str) -> bool {
+    store
+        .get_chat(chat_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.session_name)
+        .and_then(|n| types::keyparser::conversation_of(&n))
+        == Some(types::keyparser::Conversation::App)
+}
+
+/// Whether the owner's own doors (his composer, his call) must stay out of
+/// conversation `session_key`: it is an app page's (`agent:<id>:page…`), or
+/// a thread key naming an app page's chat. His turns there would be read by
+/// the page, and the page's words would be history his turns act on.
+pub(crate) fn kept_from_owner(store: &db::Store, session_key: &str) -> bool {
+    types::keyparser::conversation_of(session_key) == Some(types::keyparser::Conversation::App)
+        || types::keyparser::chat_id_from_thread_key(session_key).is_some_and(|chat| is_app_chat(store, chat))
+}
+
+/// A thread name a page may give its chat: letters, digits, `-`, `_` and
+/// `.`, at most 128 of them. No `:`, so it never reaches another key.
+fn chat_thread(thread: Option<&str>) -> Result<Option<&str>, Response> {
+    match thread.map(str::trim).filter(|t| !t.is_empty()) {
+        None => Ok(None),
+        Some(t) if t.len() <= 128 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')) => Ok(Some(t)),
+        Some(_) => Err((StatusCode::BAD_REQUEST, "thread: letters, digits, '-', '_' or '.', at most 128").into_response()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatQuery {
+    thread: Option<String>,
+    before: Option<String>,
+    limit: Option<u32>,
+}
+
+/// GET /apps/{agent_id}/chat — the page's conversation with its own
+/// employee: the words each side said (no tool rows, nothing the model
+/// alone reads), oldest first, and whether a turn is running in it.
+pub async fn get_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<ChatQuery>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let thread = match chat_thread(q.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let (messages, has_more) = match crate::handlers::agent::session_messages(&state, &key, q.limit, q.before.as_deref()) {
+        Ok(v) => v,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    let messages: Vec<serde_json::Value> = messages
+        .iter()
+        .filter(|m| matches!(m.role.as_str(), "user" | "assistant") && !m.content.trim().is_empty())
+        .map(|m| serde_json::json!({ "id": m.id, "role": m.role, "content": m.content, "createdAt": m.created_at }))
+        .collect();
+    axum::Json(serde_json::json!({
+        "sessionId": key,
+        "running": chat_busy(&state, &key).await,
+        "waiting": waits_on_owner(&state, &key).await,
+        "messages": messages,
+        "hasMore": has_more,
+    }))
+    .into_response()
+}
+
+/// Whether the turn in conversation `key` waits on the owner: an approval
+/// he has not answered, or a question it asked him. Only that it waits,
+/// never what about: the page shows "waiting for the owner's OK".
+async fn waits_on_owner(state: &AppState, key: &str) -> bool {
+    crate::chat_dispatch::open_approval_cards(&state.approval_channels).await.iter().any(|(_, card)| card.session_key == key)
+        || state.run_registry.pending_asks().await.iter().any(|(session, _)| session == key)
+}
+
+/// Whether a turn runs in the page's conversation `key`: registered (from
+/// the moment `run_chat` takes a message) or running in the harness.
+async fn chat_busy(state: &AppState, key: &str) -> bool {
+    state.run_registry.is_session_active(key).await || state.harness.is_session_busy(key)
+}
+
+/// Held while a page's message is checked and handed to its turn, and while
+/// a page starts its conversation over: one at a time, so two messages sent
+/// together never both find the conversation free. `run_chat` registers the
+/// run before it returns, so the next one finds it busy.
+static PAGE_SEND: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The refusal when a turn runs in the page's conversation: one message at
+/// a time, so the context and scope a message carries are always the ones
+/// its own turn runs with.
+fn busy(name: &str) -> Response {
+    (StatusCode::CONFLICT, format!("{name} is still answering. Wait for the reply or stop it, then send.")).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatSend {
+    message: String,
+    thread: Option<String>,
+    context: Option<serde_json::Value>,
+    scope: Option<String>,
+}
+
+/// POST /apps/{agent_id}/chat — the page says something to its own
+/// employee. It runs as the app's words (`app_run_config`) in the page's
+/// conversation; the reply streams on the app's socket (`chat_stream`,
+/// `chat_complete` for that `session_id`, `chat_waiting` while it waits on
+/// the owner). One message at a time: sent while a turn runs there, it is
+/// refused (409), never queued without its own context.
+pub async fn post_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<ChatSend>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    let (_, name) = match validate_app_agent(&state.store, &agent_id, None) {
+        Ok(v) => v,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    let thread = match chat_thread(body.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let message = body.message.trim().to_string();
+    if message.is_empty() {
+        return (StatusCode::BAD_REQUEST, "message is empty").into_response();
+    }
+    let scope = body.scope.filter(|s| !s.is_empty());
+    if let Some(s) = scope.as_deref() {
+        // The employee's own agent.json, as the store holds it.
+        let declared = state
+            .store
+            .get_agent(&agent_id)
+            .ok()
+            .flatten()
+            .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+            .is_some_and(|c| c.scopes.contains_key(s));
+        if !declared {
+            return (StatusCode::BAD_REQUEST, "scope: not one the employee's agent.json declares").into_response();
+        }
+    }
+    // A page never turns its employee on: the owner turned it off, and only
+    // he turns it back on.
+    if !state.agent_registry.read().await.contains_key(&agent_id) {
+        return (StatusCode::CONFLICT, format!("{name} is turned off. The owner turns it on in Nebo.")).into_response();
+    }
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let _sending = PAGE_SEND.lock().await;
+    if chat_busy(&state, &key).await {
+        return busy(&name);
+    }
+    let context = body.context.filter(|v| !v.is_null()).map(|v| match v.as_str() {
+        Some(s) => s.to_string(),
+        None => format!("App context: {v}"),
+    });
+    // Every open view of this conversation (another window of the app, the
+    // owner's Nebo) shows the words as they are sent.
+    state.hub.broadcast(
+        "chat_user_message",
+        serde_json::json!({
+            "session_id": &key,
+            "agentId": &agent_id,
+            "id": uuid::Uuid::new_v4().to_string(),
+            "content": &message,
+            "createdAt": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
+    let run = AppRun { session_key: key.clone(), prompt: message, context, scope, lane: types::constants::lanes::MAIN, hidden: false };
+    crate::chat_dispatch::run_chat(&state, app_run_config(&state, &agent_id, &name, run)).await;
+    axum::Json(serde_json::json!({ "sessionId": key, "status": "sent" })).into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ChatThread {
+    thread: Option<String>,
+}
+
+/// POST /apps/{agent_id}/chat/new — the page starts its conversation over:
+/// the next words begin a new one under the same key, and the one before is
+/// kept (an app's conversation, never listed among the owner's). Nothing to
+/// do when the page has not said anything yet. Refused while a turn runs
+/// there: stop it first.
+pub async fn new_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<ChatThread>>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let thread = match chat_thread(body.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let _sending = PAGE_SEND.lock().await;
+    if chat_busy(&state, &key).await {
+        return busy(&app_employee_name(&state, &agent_id));
+    }
+    if let Ok(Some(session)) = state.store.get_session_by_name(&key)
+        && let Err(e) = state.harness.sessions().rotate_chat(&session.id, None)
+    {
+        return to_error_response(e).into_response();
+    }
+    axum::Json(serde_json::json!({ "sessionId": key })).into_response()
+}
+
+/// POST /apps/{agent_id}/chat/stop — stop the turn running in the page's
+/// conversation, and what it handed off; nothing else of the owner's.
+pub async fn stop_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<ChatThread>>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let thread = match chat_thread(body.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let stopped = crate::chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, &key).await;
+    state.hub.broadcast("chat_cancelled", serde_json::json!({ "session_id": &key }));
+    axum::Json(serde_json::json!({ "sessionId": key, "stopped": stopped })).into_response()
 }
 
 async fn run_janus_collect(

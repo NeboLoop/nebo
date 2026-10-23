@@ -166,8 +166,8 @@ pub fn check_workflow(name: &str, def: &Value) -> Vec<Issue> {
     let ids: HashSet<&str> = nodes.iter().map(|n| n.id).collect();
 
     // Upstream steps: with connections, everything with a path into the
-    // step; without, every step before it in array order (the sequential
-    // path runs them in order).
+    // step; without, every step before it in array order (a chain runs them
+    // in order).
     let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
     for &(from, to) in &edges {
         if from != TRIGGER && to != EMIT {
@@ -1080,8 +1080,7 @@ impl Graph {
         self.nodes.iter().find(|(n, ..)| n == id).map(|(_, k, _)| k.as_str()).unwrap_or("")
     }
 
-    /// Direct parents; on the sequential path (no connections), the step
-    /// before.
+    /// Direct parents; on a chain (no connections), the step before.
     fn parents(&self, id: &str) -> Vec<String> {
         if self.edges.is_empty() {
             let i = self.index_of(id);
@@ -1282,7 +1281,7 @@ mod tests {
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].contains("step 'digest'") && w[0].contains("Loop over nodes.invoices.records"), "{w:?}");
 
-        // On the sequential path: the step after it, and one naming it.
+        // On a chain: the step after it, and one naming it.
         let def = json!({"activities": [read.clone(), act("other"), {"id": "digest", "intent": "Total {{nodes.invoices.records}}"}]});
         let w = warnings(&check_workflow("w", &def));
         assert_eq!(w.len(), 2, "{w:?}");

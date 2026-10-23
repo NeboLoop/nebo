@@ -1097,6 +1097,54 @@ impl WebCore {
         }
     }
 
+    /// Open one of this bot's own app pages (`/apps/<id>/ui/…`, from
+    /// [`own_app_page`]) for an employee to see it run, click, type and
+    /// play-test it: when the caller may work on the app (the check
+    /// `app_screenshot` applies, `app_publish::permitted_app`), the page
+    /// opens behind a pass to that app alone (`napp::page_pass`, as every
+    /// app page), in the browser that opens this computer's own pages
+    /// (`browser::ActionExecutor::open_own_page`). The pass dies
+    /// [`APP_PAGE_PASS_IDLE`] after the page last used it, and at once when
+    /// the session leaves the page or its tab closes. Never the owner's
+    /// session or install key.
+    async fn open_app_page(&self, ctx: &ToolContext, app_id: &str, page: &str) -> ToolResult {
+        let Some(store) = self.store.as_deref() else {
+            return ToolResult::error("This bot's apps are not reachable from the browser here.");
+        };
+        let app = match crate::app_publish::permitted_app(store, ctx, Some(app_id)) {
+            Ok(app) if app.id == app_id => app,
+            Ok(_) => return ToolResult::error(format!("There is no app with the id {app_id} on this bot.")),
+            Err(refused) => return ToolResult::error(refused),
+        };
+        let Some(executor) = self.browser.as_ref().and_then(|m| m.executor()) else {
+            return ToolResult::error(format!("Browser automation is not available here. {NO_BROWSER_NEXT}"));
+        };
+        let session_id = ctx.session_id.as_str();
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(app.id.to_string()), APP_PAGE_PASS_IDLE);
+        let held = pass.clone();
+        if let Err(e) = executor.open_own_page(session_id, Box::new(move || napp::page_pass::revoke(&held))) {
+            napp::page_pass::revoke(&pass);
+            return ToolResult::error(format!("The browser could not open {}: {e}", app.name));
+        }
+        let url = format!("http://127.0.0.1:{}/k/{pass}{page}", napp::plugin::local_port());
+        let opened = self
+            .handle_browser_via_extension(&executor, "navigate", &serde_json::json!({ "url": url }), Some(session_id))
+            .await;
+        if opened.is_error {
+            executor.leave_own_page(session_id).await;
+        }
+        opened
+    }
+
+    /// Take the session off the app page [`Self::open_app_page`] opened: its
+    /// tab closes and its pass goes. False when it was on none.
+    async fn leave_app_page(&self, session_id: &str) -> bool {
+        match self.browser.as_ref().and_then(|m| m.executor()) {
+            Some(executor) => executor.leave_own_page(session_id).await,
+            None => false,
+        }
+    }
+
     /// One browser step: `action` is the extension's action and `input`
     /// carries its arguments in the extension's own names.
     async fn handle_browser(&self, action: &str, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
@@ -1118,6 +1166,13 @@ impl WebCore {
                 return ToolResult::error("Browser automation not configured.");
             }
         };
+
+        // A session on one of this bot's own app pages works it in the
+        // browser for this computer's own pages ([`Self::open_app_page`]):
+        // which browsing backend is connected, or chosen, is not its concern.
+        if action != "status" && executor.on_own_page(session_id) {
+            return self.handle_browser_via_extension(&executor, action, input, Some(session_id)).await;
+        }
 
         // Status works even when disconnected
         if action == "status" {
@@ -2520,6 +2575,15 @@ impl DynTool for WebTool {
             let session_id = &ctx.session_id;
             let group_key = WebCore::session_group_key(&ctx.session_key);
 
+            // One of this bot's own app pages opens behind a pass to that app
+            // alone, in the browser for this computer's own pages: no site
+            // of the web, and never the owner's Chrome.
+            if matches!(self.kind, Kind::BrowserOpen | Kind::BrowserNewTab)
+                && let Some((app_id, page)) = str_field(&input, "url").and_then(own_app_page)
+            {
+                return self.core.open_app_page(ctx, &app_id, &page).await;
+            }
+
             // The extension shows this session's tab group while it works
             // (a search may run in the browser too); a tab left for the
             // owner is his, not Nebo's at work.
@@ -2554,7 +2618,17 @@ impl DynTool for WebTool {
                 Kind::BrowserExpect => self.core.handle_expect(&input, session_id, &group_key).await,
                 Kind::BrowserLeaveOpen => self.core.leave_open(&input, session_id).await,
                 kind => match kind.browser_step(&input) {
-                    Some((action, args)) => self.core.handle_browser(action, &args, session_id, &group_key).await,
+                    Some((action, args)) => {
+                        // Any other address takes the session off the app
+                        // page it was on.
+                        if leaves_app_page(action, &args)
+                            && self.core.leave_app_page(session_id).await
+                            && action == "close_tab"
+                        {
+                            return ToolResult::ok("Closed the app's page.");
+                        }
+                        self.core.handle_browser(action, &args, session_id, &group_key).await
+                    }
                     None => ToolResult::error(format!("{} is not a browser step.", kind.name())),
                 },
             }
@@ -3040,6 +3114,60 @@ fn private_url_error(url: &str) -> String {
         "Cannot fetch {}: it points to a local or private network address, which this tool never fetches. A server you started on this computer answers run_command(command: \"curl -s http://localhost:<port>/...\"); Nebo's own server answers no command.",
         url
     )
+}
+
+/// How long an employee's pass to an app page ([`WebCore::open_app_page`])
+/// outlives the page's last use of it: the page's requests and its socket
+/// keep it while the page runs.
+const APP_PAGE_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// One of this bot's own app pages a browser step asks for: `url` on this
+/// bot's server (`127.0.0.1`, `localhost` or `[::1]` at its port) at
+/// `/apps/<id>/ui[/…]`, with or without a credential before it
+/// (`/k/<credential>/`, which never carries over). The app's id, and the
+/// page's address from `/apps/` on with its query and fragment.
+fn own_app_page(url: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let local = match parsed.host()? {
+        url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    if !local || !matches!(parsed.scheme(), "http") || parsed.port_or_known_default() != Some(napp::plugin::local_port()) {
+        return None;
+    }
+    let path = parsed.path();
+    let path = match path.strip_prefix("/k/") {
+        Some(rest) => &rest[rest.find('/')?..],
+        None => path,
+    };
+    if !path.starts_with("/apps/") {
+        return None;
+    }
+    let app = napp::page_pass::app_of_path(path)?.to_string();
+    let mut page = path.to_string();
+    if let Some(q) = parsed.query() {
+        page.push('?');
+        page.push_str(q);
+    }
+    if let Some(f) = parsed.fragment() {
+        page.push('#');
+        page.push_str(f);
+    }
+    Some((app, page))
+}
+
+/// Whether a browser step takes its session elsewhere than the app page it
+/// is on: an address of its own (`navigate`, `new_tab`, a batch with one),
+/// or closing the tab.
+fn leaves_app_page(action: &str, args: &serde_json::Value) -> bool {
+    match action {
+        "navigate" | "new_tab" | "close_tab" => true,
+        "browser_batch" => args["actions"]
+            .as_array()
+            .is_some_and(|steps| steps.iter().any(|s| matches!(s["action"].as_str(), Some("navigate" | "new_tab")))),
+        _ => false,
+    }
 }
 
 /// The client [`fetch_checked`] takes: it never follows a redirect itself,
@@ -4549,5 +4677,54 @@ mod interface_tests {
         for name in names.iter().filter(|n| !NO_OLD_SHAPE.contains(n)) {
             assert!(web_rows.iter().any(|r| r.to == *name), "{name} has no old shape");
         }
+    }
+}
+
+#[cfg(test)]
+mod own_app_page_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// This bot's own app pages, however the address is written, and
+    /// nothing else: another port, another host, an API route or Nebo's
+    /// own page are browsing as before.
+    #[test]
+    fn an_own_app_page_is_found_by_its_address() {
+        let port = napp::plugin::local_port();
+        let page = |rest: &str| own_app_page(&format!("http://127.0.0.1:{port}{rest}"));
+        assert_eq!(
+            page("/apps/a1/ui/index.html?play=1#top"),
+            Some(("a1".into(), "/apps/a1/ui/index.html?play=1#top".into()))
+        );
+        assert_eq!(own_app_page(&format!("http://localhost:{port}/apps/a1/ui/")), Some(("a1".into(), "/apps/a1/ui/".into())));
+        assert_eq!(own_app_page(&format!("http://[::1]:{port}/apps/a1/ui")), Some(("a1".into(), "/apps/a1/ui".into())));
+        // A credential in front never carries over: a pass of its own is minted.
+        assert_eq!(page("/k/old-or-key/apps/a1/ui/index.html"), Some(("a1".into(), "/apps/a1/ui/index.html".into())));
+        for other in [
+            format!("http://127.0.0.1:{}/apps/a1/ui/index.html", port.wrapping_add(1)),
+            format!("https://127.0.0.1:{port}/apps/a1/ui/index.html"),
+            format!("http://example.com:{port}/apps/a1/ui/index.html"),
+            format!("http://127.0.0.1:{port}/api/v1/apps/a1/storage"),
+            format!("http://127.0.0.1:{port}/apps/a1/chat-embed"),
+            format!("http://127.0.0.1:{port}/agents"),
+            format!("http://127.0.0.1:{port}/k/x"),
+        ] {
+            assert_eq!(own_app_page(&other), None, "{other}");
+        }
+    }
+
+    /// Only a step that takes the session to an address of its own, or
+    /// closes the tab, leaves the app page; working the page stays on it.
+    #[test]
+    fn only_another_address_or_closing_leaves_the_app_page() {
+        for leaves in ["navigate", "new_tab", "close_tab"] {
+            assert!(leaves_app_page(leaves, &json!({})), "{leaves}");
+        }
+        for stays in ["click", "type", "read_page", "evaluate", "history"] {
+            assert!(!leaves_app_page(stays, &json!({})), "{stays}");
+        }
+        let batch = |action: &str| json!({ "actions": [{ "action": "click" }, { "action": action }] });
+        assert!(leaves_app_page("browser_batch", &batch("navigate")));
+        assert!(!leaves_app_page("browser_batch", &batch("type")));
     }
 }

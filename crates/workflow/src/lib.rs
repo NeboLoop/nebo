@@ -46,12 +46,6 @@ pub enum WorkflowError {
         cap_cents: i64,
         partial: String,
     },
-    #[error("activity {activity_id} exceeded token budget ({used}/{limit})")]
-    BudgetExceeded {
-        activity_id: String,
-        used: u32,
-        limit: u32,
-    },
     #[error("activity {0} failed: {1}")]
     ActivityFailed(String, String),
     #[error("workflow not found: {0}")]
@@ -96,8 +90,6 @@ pub enum WorkflowError {
     /// re-enters under its own id; Stop ends it. The text says what was used.
     #[error("paused at its limit: {0}")]
     ProjectLimit(String),
-    #[error("circuit breaker tripped: {0}")]
-    CircuitBreak(String),
     #[error("{0}")]
     Other(String),
 }
