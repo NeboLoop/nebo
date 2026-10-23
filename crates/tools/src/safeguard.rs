@@ -2,6 +2,10 @@ use std::path::Path;
 
 use crate::nebo_files::NeboFiles;
 
+/// The file rule keys whose calls only read the files they name: an
+/// installed plugin is open to them, and to nothing that writes.
+const READ_KEYS: &[&str] = &["read_file", "share_file", "list_checkpoints", "check_plan"];
+
 /// Rule keys whose calls read or change files on this machine: the file
 /// safeguard and the folder fence apply to them.
 const FILE_KEYS: &[&str] = &[
@@ -68,10 +72,21 @@ struct Run<'a> {
 
 impl Run<'_> {
     /// The refusal for a call that reaches `path`, when it is one of Nebo's
-    /// secrets.
-    fn nebo_file(&self, path: &str) -> Option<String> {
+    /// secrets, or an installed plugin a call would change (`write`).
+    fn nebo_file(&self, path: &str, write: bool) -> Option<String> {
         let fence = self.fence?;
-        fence.closes(Path::new(path), self.cwd).then(|| nebo_file_refusal(path))
+        let named = Path::new(path);
+        if !fence.closes(named, self.cwd, write) {
+            return None;
+        }
+        Some(if fence.closes(named, self.cwd, false) {
+            nebo_file_refusal(path)
+        } else {
+            format!(
+                "BLOCKED: {path:?} is part of an installed plugin. An employee reads it, runs it and follows its \
+                 skills, and never changes it. This is a hard safety limit that cannot be overridden"
+            )
+        })
     }
 }
 
@@ -259,7 +274,7 @@ fn check_file_safeguard(rule_key: &str, input: &serde_json::Value, run: &Run<'_>
         })
         .filter_map(|p| p.as_str());
     for named in std::iter::once(path).chain(notebook).chain(listed).filter(|p| !p.is_empty()) {
-        if let Some(refusal) = run.nebo_file(named) {
+        if let Some(refusal) = run.nebo_file(named, !READ_KEYS.contains(&rule_key)) {
             return Some(refusal);
         }
     }
@@ -775,7 +790,7 @@ mod tests {
         let said = nebo_file_refusal(&root.join("settings.json").to_string_lossy());
         assert!(said.contains("one of Nebo's secrets") && said.contains("everything else in Nebo's folder is open"), "{said}");
         for open in ["user/sdk/nebo.global.js", "", "user", "user/agents/Scores/ui/index.html"] {
-            assert!(!fence.closes(&root.join(open), None), "{open:?} is open");
+            assert!(!fence.closes(&root.join(open), None, false), "{open:?} is open");
         }
     }
 
@@ -846,10 +861,10 @@ mod tests {
         assert!(scope("assets/vo.mp3").is_none());
     }
 
-    /// A plugin's folder is normal to read and change; its accounts are a
+    /// An installed plugin is read and run, never changed; its accounts are a
     /// secret, and so is another Nebo's settings on this computer.
     #[test]
-    fn a_plugins_folder_is_open_and_another_nebos_secrets_are_closed() {
+    fn a_plugin_is_read_never_changed_and_another_nebos_secrets_are_closed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         let skill = root.join("nebo/plugins/ledger/0.1.0/skills/ledger-bills");
@@ -859,8 +874,12 @@ mod tests {
         let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"));
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let guide = skill.join("SKILL.md").to_string_lossy().into_owned();
-        for key in ["read_file", "share_file", "write_file", "edit_file"] {
+        for key in ["read_file", "share_file"] {
             assert!(check_file_safeguard(key, &serde_json::json!({ "path": guide }), &run).is_none(), "{key}");
+        }
+        for key in ["write_file", "edit_file"] {
+            let r = check_file_safeguard(key, &serde_json::json!({ "path": guide }), &run);
+            assert!(r.as_deref().is_some_and(|m| m.contains("never changes it")), "{key}: {r:?}");
         }
         let accounts = root.join("nebo/plugin-profiles/ledger/token.json").to_string_lossy().into_owned();
         let r = check_file_safeguard("share_file", &serde_json::json!({ "path": [guide.clone(), accounts] }), &run);

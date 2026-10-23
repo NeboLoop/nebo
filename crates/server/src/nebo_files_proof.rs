@@ -1,11 +1,11 @@
 //! Nebo's secrets and server, proven through the real server: an
 //! employee's file tools and commands reach its workspace, its helpers'
 //! copies, its own conversation's saved results and the rest of Nebo's
-//! folder (the installed plugins among it), and never Nebo's secrets (the
-//! settings file with the server's secret, the keys and sign-in tokens, the
-//! logs, the database, the plugins' accounts, other conversations' files),
-//! however the path is spelled, in this Nebo's folder or another's on the
-//! computer. Nebo's own settings are not in its commands'
+//! folder (the installed plugins to read and run, never to change), and
+//! never Nebo's secrets (the settings file with the server's secret, the
+//! keys and sign-in tokens, the logs, the database, the plugins' accounts,
+//! other conversations' files), however the path is spelled, in this Nebo's
+//! folder or another's on the computer. Nebo's own settings are not in its commands'
 //! environment, its commands never reach Nebo's own API, and a scheduled
 //! command meets every one of those limits and its employee's permissions.
 
@@ -148,8 +148,8 @@ async fn an_employee_never_reaches_nebo_own_files() {
 /// marketplace lays it out, and its skill's own instructions followed
 /// through the real server: load it, read the folder `use_skill` names and
 /// the file the skill points to, run the script it says to run. The
-/// plugin's program and data are open like any folder; its account and
-/// Nebo's settings stay closed.
+/// plugin is never changed; its program runs and its data reads, and its
+/// account and Nebo's settings stay closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_employee_reads_what_use_skill_hands_it() {
     let nebo = session().await;
@@ -220,8 +220,26 @@ async fn an_employee_reads_what_use_skill_hands_it() {
         .await;
     assert!(!r.is_error && r.content.contains("references") && r.content.contains("RATES-canary"), "{}", r.content);
 
-    // The rest of the plugin is open like any folder: its program runs and
-    // its data reads. Its account and Nebo's settings stay closed.
+    // Never changed, by the file tools or a command.
+    let guide = std::path::PathBuf::from(&folder).join("SKILL.md");
+    let r = nebo.tool(&ctx, "write_file", json!({ "path": guide.to_string_lossy(), "content": "rewritten" })).await;
+    assert!(r.is_error && r.content.contains("never changes it"), "write_file: {}", r.content);
+    assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "write_file changed the skill");
+    // A command's text may name a plugin (it is read and run from there),
+    // so only the operating system keeps a command from changing it
+    // (`nebo_files::READ_ONLY`, `confine`).
+    let r = nebo
+        .tool(&ctx, "run_command", json!({ "command": format!("echo rewritten >> '{}'", guide.display()), "description": "Edit the skill" }))
+        .await;
+    if tools::confine::available() {
+        assert!(r.is_error, "the command changed a plugin's skill: {}", r.content);
+        assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "the command changed the skill");
+    } else {
+        eprintln!("no confinement on this computer: a command's writes to a plugin rest on nothing");
+    }
+
+    // The plugin's program runs and its data reads. Its account and Nebo's
+    // settings stay closed.
     let r = nebo.tool(&ctx, "read_file", json!({ "path": home.join("appdata/plugins/proofbooks/state.txt").to_string_lossy() })).await;
     assert!(!r.is_error && r.content.contains("DATA-canary"), "the plugin's data: {}", r.content);
     let r = nebo

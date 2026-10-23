@@ -51,6 +51,12 @@ pub const PROTECTED: &[&str] = &[
     "chromium-own-pages",
 ];
 
+/// The installed plugins' packages, relative to a Nebo folder: read and
+/// run, never changed. Each runs with its own account
+/// (`nebo/plugin-profiles`), so a changed program or skill would reach that
+/// account, and it would no longer be the package Nebo verified.
+pub const READ_ONLY: &[&str] = &["nebo/plugins", "user/plugins"];
+
 /// Nebo's secrets in every Nebo folder on this computer.
 #[derive(Debug, Clone)]
 pub struct NeboFiles {
@@ -105,12 +111,13 @@ impl NeboFiles {
     }
 
     /// Whether `path` (relative ones against `cwd`) is one of Nebo's
-    /// secrets, however it is spelled (`..`, a link, `/tmp` for
-    /// `/private/tmp`).
-    pub fn closes(&self, path: &Path, cwd: Option<&Path>) -> bool {
+    /// secrets, or, for a call that changes it (`write`), an installed
+    /// plugin ([`READ_ONLY`]), however it is spelled (`..`, a link, `/tmp`
+    /// for `/private/tmp`).
+    pub fn closes(&self, path: &Path, cwd: Option<&Path>, write: bool) -> bool {
         let named = lexical(&absolute(path, cwd));
         let landed = resolved(&named);
-        [&named, &landed].into_iter().any(|p| self.secret(p))
+        [&named, &landed].into_iter().any(|p| self.secret(p) || (write && self.read_only(p)))
     }
 
     fn secret(&self, path: &Path) -> bool {
@@ -121,6 +128,18 @@ impl NeboFiles {
                 !own && PROTECTED.iter().any(|p| rel.starts_with(p))
             })
         })
+    }
+
+    fn read_only(&self, path: &Path) -> bool {
+        self.roots.iter().flat_map(|(named, real)| [named, real]).any(|root| {
+            path.strip_prefix(root).is_ok_and(|rel| READ_ONLY.iter().any(|p| rel.starts_with(p)))
+        })
+    }
+
+    /// The installed plugins' packages, in every Nebo folder, as real paths
+    /// that exist.
+    pub fn real_read_only(&self) -> Vec<PathBuf> {
+        self.roots.iter().flat_map(|(_, real)| READ_ONLY.iter().map(move |p| real.join(p))).filter(|p| p.exists()).collect()
     }
 
     /// Every secret, in every Nebo folder, as a real path, whether it
@@ -196,7 +215,9 @@ impl NeboFiles {
                 let end = at + spelling.len();
                 let rest = path_token(&text[end..]);
                 let path = PathBuf::from(format!("{}{rest}", meant.to_string_lossy()));
-                if self.closes(&path, cwd) {
+                // A command reads and runs a plugin from its folder; only
+                // the operating system keeps it from changing one.
+                if self.closes(&path, cwd, false) {
                     let written = &text[at..end];
                     return Some(format!("{}{rest}", if ESCAPES { written.replace("\\ ", " ") } else { written.to_string() }));
                 }
@@ -325,12 +346,20 @@ mod tests {
         let (_d, root) = home();
         let f = fence(&root);
         for closed in ["settings.json", ".install-key", ".mcp-key", ".extension-secret", "neboai_token.cache", "data/nebo.db", "data", "logs/nebo.log", "sessions/s2/r.txt", "sessions", "nebo/plugin-profiles/p/x", "link/oal/device.key", "link/agents.json", "link/logs/a.log", "chromium-own-pages/Default/Cookies"] {
-            assert!(f.closes(&root.join(closed), None), "{closed} is a secret");
+            assert!(f.closes(&root.join(closed), None, false), "{closed} is a secret");
         }
         for open in ["", "user", "user/sdk/nebo.global.js", "user/agents/Scores/ui/index.html", "files/a.md", "nebo/plugins/p/1.0.0/skills/s/SKILL.md", "nebo/plugins/p/bin", "verify/v-1/x", "worktrees/site/v-1/src/a.ts", "sessions/s1/tool-results/r.txt", "bot_id", "models.yaml", "research/r.md"] {
-            assert!(!f.closes(&root.join(open), None), "{open:?} is normal to use");
+            assert!(!f.closes(&root.join(open), None, false), "{open:?} is normal to use");
         }
-        assert!(!f.closes(Path::new("/etc/hosts"), None), "outside Nebo's folder is not this list's");
+        assert!(!f.closes(Path::new("/etc/hosts"), None, false), "outside Nebo's folder is not this list's");
+        // An installed plugin is read and run, never changed; the rest of
+        // what Nebo keeps is open to change too.
+        for package in ["nebo/plugins/p/1.0.0/skills/s/SKILL.md", "user/plugins/p/1.0.0/p", "nebo/plugins"] {
+            assert!(f.closes(&root.join(package), None, true), "{package} is changed");
+        }
+        for open in ["appdata/plugins/p/state.json", "user/agents/Scores/ui/index.html", "files/a.md"] {
+            assert!(!f.closes(&root.join(open), None, true), "{open} is normal to change");
+        }
     }
 
     /// Another Nebo on this computer keeps its secrets too, and its other
@@ -340,9 +369,9 @@ mod tests {
         let (_d, root) = home();
         let (_o, other) = home();
         let f = NeboFiles::at(&root, &[root.clone(), other.clone()], &root.join("sessions/s1"));
-        assert!(f.closes(&other.join("settings.json"), None));
-        assert!(f.closes(&other.join("sessions/s1/r.txt"), None), "the run's own session is this Nebo's, not another's");
-        assert!(!f.closes(&other.join("files/a.md"), None));
+        assert!(f.closes(&other.join("settings.json"), None, false));
+        assert!(f.closes(&other.join("sessions/s1/r.txt"), None, false), "the run's own session is this Nebo's, not another's");
+        assert!(!f.closes(&other.join("files/a.md"), None, false));
     }
 
     /// However a secret is spelled: `..`, a link to it or to a folder above
@@ -351,14 +380,14 @@ mod tests {
     fn a_secret_spelled_around_the_list_is_still_closed() {
         let (d, root) = home();
         let f = fence(&root);
-        assert!(f.closes(&root.join("files/../settings.json"), None));
-        assert!(f.closes(Path::new("../settings.json"), Some(&root.join("files"))));
+        assert!(f.closes(&root.join("files/../settings.json"), None, false));
+        assert!(f.closes(Path::new("../settings.json"), Some(&root.join("files")), false));
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&root, d.path().join("alias")).unwrap();
-            assert!(f.closes(&d.path().join("alias/data/nebo.db"), None));
+            assert!(f.closes(&d.path().join("alias/data/nebo.db"), None, false));
             std::os::unix::fs::symlink(root.join("settings.json"), d.path().join("s.json")).unwrap();
-            assert!(f.closes(&d.path().join("s.json"), None));
+            assert!(f.closes(&d.path().join("s.json"), None, false));
         }
     }
 

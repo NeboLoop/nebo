@@ -471,8 +471,8 @@ impl ShellTool {
         let trusted_plugin_env = ctx.trusted_plugin_env;
         let default_cwd = ctx.cwd.as_deref();
         // Every command is fenced, a workflow's command step included: Nebo's
-        // secrets are closed to it (`NeboFiles::of`) and the rest of Nebo's
-        // folder, the installed plugins among it, is open. The command of
+        // secrets are closed to it (`NeboFiles::of`), the installed plugins
+        // are read-only, and the rest of Nebo's folder is open. The command of
         // an employee with Full access is not (`confine::Reach::unconfined`).
         let (fence, closed_ports) = if ctx.reach.unconfined || installer {
             (None, Vec::new())
