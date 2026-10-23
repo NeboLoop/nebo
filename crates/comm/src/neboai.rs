@@ -944,12 +944,15 @@ impl CommPlugin for NeboAIPlugin {
             inner.writer.take()
         };
         // A close that names its reason must be on the wire before the
-        // caller goes on: the computer sleeps right after it. The write
-        // loop bounds each of its last sends (2 s).
+        // caller goes on: the computer sleeps right after it. A write loop
+        // stuck on a full socket never gets to it: it is stopped at the
+        // limit, so the caller is never held through the sleep.
         if how.and_then(crate::reconnect::Disconnect::close_frame).is_some()
-            && let Some(writer) = writer
+            && let Some(mut writer) = writer
+            && tokio::time::timeout(crate::reconnect::SLEEP_CLOSE_LIMIT, &mut writer).await.is_err()
         {
-            let _ = writer.await;
+            writer.abort();
+            warn!("neboai: the sleep close did not go out in time");
         }
         info!("neboai disconnected");
         Ok(())

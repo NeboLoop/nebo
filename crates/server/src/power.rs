@@ -29,13 +29,15 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-/// The longest the OS's sleep is held for the closes. Windows gives a
-/// suspend callback about two seconds.
-const CLOSE_LIMIT: Duration = Duration::from_millis(1500);
+// The longest the OS's sleep is held for the closes (`comm::reconnect`).
+use comm::reconnect::SLEEP_CLOSE_LIMIT as CLOSE_LIMIT;
 
-/// The longest a watcher waits, awake, for a wake the OS never sent (logind
+/// The longest a watcher waits for a wake the OS never sent (logind
 /// restarted mid-sleep): a missed notice must not keep the bot offline.
-/// The clock behind it stops while the computer sleeps.
+/// On macOS and Linux the clock behind it stops while the computer sleeps;
+/// on Windows it keeps counting, so it may run out during a long suspend,
+/// and the redial then comes right after the resume, as the notice would
+/// have made it.
 const WAKE_LIMIT: Duration = Duration::from_secs(60);
 
 /// The power state every watcher follows.
@@ -126,6 +128,24 @@ impl PowerWatch {
     /// Resolves once the computer is about to sleep: at once while it is.
     pub(crate) async fn sleeping(&mut self) {
         let _ = self.rx.wait_for(|asleep| *asleep).await;
+    }
+
+    /// Whether the computer is about to sleep, or asleep: no dial now.
+    pub(crate) fn is_asleep(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// Wait on `wait` while this watcher holds no connection. A sleep that
+    /// comes meanwhile has nothing of this watcher's to wait for: it goes
+    /// ahead at once, and `wait` resumes after the wake.
+    pub(crate) async fn idle<T>(&mut self, wait: impl std::future::Future<Output = T>) -> T {
+        let mut wait = std::pin::pin!(wait);
+        loop {
+            tokio::select! {
+                out = &mut wait => return out,
+                () = self.sleeping() => self.sleep_through().await,
+            }
+        }
     }
 
     /// This watcher's connection is closed (or was not open): let the sleep
@@ -385,6 +405,33 @@ mod tests {
                 .expect("woke")
                 .unwrap();
         }
+    }
+
+    /// A watcher waiting with no connection open lets a sleep go ahead at
+    /// once, and its wait goes on after the wake.
+    #[tokio::test]
+    async fn an_idle_watcher_does_not_hold_the_sleep() {
+        let power = power();
+        let mut watch = power.watch();
+        let (done_tx, done) = tokio::sync::oneshot::channel::<u8>();
+        let waiting = tokio::spawn(async move { watch.idle(done).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let started = std::time::Instant::now();
+        tokio::task::spawn_blocking(move || power.will_sleep())
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < CLOSE_LIMIT / 2,
+            "{:?}",
+            started.elapsed()
+        );
+        power.did_wake();
+        done_tx.send(7).unwrap();
+        let out = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("the wait went on")
+            .unwrap();
+        assert_eq!(out.unwrap(), 7);
     }
 
     /// A watcher that never closes holds the sleep only [`CLOSE_LIMIT`].

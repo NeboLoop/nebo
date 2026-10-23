@@ -3420,9 +3420,12 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             // minute — or at once when the hub refused this process the bot
             // (another copy holds its lease), which is then asked again at
             // the renewal cadence rather than after the backoff.
+            // A sleep in that minute starts it at once: the loop closes
+            // the boot connection for the sleep.
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
                 _ = comm::lease::process().until_lost() => {}
+                () = power.sleeping() => {}
             }
             // While connected, how often the connection is looked at.
             const POLL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -3481,14 +3484,23 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     reconnect_state.comm_manager.shutdown(None).await;
                     // Waking is a fresh start: redial within half a second,
                     // from the start of the backoff (comm::reconnect).
-                    tokio::time::sleep(backoff.wait(comm::reconnect::Disconnect::Sleep, connected_at.elapsed())).await;
+                    let redial = backoff.wait(comm::reconnect::Disconnect::Sleep, connected_at.elapsed());
+                    // A sleep during the wait goes back to the top, which
+                    // lets it go ahead and waits for the wake.
+                    tokio::select! {
+                        _ = tokio::time::sleep(redial) => {}
+                        () = power.sleeping() => continue,
+                    }
                 } else {
                     // A dropped connection is redialed after its jittered
                     // wait: up to 500 ms for a hub drain, up to 5 s for a
                     // hard cut, under 1 s for a
                     // first drop, longer for repeated ones.
                     if let Some(how) = dropped {
-                        tokio::time::sleep(backoff.wait(how, connected_at.elapsed())).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(backoff.wait(how, connected_at.elapsed())) => {}
+                            () = power.sleeping() => continue,
+                        }
                     }
                     if reconnect_state.comm_manager.is_connected().await {
                         wait = POLL;
@@ -3496,6 +3508,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     }
                 }
 
+                // Never dial while the computer is going to sleep: the top
+                // of the loop lets the sleep go ahead and waits for the wake.
+                if power.is_asleep() {
+                    continue;
+                }
                 match codes::activate_neboai(&reconnect_state).await {
                     Ok(()) => {
                         info!("neboai: reconnected to gateway");
@@ -3540,14 +3557,20 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             loop {
                 // Only the process holding the bot's lease may hold its
                 // tunnel; the dial names that lease (comm::tunnel).
-                comm::lease::process().granted_or_unleased().await;
+                // Waiting here holds no connection, so a sleep meanwhile
+                // goes ahead at once (`power::PowerWatch::idle`).
+                power.idle(comm::lease::process().granted_or_unleased()).await;
                 // The token is read after the grant: the AUTH_OK that granted
                 // the lease rotated it, and the one read before is refused.
                 let Some(token) = codes::neboai_token(&tunnel_state) else {
                     // Not activated yet — poll until credentials appear.
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    power.idle(tokio::time::sleep(std::time::Duration::from_secs(60))).await;
                     continue;
                 };
+                // Never dial while the computer is going to sleep.
+                if power.is_asleep() {
+                    power.sleep_through().await;
+                }
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
                 // A hub drain redials within 500 ms and leaves the backoff

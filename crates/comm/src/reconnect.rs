@@ -59,6 +59,11 @@ pub const SLEEP_CLOSE_CODE: u16 = 1001;
 /// The reason sent with [`SLEEP_CLOSE_CODE`].
 pub const SLEEP_CLOSE_REASON: &str = "sleep";
 
+/// The longest closing for sleep may take, on each connection, and the
+/// longest the OS's sleep is held for those closes: the computer waits on
+/// them, and Windows gives a suspend callback about two seconds.
+pub const SLEEP_CLOSE_LIMIT: Duration = Duration::from_millis(1500);
+
 /// How many times a CONNECT the hub turned away as busy is dialed again by
 /// [`dial_through_busy`] before the caller's own backoff takes over.
 pub const BUSY_REDIALS: usize = 4;

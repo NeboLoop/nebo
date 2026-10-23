@@ -52,9 +52,6 @@ const DRAIN_NOTICE: &str = "drain";
 /// this only bounds a hub that never does.
 const DRAINED_SESSION_LIMIT: Duration = Duration::from_secs(150);
 
-/// The longest the sleep close may take: the computer is waiting on it.
-const SLEEP_CLOSE_LIMIT: Duration = Duration::from_secs(1);
-
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
     #[error("tunnel dial failed: {0}")]
@@ -200,7 +197,7 @@ async fn session(
                 // drops it now, not a keepalive window from now.
                 info!("tunnel: the computer is going to sleep; closing until it wakes");
                 let close = futures::future::poll_fn(|cx| conn.poll_close(cx));
-                if tokio::time::timeout(SLEEP_CLOSE_LIMIT, close).await.is_err() {
+                if tokio::time::timeout(crate::reconnect::SLEEP_CLOSE_LIMIT, close).await.is_err() {
                     debug!("tunnel: the sleep close did not finish in time");
                 }
                 return Ok(Ended::Closed(Disconnect::Sleep));
