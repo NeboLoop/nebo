@@ -46,12 +46,6 @@ pub enum WorkflowError {
         cap_cents: i64,
         partial: String,
     },
-    #[error("activity {activity_id} exceeded token budget ({used}/{limit})")]
-    BudgetExceeded {
-        activity_id: String,
-        used: u32,
-        limit: u32,
-    },
     #[error("activity {0} failed: {1}")]
     ActivityFailed(String, String),
     #[error("workflow not found: {0}")]

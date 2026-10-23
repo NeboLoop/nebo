@@ -1,4 +1,5 @@
-//! Deterministic graph executor for workflows with explicit connections.
+//! The one workflow walker. A definition with explicit connections is its
+//! graph; one without is a chain (`WorkflowDef::as_graph`).
 //!
 //! Doctrine: the ENGINE owns all control flow. Execution is sequential unless
 //! an activity branches; a fork (multiple outgoing edges) runs its branches in
@@ -49,9 +50,10 @@ struct GraphState {
     outputs: HashMap<String, String>,
     visits: HashMap<String, u32>,
     total_tokens: u32,
-    /// Output tokens only — the unit `budget.total_per_run` is enforced in
-    /// (input is dominated by fixed tool-schema overhead resent every turn).
-    total_output_tokens: u32,
+    /// The top-level node whose error ended the walk: the first to fail (an
+    /// error reaches every ancestor's `execute_node` after its own). The run
+    /// records it as the step it ended at.
+    ended_at: Option<String>,
     /// Expert requests this pass found still out: (request key, deadline).
     /// What the run still waits for: an expert's reply
     /// (`expert::reply_watch`) or the owner's review of a held answer
@@ -226,9 +228,9 @@ pub(crate) async fn execute_graph(
         .map(|e| arrive(&ctx, &top, e.to.clone(), true));
     let result = first_error(futures::future::join_all(walks).await);
 
-    let (total_tokens, final_context) = {
+    let (total_tokens, final_context, ended_at) = {
         let st = ctx.state.lock().unwrap();
-        (st.total_tokens, final_context(def, &st.outputs))
+        (st.total_tokens, final_context(def, &st.outputs), st.ended_at.clone())
     };
 
     match result {
@@ -246,7 +248,14 @@ pub(crate) async fn execute_graph(
             info!(workflow = def.id.as_str(), run_id, total_tokens, "workflow completed (graph)");
             Ok((run_id.to_string(), final_context))
         }
-        Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // Cancelled: the run ends cancelled with what it spent, its
+        // checklist closed. The owner's cancel already said why.
+        Err(WorkflowError::Cancelled) => {
+            if let Err(e) = store.complete_workflow_run(run_id, "cancelled", total_tokens as i64, None, ended_at.as_deref(), None) {
+                warn!(run_id, error = %e, "failed to mark workflow run as cancelled");
+            }
+            Err(WorkflowError::Cancelled)
+        }
         // Parked at the project's limit: one wait, no deadline, until the
         // owner decides.
         Err(WorkflowError::ProjectLimit(used)) => {
@@ -277,11 +286,26 @@ pub(crate) async fn execute_graph(
                 "exited",
                 total_tokens as i64,
                 Some(&reason),
-                None,
+                ended_at.as_deref(),
                 Some(&final_context),
             );
             info!(workflow = def.id.as_str(), run_id, reason = %reason, "workflow exited early (graph)");
             Ok((run_id.to_string(), final_context))
+        }
+        // The owner's spending limit stopped it: the run reads "Stopped at
+        // your limit", keeps the work done (the stopped step's report
+        // included), and is not a failure.
+        Err(e @ WorkflowError::SpendCapReached { .. }) => {
+            let _ = store.complete_workflow_run(
+                run_id,
+                "stopped",
+                total_tokens as i64,
+                Some(&e.to_string()),
+                ended_at.as_deref(),
+                Some(&final_context),
+            );
+            info!(workflow = def.id.as_str(), run_id, "workflow stopped at the owner's spending limit (graph)");
+            Err(e)
         }
         Err(e) => {
             let err_msg = e.to_string();
@@ -290,7 +314,7 @@ pub(crate) async fn execute_graph(
                 "failed",
                 total_tokens as i64,
                 Some(&err_msg),
-                None,
+                ended_at.as_deref(),
                 None,
             ) {
                 warn!(run_id, error = %db_err, "failed to mark workflow run as failed");
@@ -415,7 +439,7 @@ fn build_ctx<'a>(
             outputs: HashMap::new(),
             visits: HashMap::new(),
             total_tokens: 0,
-            total_output_tokens: 0,
+            ended_at: None,
             pending_experts: Vec::new(),
         }),
     }
@@ -631,7 +655,7 @@ async fn execute_node<'a>(
         warn!(run_id = %ctx.run_id, error = %e, "failed to update workflow run status");
     }
 
-    match activity.activity_type.as_str() {
+    let result = match activity.activity_type.as_str() {
         "condition" => run_condition(ctx, scope, activity).await,
         "loop" => run_loop(ctx, scope, activity).await,
         "wait" => run_wait(ctx, scope, activity).await,
@@ -641,7 +665,14 @@ async fn execute_node<'a>(
         "decide" => run_decide(ctx, scope, activity).await,
         "expert" => run_expert(ctx, scope, activity).await,
         _ => run_llm_activity(ctx, scope, activity).await,
+    };
+    // Top-level nodes only: an iteration's error is the loop's to keep or
+    // pass on (an item that exits or is rate-limited does not end the run),
+    // so a run that ends inside a loop ends at the loop.
+    if result.is_err() && scope.stop_node.is_none() {
+        ctx.state.lock().unwrap().ended_at.get_or_insert_with(|| node.to_string());
     }
+    result
 }
 
 /// Deterministic shell step: run `params.command` through the `os` tool and
@@ -2001,9 +2032,8 @@ async fn run_loop<'a>(
     route(ctx, scope, &activity.id, |label| label == Some("Done")).await
 }
 
-/// The AI lives here: one LLM-driven activity, executed exactly like the
-/// sequential engine path (per-step turns, evaluator-gated), then routed
-/// onward by the engine.
+/// The AI lives here: one LLM-driven activity, executed by the engine's step
+/// runner (per-step turns, evaluator-gated), then routed onward.
 async fn run_llm_activity<'a>(
     ctx: &GraphCtx<'a>,
     scope: &WalkScope,
@@ -2024,13 +2054,13 @@ async fn run_llm_activity<'a>(
         },
     );
 
-    // Tool assembly mirrors the sequential path (same scoping — see
+    // Tool assembly: the activity's declared tools (see
     // scoped_activity_tools); the emit tool is injected only on terminal
     // nodes (edge to __emit__).
     let mut activity_tools: Vec<&Box<dyn DynTool>> =
         crate::engine::scoped_activity_tools(&step.activity, ctx.resolved_tools);
     // The producing seat rides every emitted payload and every address it
-    // raises (R6) — the graph path stamps it exactly as the sequential path does.
+    // raises (R6).
     let emit_tool_box: Option<Box<dyn DynTool>> = ctx.event_bus.map(|bus| {
         Box::new(
             tools::EmitTool::new(bus.clone())
@@ -2052,8 +2082,6 @@ async fn run_llm_activity<'a>(
     let started_at = chrono::Utc::now().timestamp();
     // Accumulates every token this activity consumes, error paths included.
     let mut spent: u32 = 0;
-    // Output tokens only — the unit token budgets are enforced in.
-    let mut spent_output: u32 = 0;
     match execute_activity_with_retry(
         &step.activity,
         &step.prior,
@@ -2071,7 +2099,6 @@ async fn run_llm_activity<'a>(
         ctx.def,
         ctx.progress_tx.as_ref(),
         &mut spent,
-        &mut spent_output,
         ctx.checkpoint.as_ref(),
         // The parked call belongs to one activity in one iteration — a loop
         // body resuming on item 5 must not replay item 2's pending call.
@@ -2102,21 +2129,10 @@ async fn run_llm_activity<'a>(
                 .store
                 .set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &result_text);
 
-            let over_budget = {
-                let mut st = ctx.state.lock().unwrap();
-                st.total_tokens += spent;
-                st.total_output_tokens += spent_output;
-                ctx.def.budget.total_per_run > 0
-                    && st.total_output_tokens > ctx.def.budget.total_per_run
-            };
-            if over_budget {
-                let used = ctx.state.lock().unwrap().total_output_tokens;
-                return Err(WorkflowError::BudgetExceeded {
-                    activity_id: "workflow".into(),
-                    used,
-                    limit: ctx.def.budget.total_per_run,
-                });
-            }
+            // `budget.total_per_run` is the package author's estimate (it
+            // feeds the listing's cost_estimate) and is never enforced: the
+            // only ceiling a run has is the owner's spending limit.
+            ctx.state.lock().unwrap().total_tokens += spent;
 
             if result_text.trim().is_empty() {
                 // n8n-style branch termination: no output = this branch dies.
@@ -2134,17 +2150,37 @@ async fn run_llm_activity<'a>(
         // Parked on the owner's answer: the step re-runs from its pending
         // call when the answer resumes the run, so nothing is recorded yet.
         Err(e @ WorkflowError::AwaitingApproval { .. }) => {
-            let mut st = ctx.state.lock().unwrap();
-            st.total_tokens += spent;
-            st.total_output_tokens += spent_output;
+            ctx.state.lock().unwrap().total_tokens += spent;
+            Err(e)
+        }
+        // The owner's spending limit: the activity had its wrap-up turn, so
+        // it ends STOPPED with what it reported, kept as its output for the
+        // run's record. Not a failure, nothing lost.
+        Err(e @ WorkflowError::SpendCapReached { .. }) => {
+            ctx.state.lock().unwrap().total_tokens += spent;
+            let partial = match &e {
+                WorkflowError::SpendCapReached { partial, .. } => partial.clone(),
+                _ => String::new(),
+            };
+            let _ = ctx.store.create_activity_result(
+                &ctx.run_id,
+                &activity.id,
+                &scope.iteration,
+                "stopped",
+                spent as i64,
+                1,
+                Some(&e.to_string()),
+                started_at,
+                Some(chrono::Utc::now().timestamp()),
+            );
+            if !partial.trim().is_empty() {
+                let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &partial);
+                record_output(ctx, scope, &activity.id, partial);
+            }
             Err(e)
         }
         Err(e) if let Some(reason) = e.standing_outcome() => {
-            {
-                let mut st = ctx.state.lock().unwrap();
-                st.total_tokens += spent;
-                st.total_output_tokens += spent_output;
-            }
+            ctx.state.lock().unwrap().total_tokens += spent;
             let completed_at = chrono::Utc::now().timestamp();
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
@@ -2160,11 +2196,7 @@ async fn run_llm_activity<'a>(
             Err(e)
         }
         Err(e) => {
-            {
-                let mut st = ctx.state.lock().unwrap();
-                st.total_tokens += spent;
-                st.total_output_tokens += spent_output;
-            }
+            ctx.state.lock().unwrap().total_tokens += spent;
             let completed_at = chrono::Utc::now().timestamp();
             let err_msg = e.to_string();
             let _ = ctx.store.create_activity_result(
@@ -2284,8 +2316,8 @@ fn source_of(path: &str, data: &serde_json::Value, at: &str, item: Option<&ItemS
 /// `read_step_data` call that reads them a page at a time, until the rest
 /// fits. Nothing is cut: the data stays whole in the run.
 ///
-/// `parents` are the graph's result parents ([`result_parents`]), or the
-/// previous activity on the sequential path.
+/// `parents` are the graph's result parents ([`result_parents`]); on a
+/// chain, the previous activity.
 pub(crate) fn step_context(activity: &Activity, parents: &[String], data: StepData<'_>) -> StepContext {
     use tools::step_data::{chars, described, parse};
     let texts = || std::iter::once(&activity.intent).chain(&activity.steps);
@@ -2991,7 +3023,6 @@ mod walk_tests {
             Ok(crate::LoopOutcome {
                 text,
                 total_tokens: (ti.max(0) + to.max(0)) as u32,
-                output_tokens: to.max(0) as u32,
                 tainted,
                 steps: 1,
             })
@@ -3674,6 +3705,181 @@ mod walk_tests {
         result.expect("an over-estimate run completes");
         assert_eq!(run_status(&store, &run_id), "completed");
         assert_eq!(provider.calls().len(), 2, "the downstream node ran");
+    }
+
+    /// The run's `budget.total_per_run` is the package author's estimate,
+    /// never a ceiling, on a graph as on a chain. The Bookkeeper's
+    /// daily-books-sweep failed "activity workflow exceeded token budget
+    /// (13139/7000)" on 2026-10-21: the graph walker still enforced it after
+    /// the chain stopped on 2026-09-15.
+    #[tokio::test]
+    async fn a_run_over_its_package_estimate_completes() {
+        let provider = MockProvider::new(&[]).with_usage(10_000);
+        for connections in [
+            r#","connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"__emit__"}]"#,
+            "",
+        ] {
+            let def = parse_workflow(&format!(
+                r#"{{"version":"1.0","id":"t","name":"T","budget":{{"total_per_run":7000}},
+                "activities":[{{"id":"a","intent":"task-a"}},{{"id":"b","intent":"task-b"}}]{connections}}}"#
+            ))
+            .expect("valid def");
+            let store = test_store();
+            let looper = ScriptedLoop::new(&provider);
+            let (run_id, out) = crate::engine::execute_workflow(
+                &def, "", "test-owner", false, serde_json::json!({}), "manual", None, &store, None, &looper, &[],
+                None, None, None, None, Vec::new(), None, None, None,
+            )
+            .await
+            .expect("a run over its estimate completes");
+            assert_eq!(run_status(&store, &run_id), "completed");
+            assert!(out.contains("[Activity 'b' result]"), "{out}");
+            assert_eq!(store.get_workflow_run(&run_id).unwrap().unwrap().total_tokens_used, Some(20_000));
+        }
+    }
+
+    /// The scripted loop, except that every turn of activity `at` ends the
+    /// way `end` says.
+    struct EndsAt<'a> {
+        inner: ScriptedLoop<'a>,
+        at: &'static str,
+        end: fn() -> WorkflowError,
+    }
+
+    /// The owner's spending limit reached: the wrap-up turn reported this.
+    fn capped() -> WorkflowError {
+        WorkflowError::SpendCapReached {
+            activity_id: "b".into(),
+            spent_cents: 52,
+            cap_cents: 50,
+            partial: "PARTIAL: 3 of 5 invoices posted".into(),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ActivityLoop for EndsAt<'_> {
+        async fn run_turn(&self, turn: crate::LoopTurn<'_>) -> Result<crate::LoopOutcome, WorkflowError> {
+            if turn.activity.id == self.at {
+                return Err((self.end)());
+            }
+            self.inner.run_turn(turn).await
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            self.inner.acquire_tool_permit().await
+        }
+        fn cleanup(&self, run_id: &str) {
+            self.inner.cleanup(run_id)
+        }
+        fn context_chars(&self, agent_id: &str, level: Option<types::packs::Effort>) -> usize {
+            self.inner.context_chars(agent_id, level)
+        }
+    }
+
+    /// The owner's spending limit is the one ceiling: it stops the run, once
+    /// (no retry spends past it), with the work kept: the steps before it,
+    /// and what the stopped step reported. The run reads "Stopped at your
+    /// limit", status stopped, not failed; nothing after it runs.
+    #[tokio::test]
+    async fn the_owners_limit_stops_the_run_with_the_work_kept() {
+        for connections in [
+            r#","connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"c","to":"__emit__"}]"#,
+            "",
+        ] {
+            let provider = MockProvider::new(&[("task-a", "A-OUT")]);
+            let def = parse_workflow(&format!(
+                r#"{{"version":"1.0","id":"t","name":"T","activities":[
+                {{"id":"a","intent":"task-a"}},
+                {{"id":"b","intent":"task-b","on_error":{{"retry":3}}}},
+                {{"id":"c","intent":"task-c"}}]{connections}}}"#
+            ))
+            .expect("valid def");
+            let store = test_store();
+            let looper = EndsAt { inner: ScriptedLoop::new(&provider), at: "b", end: capped };
+            let err = crate::engine::execute_workflow(
+                &def, "", "test-owner", false, serde_json::json!({}), "manual", None, &store, None, &looper, &[],
+                None, None, None, None, Vec::new(), None, None, None,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, WorkflowError::SpendCapReached { .. }), "{err:?}");
+            let runs = store.list_workflow_runs("t", 10, 0).unwrap();
+            let run = &runs[0];
+            assert_eq!(run.status, "stopped");
+            assert!(run.error.as_deref().is_some_and(|e| e.starts_with("Stopped at your limit")), "{:?}", run.error);
+            assert_eq!(run.error_activity.as_deref(), Some("b"));
+            let out = run.output.as_deref().unwrap_or_default();
+            assert!(out.contains("A-OUT") && out.contains("PARTIAL: 3 of 5 invoices posted"), "{out}");
+            let results = store.list_activity_results(&run.id).unwrap();
+            let b: Vec<_> = results.iter().filter(|r| r.activity_id == "b").collect();
+            assert_eq!(b.len(), 1, "stopped once, never retried: {results:?}");
+            assert_eq!(b[0].status, "stopped");
+            assert!(results.iter().all(|r| r.activity_id != "c"), "nothing after the limit ran");
+            assert!(!provider.calls().iter().any(|c| c.contains("task-c")));
+        }
+    }
+
+    /// A step that fails ends the run there, on a chain as on a graph: it is
+    /// tried as many times as it says and no more, nothing after it runs,
+    /// and the run is failed at that step. (The chain walker's circuit
+    /// breaker counted repeats of one failure across activities; the first
+    /// failure always ended the run before a repeat could happen.)
+    #[tokio::test]
+    async fn a_failed_step_ends_the_run_at_that_step() {
+        for connections in [
+            r#","connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"c","to":"__emit__"}]"#,
+            "",
+        ] {
+            let provider = MockProvider::new(&[]);
+            let def = parse_workflow(&format!(
+                r#"{{"version":"1.0","id":"t","name":"T","activities":[
+                {{"id":"a","intent":"task-a"}},
+                {{"id":"b","intent":"task-b","on_error":{{"retry":2}}}},
+                {{"id":"c","intent":"task-c"}}]{connections}}}"#
+            ))
+            .expect("valid def");
+            let store = test_store();
+            let looper = EndsAt { inner: ScriptedLoop::new(&provider), at: "b", end: || WorkflowError::Provider("upstream 500".into()) };
+            let err = crate::engine::execute_workflow(
+                &def, "", "test-owner", false, serde_json::json!({}), "manual", None, &store, None, &looper, &[],
+                None, None, None, None, Vec::new(), None, None, None,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, WorkflowError::Provider(_)), "{err:?}");
+            let run = &store.list_workflow_runs("t", 10, 0).unwrap()[0];
+            assert_eq!((run.status.as_str(), run.error_activity.as_deref()), ("failed", Some("b")));
+            let results = store.list_activity_results(&run.id).unwrap();
+            let b: Vec<_> = results.iter().filter(|r| r.activity_id == "b").collect();
+            assert_eq!((b.len(), b[0].status.as_str(), b[0].attempts), (1, "failed", Some(2)), "{results:?}");
+            assert!(results.iter().all(|r| r.activity_id != "c"), "nothing after the failure ran");
+        }
+    }
+
+    /// A loop that names no maxIterations runs every item: 150 here, past
+    /// the 100 it once stopped at, and its output says all were processed
+    /// with no truncation note.
+    #[tokio::test]
+    async fn a_loop_without_a_cap_runs_every_item() {
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"body","intent":"task-body"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"},
+                {"from":"l","to":"__emit__","label":"Done"}]
+        }"#;
+        let items: Vec<String> = (0..150).map(|i| format!("item-{i}")).collect();
+        let (result, store, run_id) = run_graph(def, serde_json::json!({ "items": items }), &provider).await;
+        result.expect("run ok");
+        let done = store.completed_activity_contents(&run_id).unwrap();
+        assert_eq!(done.keys().filter(|(id, _)| id == "body").count(), 150);
+        let output = store.get_workflow_run(&run_id).unwrap().unwrap().output.unwrap_or_default();
+        assert!(output.contains("150 items processed"), "{output}");
+        assert!(!output.contains("truncated"), "{output}");
     }
 
     #[tokio::test]
@@ -4694,10 +4900,10 @@ mod walk_tests {
         assert!(!body.contains("FETCHED-EVERYTHING"), "{body}");
     }
 
-    /// The sequential path (no connections) is a chain: a step reads the one
+    /// A definition with no connections is a chain: a step reads the one
     /// before it, and anything further back only by reference.
     #[tokio::test]
-    async fn a_sequential_step_reads_the_one_before_it() {
+    async fn a_chained_step_reads_the_one_before_it() {
         let provider = MockProvider::new(&[("task-a", "A-OUT"), ("task-b", "B-OUT")]);
         let def = parse_workflow(
             r#"{

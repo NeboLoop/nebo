@@ -2501,22 +2501,14 @@ fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: 
 }
 
 /// The step (`None`: the run as a whole) and the owner's words, when a run
-/// ended at one of the engine's limits: a step out of model turns, the run
-/// out of model turns, or the run over its token budget. These are platform
+/// ended at one of the engine's limits: a step out of model turns, or the
+/// run out of model turns. These are platform
 /// conditions of the workflow's shape, never an employee lesson
 /// ([`crate::workflow_audit::record_run_limit`]).
 pub(crate) fn run_limit(e: &workflow::WorkflowError) -> Option<(Option<String>, String)> {
     match e {
         workflow::WorkflowError::MaxIterations { activity_id, .. } => Some((Some(activity_id.clone()), e.to_string())),
         workflow::WorkflowError::RunMaxIterations(_) => Some((None, e.to_string())),
-        workflow::WorkflowError::BudgetExceeded { activity_id, used, limit } => Some((
-            // The engine names the whole run "workflow".
-            (activity_id != "workflow").then(|| activity_id.clone()),
-            format!(
-                "A run used {used} output tokens, over the {limit} this workflow's budget allows (budget.total_per_run). \
-                 Raise the budget, or split the work into smaller steps or separate workflows."
-            ),
-        )),
         _ => None,
     }
 }
@@ -2550,7 +2542,7 @@ async fn review_failed_workflow_run(
     const REVIEW_SYSTEM: &str = "You review a FAILED scheduled workflow run and decide whether there is \
         ONE durable lesson worth saving for this agent. Most failures teach nothing durable — transient \
         network errors, provider hiccups, rate limits, one-off bad data: answer null for those. A step or run \
-        that ran out of model turns or over its token budget is the workflow's shape, which the owner fixes \
+        that ran out of model turns is the workflow's shape, which the owner fixes \
         in the workflow, not a lesson: answer null for that too. A lesson \
         is durable only if it would change how the NEXT run should behave: a tool quirk, a required \
         format, a wrong assumption baked into the steps. Never store secrets, credentials, tokens, or \

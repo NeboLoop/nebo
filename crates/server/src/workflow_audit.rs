@@ -485,8 +485,8 @@ fn run_limits_of(report: &Value) -> Vec<Issue> {
 }
 
 /// A run of an employee's workflow ran into one of the engine's limits: a
-/// step used every model turn it had, or the run went over its token
-/// budget. That is the workflow's shape, not something the employee
+/// step used every model turn it had, or the run used every turn a run
+/// has. That is the workflow's shape, not something the employee
 /// learned, so it is kept in the workflow's audit report (one finding per
 /// step, the newest words), where the owner sees what is wrong with the
 /// workflow — never proposed as a learned skill. Before this, every such
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(report["modelCalls"], 0);
     }
 
-    /// A run that ran out of model turns or over its token budget is kept in
+    /// A run or a step that ran out of model turns is kept in
     /// the workflow's audit report, one finding per step, and lasts through
     /// the next audit of the same definition; it is never a learned-skill
     /// proposal.
@@ -907,8 +907,8 @@ mod tests {
     async fn a_run_limit_is_kept_in_the_audit_not_proposed() {
         let (_d, s) = store();
         employee(&s, "emp", sweep());
-        let over = workflow::WorkflowError::BudgetExceeded { activity_id: "workflow".into(), used: 10849, limit: 7000 };
-        let (step, message) = crate::workflow_manager::run_limit(&over).expect("a budget overrun is a run limit");
+        let over = workflow::WorkflowError::RunMaxIterations(150);
+        let (step, message) = crate::workflow_manager::run_limit(&over).expect("a run out of turns is a run limit");
         assert_eq!(step, None, "the whole run");
         record_run_limit(&s, "emp", "unbilled-sweep", step.as_deref(), &message);
         let turns = workflow::WorkflowError::MaxIterations { activity_id: "research".into(), step: Some((1, 4)), turns: 2 };
@@ -916,11 +916,14 @@ mod tests {
         record_run_limit(&s, "emp", "unbilled-sweep", step.as_deref(), &message);
         record_run_limit(&s, "emp", "unbilled-sweep", step.as_deref(), &message);
         assert!(crate::workflow_manager::run_limit(&workflow::WorkflowError::Provider("x".into())).is_none());
+        // The owner's spending limit is the owner's rule, not the workflow's shape.
+        let capped = workflow::WorkflowError::SpendCapReached { activity_id: "research".into(), spent_cents: 50, cap_cents: 50, partial: String::new() };
+        assert!(crate::workflow_manager::run_limit(&capped).is_none());
 
         let report = || -> Value { serde_json::from_str(&s.workflow_audit("emp", "unbilled-sweep").unwrap().unwrap().report).unwrap() };
         assert_eq!(report()["runLimits"].as_array().unwrap().len(), 2, "one per step");
         assert_eq!(report()["issues"].as_array().unwrap().len(), 2);
-        assert!(report()["issues"][0]["message"].as_str().unwrap().contains("10849 output tokens"));
+        assert!(report()["issues"][0]["message"].as_str().unwrap().contains("150 model turns in total"));
 
         // The next audit of the same workflow keeps them.
         audit_employee(&s, &catalog(), None, None, "emp", Depth::Programmatic, Write::Apply, false).await;
