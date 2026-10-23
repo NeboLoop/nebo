@@ -331,6 +331,7 @@ impl NeboFiles {
     pub fn reached_by(&self, cmd: &str, cwd: Option<&Path>) -> Option<Reached> {
         let start = lexical(&absolute(cwd.unwrap_or(Path::new(".")), None));
         let placed = crate::policy::located(cmd, Some(&start.to_string_lossy()));
+        let home_moved = crate::policy::home_set(cmd);
         let known = |here: &Option<PathBuf>| here.as_deref().map(lexical);
         let reach = |p: &crate::policy::Placed| p.reach.iter().map(|f| lexical(f)).collect::<Vec<_>>();
         // The links the command makes, each refused when it leads to one of
@@ -367,16 +368,28 @@ impl NeboFiles {
                 return Some(Reached::Nebo(folder.to_string_lossy().into_owned()));
             }
             // Standing where the text can't place it, a relative path is
-            // nowhere the check can see.
+            // nowhere the check can see, nor is a bare name a file program
+            // is given or a redirect names; `~` once the script set `HOME`
+            // is wherever it set it.
             let lost = p.lost || unknown;
-            let unplaced = |word: &str| {
-                path_words(word).into_iter().find(|w| w.starts_with("~-") || (lost && relative_path(w))).map(str::to_string)
+            let program = p.sub.words().first().cloned().flatten().map(|w| w.rsplit('/').next().unwrap_or(&w).to_string()).unwrap_or_default();
+            let files = crate::policy::FILE_PROGRAMS.contains(&program.as_str());
+            let unplaced = |word: &str, operand: bool| {
+                path_words(word)
+                    .into_iter()
+                    .find(|w| {
+                        w.starts_with("~-")
+                            || (home_moved && w.starts_with('~') && !w.starts_with("~+"))
+                            || (lost && (relative_path(w) || (operand && !w.starts_with(['-', '/', '~', '$']))))
+                    })
+                    .map(str::to_string)
             };
-            for word in p.sub.words().iter().flatten() {
+            for (i, word) in p.sub.words().iter().enumerate() {
+                let Some(word) = word else { continue };
                 if let Some(named) = from(&here, word) {
                     return Some(Reached::Nebo(named));
                 }
-                if let Some(word) = unplaced(word) {
+                if let Some(word) = unplaced(word, i > 0 && files) {
                     return Some(Reached::Unplaced(word));
                 }
             }
@@ -384,7 +397,7 @@ impl NeboFiles {
                 if let Some(named) = from(&around, target) {
                     return Some(Reached::Nebo(named));
                 }
-                if let Some(word) = unplaced(target) {
+                if let Some(word) = unplaced(target, target != "/dev/null") {
                     return Some(Reached::Unplaced(word));
                 }
             }

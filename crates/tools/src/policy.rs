@@ -27,6 +27,12 @@ pub struct Subcommand {
     stmt: usize,
     /// It runs because something before it failed (`a || cmd`).
     or_else: bool,
+    /// What it reads on its input, when the script spells it
+    /// (`syntax::ShellCommand::stdin`): a shell's script when it has no `-c`.
+    stdin: Option<Option<String>>,
+    /// The folder a wrapper runs it in (`env -C dir`, `env --chdir=dir`), for
+    /// it alone: `Some(None)` when only running knows which.
+    chdir: Option<Option<String>>,
 }
 
 /// Shells whose `-c` argument is itself a script.
@@ -76,14 +82,16 @@ impl Subcommand {
             and_then: false,
             stmt: 0,
             or_else: false,
+            stdin: None,
+            chdir: None,
         }
     }
 
     /// The command `command` of a script at `depth`, run inside `scope`.
     fn of(command: syntax::ShellCommand, depth: usize, scope: &[(usize, usize)]) -> Self {
-        let syntax::ShellCommand { assigns, words, writes, redirects, patterns, scopes, and_then, stmt, or_else } = command;
+        let syntax::ShellCommand { assigns, words, writes, redirects, patterns, scopes, and_then, stmt, or_else, stdin } = command;
         let scopes = scope.iter().copied().chain(scopes.into_iter().map(|at| (depth, at))).collect();
-        Subcommand { assigns, words, writes, redirects, patterns, scopes, and_then, stmt, or_else }
+        Subcommand { assigns, words, writes, redirects, patterns, scopes, and_then, stmt, or_else, stdin, chdir: None }
     }
 
     /// The command's words, the program first: quoting removed,
@@ -173,24 +181,40 @@ fn collect_subcommands(script: &str, depth: usize, scope: &[(usize, usize)], out
         return;
     };
     for command in commands {
-        let mut sub = Subcommand::of(command, depth, scope);
-        unwrap_wrappers(&mut sub);
-        match inline_script(&sub.words) {
-            Some(Some(inner)) => {
-                // A shell's script (`bash -c`) runs in a shell of its own: a
-                // subshell no other command shares. `eval` runs its script
-                // in this shell, so a `cd` in it moves this one.
-                let mut inner_scope = sub.scopes.clone();
-                if sub.words.first().is_some_and(|w| w.as_deref() != Some("eval")) {
-                    inner_scope.push((depth + 1, usize::MAX - out.len()));
-                }
-                collect_subcommands(&inner, depth + 1, &inner_scope, out)
+        let sub = Subcommand::of(command, depth, scope);
+        // `find … -exec cmd … ;` runs `cmd` too, as a command of its own.
+        if sub.words.first().is_some_and(|w| w.as_deref().is_some_and(|w| program_name(w) == "find")) {
+            let mut at = 1;
+            while let Some(i) = sub.words[at..].iter().position(|w| matches!(w.as_deref(), Some("-exec" | "-execdir" | "-ok" | "-okdir"))) {
+                let start = at + i + 1;
+                let end = sub.words[start..].iter().position(|w| matches!(w.as_deref(), Some(";" | "+"))).map_or(sub.words.len(), |e| start + e);
+                push_command(Subcommand { words: sub.words[start..end].to_vec(), ..sub.clone() }, depth, out);
+                at = end;
             }
-            Some(None) => out.push(Subcommand::unknown()),
-            None => {}
         }
-        out.push(sub);
+        push_command(sub, depth, out);
     }
+}
+
+/// Add `sub` to `out`, its wrappers stripped, after the commands of the
+/// script it runs from a string, its input or `eval`.
+fn push_command(mut sub: Subcommand, depth: usize, out: &mut Vec<Subcommand>) {
+    unwrap_wrappers(&mut sub);
+    match inline_script(&sub.words, sub.stdin.as_ref()) {
+        Some(Some(inner)) => {
+            // A shell's script (`bash -c`, or fed on its input) runs in a
+            // shell of its own: a subshell no other command shares. `eval`
+            // runs its script in this shell, so a `cd` in it moves this one.
+            let mut inner_scope = sub.scopes.clone();
+            if sub.words.first().is_some_and(|w| w.as_deref() != Some("eval")) {
+                inner_scope.push((depth + 1, usize::MAX - out.len()));
+            }
+            collect_subcommands(&inner, depth + 1, &inner_scope, out)
+        }
+        Some(None) => out.push(Subcommand::unknown()),
+        None => {}
+    }
+    out.push(sub);
 }
 
 /// The command a shell call's exit code comes from
@@ -215,7 +239,7 @@ fn unwrap_wrappers(sub: &mut Subcommand) {
         let arg = |i: usize| args.get(i).cloned().flatten();
         let flag = |i: usize| arg(i).filter(|a| a.starts_with('-') && a != "--");
         let mut i = 0;
-        match name.as_str() {
+        match program_name(&name).as_str() {
             "time" | "nohup" | "command" | "builtin" | "stdbuf" => {
                 while flag(i).is_some() {
                     i += 1;
@@ -234,8 +258,21 @@ fn unwrap_wrappers(sub: &mut Subcommand) {
                         *sub = Subcommand::unknown();
                         return;
                     }
+                    // `-C dir` / `--chdir=dir`: the command runs there.
+                    if a == "-C" || a == "--chdir" {
+                        sub.chdir = Some(args.get(i + 1).cloned().flatten());
+                    } else if let Some(dir) = a.strip_prefix("--chdir=").or_else(|| a.strip_prefix("-C").filter(|d| !d.is_empty())) {
+                        sub.chdir = Some(Some(dir.to_string()));
+                    }
                     sub.assigns |= a.contains('=') && !a.starts_with('-');
-                    i += if matches!(a.as_str(), "-u" | "-C" | "-S") { 2 } else { 1 };
+                    i += if matches!(a.as_str(), "-u" | "-C" | "-S" | "--chdir") { 2 } else { 1 };
+                }
+            }
+            // `xargs cmd …` runs `cmd` with what it reads appended.
+            "xargs" => {
+                while let Some(a) = flag(i) {
+                    let valued = matches!(a.as_str(), "-I" | "-L" | "-n" | "-P" | "-s" | "-d" | "-E" | "-a" | "--arg-file" | "--delimiter" | "--max-args" | "--max-procs" | "--max-lines" | "--max-chars" | "--replace");
+                    i += if valued { 2 } else { 1 };
                 }
             }
             _ => return,
@@ -263,10 +300,14 @@ fn unwrap_wrappers(sub: &mut Subcommand) {
     }
 }
 
-/// The script a command runs from a string: `bash -c '…'` and the like, or
-/// `eval …`. `Some(None)` when that script is only known when it runs.
-fn inline_script(words: &[Option<String>]) -> Option<Option<String>> {
+/// The script a command runs from a string: `bash -c '…'` and the like (a
+/// shell named by its path too, `/bin/sh -c`), `eval …`, or a shell's
+/// input when it has neither `-c` nor a script file (`bash <<< '…'`,
+/// `echo '…' | sh`). `Some(None)` when that script is only known when it
+/// runs.
+fn inline_script(words: &[Option<String>], stdin: Option<&Option<String>>) -> Option<Option<String>> {
     let Some(Some(name)) = words.first() else { return None };
+    let name = &program_name(name);
     if name == "eval" {
         let args = &words[1..];
         if args.is_empty() {
@@ -293,7 +334,11 @@ fn inline_script(words: &[Option<String>]) -> Option<Option<String>> {
         i += if matches!(a.as_str(), "-o" | "+o" | "--rcfile" | "--init-file") { 2 } else { 1 };
     }
     if !has_c {
-        return None;
+        // No script file after the options: the script is its input.
+        return match words.get(i) {
+            None => stdin.cloned(),
+            Some(_) => None,
+        };
     }
     words.get(i).cloned()
 }
@@ -373,8 +418,12 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             all.extend(value.split(':').map(str::to_string));
         }
         known &= cmd.matches("CDPATH").count() == SET.find_iter(cmd).count();
+        // `cdable_vars` lets a bare name be a variable holding a folder.
+        known &= !cmd.contains("cdable_vars");
         known.then_some(all)
     };
+    // The script sets `HOME`: `cd` alone and `~` go where only running knows.
+    let home_moved = home_set(cmd);
     let merge = |into: &mut Vec<PathBuf>, from: Vec<PathBuf>| {
         for f in from {
             if into.len() < MAX_REACH && !into.contains(&f) {
@@ -424,9 +473,22 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             narrow = wide.clone();
         }
         last = Some(at);
-        let before = here.clone();
-        let before_reach = narrow.clone();
-        let before_lost = lost;
+        let mut before = here.clone();
+        let mut before_reach = narrow.clone();
+        let mut before_lost = lost;
+        // `env -C dir cmd`: this command alone runs there.
+        if let Some(dir) = &sub.chdir {
+            match dir {
+                Some(d) => {
+                    before_reach = before_reach.iter().filter_map(|f| reached(Some(f), d)).map(|p| lexical(&p)).collect();
+                    before = before.and_then(|h| reached(Some(&h), d));
+                }
+                None => {
+                    before = None;
+                    before_lost = true;
+                }
+            }
+        }
         if let Some(Some(program)) = sub.words.first() {
             // The folder named, past `cd`'s options (`-P`, `-L`, `--`).
             let mut args = sub.words[1..].iter().skip_while(|w| {
@@ -452,6 +514,8 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             let bare = |d: &str| !d.starts_with(['/', '~', '.']) && !types::pathres::expand(d).is_absolute();
             let targets = |from: &[PathBuf]| -> Option<Vec<PathBuf>> {
                 match named {
+                    None if home_moved => None,
+                    Some(Some(d)) if home_moved && d.starts_with('~') && !d.starts_with("~+") => None,
                     None => Some(vec![lexical(&types::pathres::expand("~"))]),
                     Some(Some(d)) if d != "-" && !d.starts_with(['+', '-']) => {
                         let mut to: Vec<PathBuf> = from.iter().filter_map(|f| reached(Some(f), d)).map(|p| lexical(&p)).collect();
@@ -527,6 +591,25 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
     }
     out
 }
+
+/// Whether a script sets `HOME` itself (`HOME=…`, `export HOME=…`): `~` and
+/// `cd` alone then mean a folder only running it knows.
+pub fn home_set(cmd: &str) -> bool {
+    static SET: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(^|[^A-Za-z0-9_])HOME=").expect("valid"));
+    SET.is_match(cmd)
+}
+
+/// Programs whose operands are files they read or write (the ones a path
+/// check reads): standing where the text can't place it, a bare name given
+/// to one of them is nowhere the check can see.
+pub const FILE_PROGRAMS: &[&str] = &[
+    "cd", "ls", "find", "mkdir", "touch", "rm", "rmdir", "mv", "cp", "ln", "cat", "head", "tail", "less", "more",
+    "sort", "uniq", "wc", "cut", "paste", "column", "tr", "file", "stat", "diff", "cmp", "awk", "strings", "hexdump",
+    "od", "xxd", "base64", "nl", "grep", "egrep", "fgrep", "rg", "sed", "jq", "tee", "tar", "zip", "unzip", "gzip",
+    "gunzip", "sqlite3", "chmod", "chown", "sha256sum", "sha1sum", "md5sum", "shasum", "md5", "open", "readlink",
+    "realpath", "du", "truncate", "dd", "install", "rsync", "scp",
+];
 
 /// At most this many folders one command may be checked from, so a long
 /// run of folder-changing commands can't make the check quadratic.

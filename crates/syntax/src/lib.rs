@@ -536,6 +536,11 @@ pub struct ShellCommand {
     /// It starts the right side of an `||` (`a || cmd`): it runs because
     /// something before it failed, a `cd` included.
     pub or_else: bool,
+    /// What it reads on its input, when the script spells it: a here-string
+    /// (`<<< '…'`), a here-document, or what an `echo`/`printf` before it in
+    /// a pipeline prints. `Some(None)`: it is fed, but only running the
+    /// script knows what (`curl … | sh`).
+    pub stdin: Option<Option<String>>,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -721,6 +726,7 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         and_then: and_then(node, script),
         stmt: statement(node).start_byte(),
         or_else: or_else(node, script),
+        stdin: fed(node, script),
     };
     let mut around = Some(node);
     while let Some(n) = around {
@@ -764,6 +770,62 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         command.words.push(value);
     }
     command
+}
+
+/// What the command `node` reads on its input, when the script spells it
+/// ([`ShellCommand::stdin`]).
+fn fed(node: Node, script: &str) -> Option<Option<String>> {
+    let mut around = Some(node);
+    while let Some(n) = around {
+        if n == node || last_command(n).is_some_and(|c| c.id() == node.id()) {
+            let mut cursor = n.walk();
+            for c in n.named_children(&mut cursor) {
+                match c.kind() {
+                    "herestring_redirect" => return Some(c.named_child(0).and_then(|w| shell_word(w, script))),
+                    "heredoc_redirect" => {
+                        let mut inner = c.walk();
+                        let body = c.named_children(&mut inner).find(|b| b.kind() == "heredoc_body");
+                        return Some(body.map(|b| node_text(b, script).to_string()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        around = n.parent();
+    }
+    // A pipeline's stage reads what the stage before it prints.
+    let mut stage = node;
+    while let Some(p) = stage.parent() {
+        if p.kind() == "pipeline" {
+            let mut cursor = p.walk();
+            let stages: Vec<Node> = p.named_children(&mut cursor).collect();
+            let at = stages.iter().position(|s| s.id() == stage.id())?;
+            if at == 0 {
+                return None;
+            }
+            let before = stages[at - 1];
+            if before.kind() != "command" {
+                return Some(None);
+            }
+            let printed = shell_command(before, script).words;
+            let name = printed.first().cloned().flatten().unwrap_or_default();
+            let args: Vec<Option<String>> = printed.into_iter().skip(1).collect();
+            return Some(match name.as_str() {
+                "echo" => {
+                    let args: Vec<Option<String>> =
+                        args.into_iter().skip_while(|a| a.as_deref().is_some_and(|a| matches!(a, "-n" | "-e" | "-E" | "-ne" | "-en"))).collect();
+                    args.into_iter().collect::<Option<Vec<String>>>().map(|a| a.join(" "))
+                }
+                "printf" if args.len() == 1 => args[0].clone().filter(|a| !a.contains(['%', '\\'])),
+                _ => None,
+            });
+        }
+        if !matches!(p.kind(), "redirected_statement") {
+            return None;
+        }
+        stage = p;
+    }
+    None
 }
 
 /// The files `node`'s own redirects read or write: every `file_redirect`'s

@@ -1044,6 +1044,30 @@ mod tests {
         refused("cd ${PWD%/*} && cat nebo-home/settings.json", None);
         refused("cd - && cat ../settings.json", None);
         refused("cat ~-/settings.json", None);
+        // A bare name a file program reads, after a move the text can't place.
+        refused("cd \"$X\" && cat settings.json", None);
+        refused("cd - && cat settings.json", None);
+        refused("cd ${PWD%/*} && cat settings.json", None);
+        refused("cd $PWD/.. && cat settings.json", None);
+        refused("export CDPATH=$Y; cd nebo-home && cat settings.json", None);
+        refused("cd \"$X\" && echo hi > settings.json", None);
+        // A shell named by its path, or run another way.
+        refused("/bin/sh -c 'cat ../nebo-home/settings.json'", None);
+        refused("/bin/bash -c 'cd .. && cat nebo-home/settings.json'", None);
+        refused("echo x | xargs sh -c 'cat ../nebo-home/settings.json'", None);
+        refused("find . -maxdepth 0 -exec sh -c 'cat ../nebo-home/settings.json' {} +", None);
+        refused("bash <<< 'cat ../nebo-home/settings.json'", None);
+        refused("echo 'cat ../nebo-home/settings.json' | sh", None);
+        refused("sh <<EOF\ncat ../nebo-home/settings.json\nEOF", None);
+        // `env -C` runs the command in another folder.
+        refused("env -C ../nebo-home cat settings.json", None);
+        refused("env --chdir=../nebo-home cat settings.json", None);
+        // `HOME` and `OLDPWD` the script sets, and `cdable_vars`.
+        refused("HOME=../nebo-home; cd; cat settings.json", None);
+        refused("HOME=../nebo-home; cat ~/settings.json", None);
+        refused("export HOME=..; cd ~/nebo-home && cat settings.json", None);
+        refused("shopt -s cdable_vars; x=../nebo-home; cd x && cat settings.json", None);
+        refused("OLDPWD=../nebo-home; cd - && cat settings.json", None);
         // The call's own folder inside the closed part.
         refused("ls", Some(&root.join("logs")));
         refused("cat nebo.log", Some(&root.join("logs")));
