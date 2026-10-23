@@ -156,7 +156,12 @@
   function onError(ev) {
     var t = ev.target;
     if (t && t !== window && t.nodeType === 1) {
-      failed(t.src || t.href || '', 'Failed to load ' + short(t.src || t.href || t.tagName), 'resource');
+      // The address asked for, and as the page wrote it when that differs
+      // (`./style.css`, a <base>): the bot reads the cause against ui/.
+      var asked = t.src || t.href || '';
+      var written = t.getAttribute('src') || t.getAttribute('href') || '';
+      var asWritten = written && written !== asked && written !== short(asked) ? ' (written "' + written + '")' : '';
+      failed(asked, 'Failed to load ' + short(asked || t.tagName) + asWritten, 'resource');
       return;
     }
     var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';

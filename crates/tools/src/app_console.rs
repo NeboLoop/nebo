@@ -6,8 +6,14 @@
 //! bounded ring per app, in memory, newest last. `app_console` reads it for
 //! the employee building the app; `error_count` is the one number other
 //! tools (`app_status`) ask for.
+//!
+//! An error a cause can be read for ([`why`]: a file the page could not
+//! load, measured against what is in `ui/`; the SDK called the wrong way)
+//! carries that cause and its fix, so every reader (`app_console`, the live
+//! check, a screenshot's console, "Send to <employee>") gets it.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::origin::ToolContext;
@@ -34,6 +40,13 @@ pub struct Entry {
     pub time_ms: i64,
     /// The view that sent it (set by whoever opened that view), else empty.
     pub view: String,
+    /// Its cause and next step ([`why`]), else empty.
+    pub why: String,
+}
+
+/// An entry's message with its cause, as every reader shows it.
+fn shown(message: &str, why: &str) -> String {
+    if why.is_empty() { message.to_string() } else { format!("{message}\n  Why: {why}") }
 }
 
 #[derive(Default)]
@@ -93,21 +106,32 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 /// Keep what an app's page sent: `(level, message, source, time_ms, view)`
-/// each.
-pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a str, &'a str, i64, &'a str)>) -> usize {
-    let mut rings = rings().lock().unwrap_or_else(|e| e.into_inner());
-    let mut seq = rings.next;
+/// each. `ui` is the folder the app is served from, read for each error's
+/// cause ([`why`]).
+pub fn record<'a>(
+    app_id: &str,
+    ui: Option<&Path>,
+    entries: impl IntoIterator<Item = (&'a str, &'a str, &'a str, i64, &'a str)>,
+) -> usize {
     let mut added = Vec::new();
     for (level, message, source, time_ms, view) in entries {
-        seq += 1;
+        let level = level_of(level);
+        let why = if level == "error" { why(ui, source, message).unwrap_or_default() } else { String::new() };
         added.push(Entry {
-            seq,
-            level: level_of(level).to_string(),
+            seq: 0,
+            level: level.to_string(),
             message: clip(message, MAX_MESSAGE_CHARS),
             source: clip(source, 40),
             time_ms,
             view: clip(view, 64),
+            why,
         });
+    }
+    let mut rings = rings().lock().unwrap_or_else(|e| e.into_inner());
+    let mut seq = rings.next;
+    for e in &mut added {
+        seq += 1;
+        e.seq = seq;
     }
     rings.next = seq;
     let count = added.len();
@@ -123,7 +147,7 @@ pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a 
         }
         let errors = rings.views.entry(key).or_default();
         if errors.len() < VIEW_ERRORS {
-            errors.push((e.seq, is_note(e), e.message.clone()));
+            errors.push((e.seq, is_note(e), shown(&e.message, &e.why)));
         }
     }
     let ring = rings.apps.entry(app_id.to_string()).or_default();
@@ -134,6 +158,124 @@ pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a 
         ring.push_back(e);
     }
     count
+}
+
+/// The calls `nebo.storage` has (the SDK's `src/storage.ts`), each async.
+const STORAGE_CALLS: [&str; 6] = ["getItem", "setItem", "removeItem", "clear", "keys", "onChange"];
+
+/// Files in `ui/` looked through for one of the same name.
+const NAMESAKES_LOOKED: usize = 2000;
+
+/// The cause of an error an app's page reported, and its next step, when
+/// one can be read: a file of its own the page could not load (`resource`),
+/// measured against `ui/` (the folder it is served from), and the SDK
+/// called the wrong way. `None` for anything else.
+pub fn why(ui: Option<&Path>, source: &str, message: &str) -> Option<String> {
+    if source == "resource" {
+        let rest = message.strip_prefix("Failed to load ")?;
+        let (asked, written) = match rest.split_once(" (written \"") {
+            Some((asked, w)) => (asked, w.strip_suffix("\")")),
+            None => (rest, None),
+        };
+        return ui.and_then(|ui| failed_file(ui, asked, written));
+    }
+    sdk_misuse(message)
+}
+
+/// Why the page could not load `asked` (the address the browser asked for,
+/// `written` as the page wrote it), against what `ui/` holds now.
+fn failed_file(ui: &Path, asked: &str, written: Option<&str>) -> Option<String> {
+    let path = asked.split(['?', '#']).next().unwrap_or(asked);
+    let path = urlencoding::decode(path).map(|p| p.into_owned()).unwrap_or_else(|_| path.to_string());
+    if path.ends_with("/sdk/nebo.global.js") {
+        return Some(format!(
+            "the SDK loads from ui/index.html with {} exactly, before your own scripts.",
+            crate::agent_tool::PersonaTool::APP_SDK_SCRIPT
+        ));
+    }
+    let as_written = written.map(|w| format!(" (written \"{w}\")")).unwrap_or_default();
+    if path.split('/').any(|s| s == "..") {
+        return None;
+    }
+    let Some((_, rel)) = path.split_once("/ui/").filter(|_| path.contains("/apps/")) else {
+        let name = path.rsplit('/').next().unwrap_or_default();
+        return Some(format!(
+            "the page asked for {path}{as_written}, which is outside the app's ui/ folder: a path that starts with / \
+             leaves it. {}",
+            namesakes(ui, name, "Write it relative to the page")
+        ));
+    };
+    let file = ui.join(rel);
+    if file.is_file() {
+        if rel.ends_with(".css") {
+            let imports = imports(&std::fs::read_to_string(&file).unwrap_or_default());
+            if !imports.is_empty() {
+                return Some(format!(
+                    "ui/{rel} is there, so its path is right; a stylesheet also fails when an @import in it fails, and it \
+                     imports {}. Put the rules it needs in ui/ and drop the @import.",
+                    imports.join(", ")
+                ));
+            }
+        }
+        return Some(format!(
+            "ui/{rel} is there now, so its path is right; it was missing or being rewritten when the page asked. Load the \
+             page again with app_reload(check: true) before changing anything."
+        ));
+    }
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    Some(format!(
+        "the page asked for ui/{rel}{as_written}, and there is no such file. {}",
+        namesakes(ui, name, "Point the page at it, relative to the page")
+    ))
+}
+
+/// Where in `ui/` a file named `name` is, and what to do about it.
+fn namesakes(ui: &Path, name: &str, fix: &str) -> String {
+    let found: Vec<String> = walkdir::WalkDir::new(ui)
+        .into_iter()
+        .filter_map(Result::ok)
+        .take(NAMESAKES_LOOKED)
+        .filter(|e| e.file_type().is_file() && !name.is_empty() && e.file_name().to_string_lossy() == name)
+        .filter_map(|e| e.path().strip_prefix(ui).ok().map(|p| format!("ui/{}", p.to_string_lossy().replace('\\', "/"))))
+        .take(3)
+        .collect();
+    if found.is_empty() {
+        format!("No file named {name} is anywhere in ui/: write it there, or drop the reference.")
+    } else {
+        format!("{} is there: {fix}.", found.join(", "))
+    }
+}
+
+/// The addresses a stylesheet's `@import`s name.
+fn imports(css: &str) -> Vec<String> {
+    static IMPORT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let import = IMPORT.get_or_init(|| regex::Regex::new(r#"@import\s+(?:url\(\s*)?['"]?([^'")\s;]+)"#).expect("valid"));
+    import.captures_iter(css).map(|c| c[1].to_string()).collect()
+}
+
+/// The SDK called the wrong way, and the call that is right.
+fn sdk_misuse(message: &str) -> Option<String> {
+    let import = "`const { nebo } = window.NeboAppSDK;` (the same object as `NeboAppSDK.nebo`)";
+    if message.contains("NeboAppSDK is not defined")
+        || message.contains("reading 'nebo'")
+        || message.contains("property 'nebo' of")
+    {
+        return Some(format!(
+            "the SDK isn't on the page: ui/index.html loads it with {} before your own scripts, then {import}.",
+            crate::agent_tool::PersonaTool::APP_SDK_SCRIPT
+        ));
+    }
+    if message.contains("nebo is not defined") {
+        return Some(format!("there is no bare `nebo` global: {import}."));
+    }
+    let (_, after) = message.split_once("storage.")?;
+    let call = after.split(|c: char| !c.is_alphanumeric() && c != '_').next()?;
+    (after[call.len()..].starts_with(" is not a function") && !STORAGE_CALLS.contains(&call)).then(|| {
+        format!(
+            "`nebo.storage` has {}, each async (await it). A key never saved reads null.",
+            STORAGE_CALLS.join(", ")
+        )
+    })
 }
 
 /// The app's entries after `since` (a `seq`), newest last, at most `limit`
@@ -182,7 +324,7 @@ pub fn format_entry(e: &Entry) -> String {
     let time = chrono::DateTime::from_timestamp_millis(e.time_ms)
         .map(|t| t.format("%H:%M:%S%.3f").to_string())
         .unwrap_or_else(|| "--:--:--".to_string());
-    format!("#{} {} [{}] {}: {}", e.seq, time, e.level, e.source, e.message)
+    format!("#{} {} [{}] {}: {}", e.seq, time, e.level, e.source, shown(&e.message, &e.why))
 }
 
 /// The text `app_console` returns.
@@ -250,9 +392,11 @@ impl DynTool for AppConsoleTool {
     fn description(&self) -> String {
         "Read an app's console from its open views: console output, uncaught errors, \
          unhandled promise rejections and failed network requests, newest last. \
-         Use it after an edit or a reload to see what the app did. Pass `since` from \
-         the last call to read only newer entries."
+         Use it after an edit or a reload to see what the app did. An error whose cause \
+         Nebo can read ends with `Why:` and the next step: fix that, nothing else. Pass \
+         `since` from the last call to read only newer entries.\n"
             .to_string()
+            + crate::app_dev::SEE_IT_RUN
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -319,10 +463,11 @@ mod tests {
     #[test]
     fn a_live_check_counts_its_own_views_errors_and_a_failed_request_fails_it() {
         let id = app();
-        record(&id, [("error", "from before", "error", 1, "live-1")]);
+        record(&id, None, [("error", "from before", "error", 1, "live-1")]);
         let mark = mark();
         record(
             &id,
+            None,
             [
                 ("log", "ready", "console", 2, "live-1"),
                 ("error", "GET /api/items → 500 Internal Server Error", "network", 3, "live-1"),
@@ -346,6 +491,7 @@ mod tests {
         let mark = mark();
         record(
             &id,
+            None,
             [
                 ("error", "GET /api/items → 500 Internal Server Error", "network", 1, "live-n"),
                 ("warn", "GET https://stats.example/hit → network error (another site's, not counted)", "network", 2, "live-n"),
@@ -368,7 +514,7 @@ mod tests {
     fn the_ring_keeps_the_newest_entries_in_order() {
         let id = app();
         let lines: Vec<String> = (0..RING_CAPACITY + 20).map(|i| format!("line {i}")).collect();
-        record(&id, lines.iter().map(|l| ("log", l.as_str(), "console", 0, "")));
+        record(&id, None, lines.iter().map(|l| ("log", l.as_str(), "console", 0, "")));
         let all = recent(&id, None, usize::MAX);
         assert_eq!(all.len(), RING_CAPACITY, "bounded");
         assert_eq!(all.first().unwrap().message, "line 20", "the oldest went first");
@@ -384,10 +530,10 @@ mod tests {
     #[test]
     fn since_reads_only_newer_entries_and_errors_are_counted() {
         let id = app();
-        record(&id, [("info", "booted", "console", 1, ""), ("error", "boom", "error", 2, "")]);
+        record(&id, None, [("info", "booted", "console", 1, ""), ("error", "boom", "error", 2, "")]);
         let first = recent(&id, None, 10);
         let mark = first.last().unwrap().seq;
-        record(&id, [("warning", "slow", "console", 3, ""), ("error", "GET /x → 404", "network", 4, "")]);
+        record(&id, None, [("warning", "slow", "console", 3, ""), ("error", "GET /x → 404", "network", 4, "")]);
         let newer = recent(&id, Some(mark), 10);
         assert_eq!(newer.iter().map(|e| e.level.as_str()).collect::<Vec<_>>(), ["warn", "error"]);
         assert_eq!(error_count(&id), 2);
@@ -397,7 +543,7 @@ mod tests {
     #[test]
     fn rendering_says_what_to_pass_next() {
         let id = app();
-        record(&id, [("error", "Uncaught TypeError: x is undefined (main.js:3:9)", "error", 0, "")]);
+        record(&id, None, [("error", "Uncaught TypeError: x is undefined (main.js:3:9)", "error", 0, "")]);
         let entries = recent(&id, None, 10);
         let text = render("Racer", &entries, None);
         assert!(text.contains("[error] error: Uncaught TypeError"), "{text}");
@@ -412,9 +558,9 @@ mod tests {
     fn a_live_views_error_survives_log_spam() {
         let id = app();
         let mark = mark();
-        record(&id, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
+        record(&id, None, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
         let frames: Vec<String> = (0..RING_CAPACITY).map(|i| format!("frame {i}")).collect();
-        record(&id, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
+        record(&id, None, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
         assert_eq!(view_lines(&id, mark, "live-x").errors, ["Uncaught TypeError: boot failed"]);
     }
 
@@ -427,7 +573,7 @@ mod tests {
         let since = mark();
         let views: Vec<String> = (0..=VIEWS_KEPT).map(|i| format!("live-evict-{i}")).collect();
         for v in &views {
-            record(&id, [("error", "boom", "error", 1, v.as_str())]);
+            record(&id, None, [("error", "boom", "error", 1, v.as_str())]);
         }
         assert_eq!(view_lines(&id, since, &views[0]), ViewLines::default(), "the oldest view put away");
         for v in &views[1..] {
@@ -435,4 +581,74 @@ mod tests {
         }
     }
 
+
+    /// Live 2026-10-22: Football League's console said "Failed to load
+    /// …/ui/style.css" while ui/style.css was there, and its employee blamed
+    /// caching. A failed load says what the page asked for against what ui/
+    /// holds: another path than the file's, a path outside ui/, or the
+    /// stylesheet's own @import.
+    #[test]
+    fn a_file_that_did_not_load_is_measured_against_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path();
+        std::fs::create_dir_all(ui.join("css")).unwrap();
+        std::fs::write(ui.join("css/style.css"), "body { color: red }").unwrap();
+
+        let moved = why(Some(ui), "resource", "Failed to load /t/bot/apps/a1/ui/style.css (written \"./style.css\")").unwrap();
+        assert!(moved.contains("ui/style.css") && moved.contains("\"./style.css\""), "{moved}");
+        assert!(moved.contains("ui/css/style.css is there"), "the file that exists: {moved}");
+
+        let outside = why(Some(ui), "resource", "Failed to load /style.css (written \"/style.css\")").unwrap();
+        assert!(outside.contains("outside the app's ui/ folder") && outside.contains("ui/css/style.css"), "{outside}");
+
+        std::fs::write(ui.join("style.css"), "/* x */\n@import url('https://esm.sh/css@1');\nbody{}").unwrap();
+        let import = why(Some(ui), "resource", "Failed to load /apps/a1/ui/style.css").unwrap();
+        assert!(import.contains("ui/style.css is there") && import.contains("https://esm.sh/css@1"), "{import}");
+
+        std::fs::write(ui.join("plain.css"), "body{}").unwrap();
+        let there = why(Some(ui), "resource", "Failed to load /apps/a1/ui/plain.css").unwrap();
+        assert!(there.contains("app_reload(check: true)"), "{there}");
+
+        let missing = why(Some(ui), "resource", "Failed to load /apps/a1/ui/assets/turf.jpg").unwrap();
+        assert!(missing.contains("No file named turf.jpg"), "{missing}");
+        assert_eq!(why(Some(ui), "resource", "Failed to load /apps/a1/ui/../../secret.css"), None, "never outside ui/");
+    }
+
+    /// The SDK called the wrong way points to the call that is right.
+    #[test]
+    fn sdk_misuse_points_to_the_right_call() {
+        let tag = crate::agent_tool::PersonaTool::APP_SDK_SCRIPT;
+        let no_sdk = why(None, "error", "Uncaught TypeError: Cannot read properties of undefined (reading 'nebo')").unwrap();
+        assert!(no_sdk.contains(tag) && no_sdk.contains("const { nebo } = window.NeboAppSDK"), "{no_sdk}");
+        let bare = why(None, "error", "Uncaught ReferenceError: nebo is not defined").unwrap();
+        assert!(bare.contains("const { nebo } = window.NeboAppSDK"), "{bare}");
+        let get = why(None, "promise", "Unhandled promise rejection: TypeError: nebo.storage.get is not a function").unwrap();
+        assert!(get.contains("getItem") && get.contains("reads null"), "{get}");
+        assert_eq!(why(None, "error", "Uncaught TypeError: x.storage.getItem is not a function"), None, "a real call is not misuse");
+        assert_eq!(why(None, "error", "Uncaught TypeError: boom"), None);
+    }
+
+    /// The cause rides with the error to every reader: the console, the live
+    /// check and "Send to <employee>"; warnings get none.
+    #[test]
+    fn the_cause_rides_with_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("style.css"), "@import url('https://esm.sh/css@1');").unwrap();
+        let id = app();
+        let since = mark();
+        record(
+            &id,
+            Some(dir.path()),
+            [
+                ("error", "Failed to load /apps/a1/ui/style.css", "resource", 1, "live-why"),
+                ("warn", "Failed to load https://cdn.example/x.css (another site's, not counted)", "resource", 2, "live-why"),
+            ],
+        );
+        let entries = recent(&id, None, 10);
+        let shown = format_entry(&entries[0]);
+        assert!(shown.contains("Failed to load /apps/a1/ui/style.css\n  Why: ui/style.css is there"), "{shown}");
+        assert!(entries[1].why.is_empty(), "a note gets no cause");
+        let lines = view_lines(&id, since, "live-why");
+        assert!(lines.errors[0].contains("Why: ") && lines.errors[0].contains("esm.sh/css@1"), "{:?}", lines.errors);
+    }
 }

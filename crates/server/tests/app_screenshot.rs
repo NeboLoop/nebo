@@ -154,3 +154,91 @@ async fn the_live_check_fails_errors_and_a_blank_page_and_passes_a_clean_one() {
     assert!(!clean.is_error, "{}", clean.content);
     assert_eq!(clean.payload.as_ref().unwrap()["passed"], true);
 }
+
+/// Live 2026-10-22: Football League's console showed `GET …/storage/fl_data
+/// → 404` and `Failed to load …/ui/style.css`; its employee took the first
+/// for a broken store and moved the app to `localStorage`, and blamed the
+/// second on caching. Against the real server and SDK: a key never saved
+/// reads `null` with nothing in the console, so the live check passes; a
+/// stylesheet linked at another path than its file fails the check with
+/// both paths named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_paths() {
+    if !common::in_own_process().await {
+        return;
+    }
+    let server = TestServer::boot().await;
+    if browser::chrome::find_chrome().is_none() {
+        eprintln!("no Chrome or Chromium on this machine — skipping");
+        return;
+    }
+    let manager = Arc::new(browser::Manager::new(
+        browser::BrowserConfig::default(),
+        server.data_dir.to_string_lossy().into_owned(),
+    ));
+    let store = Arc::new(server.db_store());
+    let app = |id: &str, name: &str, files: &[(&str, &str)]| {
+        let ui = server.data_dir.join("apps").join(id).join("ui");
+        for (path, text) in files {
+            let file = ui.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        store.create_agent(id, None, name, "An app", "", "", None, None).unwrap();
+        store.set_agent_app_fields(id, true, Some(ui.to_str().unwrap()), None, None).unwrap();
+    };
+    app(
+        "app-league",
+        "League",
+        &[(
+            "index.html",
+            "<!doctype html><html><head><script src=\"../../../sdk/nebo.global.js\"></script></head><body>\
+             <h1 id=\"saved\">loading</h1><script>\
+             const { nebo } = window.NeboAppSDK;\
+             nebo.storage.getItem('never-saved').then(v => {\
+               document.getElementById('saved').textContent = v === null ? 'saved: null' : 'saved: ' + JSON.stringify(v);\
+               if (v !== null) console.error('a key never saved read ' + JSON.stringify(v));\
+             });\
+             </script></body></html>",
+        )],
+    );
+    app(
+        "app-styled",
+        "Styled",
+        &[
+            (
+                "index.html",
+                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./style.css\"></head>\
+                 <body><h1>Styled</h1></body></html>",
+            ),
+            ("css/style.css", "h1 { color: teal }"),
+        ],
+    );
+
+    let reload = tools::app_dev::tools(store, None, Some(manager))
+        .into_iter()
+        .find(|t| t.name() == tools::app_dev::APP_RELOAD)
+        .unwrap();
+    let check = |id: &'static str| {
+        let ctx = tools::ToolContext {
+            origin: tools::origin::Origin::User,
+            session_key: format!("agent:{id}:web"),
+            ..Default::default()
+        };
+        let reload = &reload;
+        async move { reload.execute_dyn(&ctx, json!({ "check": true })).await }
+    };
+
+    let league = check("app-league").await;
+    assert!(!league.is_error, "a key never saved is no error: {}", league.content);
+    assert_eq!(league.payload.as_ref().unwrap()["passed"], true);
+
+    let styled = check("app-styled").await;
+    assert!(styled.is_error, "{}", styled.content);
+    assert!(
+        styled.content.contains("the page asked for ui/style.css (written \"./style.css\"), and there is no such file")
+            && styled.content.contains("ui/css/style.css is there"),
+        "both paths named: {}",
+        styled.content
+    );
+}

@@ -921,6 +921,10 @@ pub async fn serve_sdk_iife() -> Response {
 /// The one store an app's page and its employee share (`tools::app_data`,
 /// which owns the encoding). Every write tells the app's open views
 /// (`app_data_changed`), so a second window of the same app refreshes too.
+/// A key never saved is `{"key", "value": null}`, never a 404: it is the
+/// first run of every app, so `storage.getItem` reads `null` with no failed
+/// request in the page's console (live 2026-10-22: an employee took that 404
+/// for a broken store and moved its app off `nebo.storage`).
 pub async fn get_storage(
     State(state): State<AppState>,
     Path((agent_id, key)): Path<(String, String)>,
@@ -930,8 +934,7 @@ pub async fn get_storage(
         return r;
     }
     match tools::app_data::read(&state.store, &agent_id, &key) {
-        Ok(Some(v)) => axum::Json(serde_json::json!({ "key": key, "value": v })).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Ok(v) => axum::Json(serde_json::json!({ "key": key, "value": v })).into_response(),
         Err(e) => {
             warn!(error = %e, "app storage get failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -1110,17 +1113,20 @@ pub async fn post_devlog(
     if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
         return r;
     }
-    match keep_devlog(&agent_id, &body) {
+    let ui = resolve_app_ui(&state, &agent_id).await.map(|(ui, _)| ui);
+    match keep_devlog(&agent_id, ui.as_deref(), &body) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(s) => s.into_response(),
     }
 }
 
 /// Keep one devlog body's entries in the app's ring; how many were kept.
-fn keep_devlog(agent_id: &str, body: &[u8]) -> Result<usize, StatusCode> {
+/// `ui` is the folder the app is served from, read for each error's cause.
+fn keep_devlog(agent_id: &str, ui: Option<&StdPath>, body: &[u8]) -> Result<usize, StatusCode> {
     let batch: DevlogBatch = serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(tools::app_console::record(
         agent_id,
+        ui,
         batch
             .entries
             .iter()
@@ -1163,7 +1169,8 @@ pub async fn send_devlog(
     if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
         return r;
     }
-    keep_page_errors(&agent_id, &body);
+    let ui = resolve_app_ui(&state, &agent_id).await.map(|(ui, _)| ui);
+    keep_page_errors(&agent_id, ui.as_deref(), &body);
     let refuse = |status: StatusCode, error: String| (status, axum::Json(serde_json::json!({ "error": error }))).into_response();
     let name = app_employee_name(&state, &agent_id);
     let entries = tools::app_console::recent(&agent_id, None, tools::app_console::RING_CAPACITY);
@@ -1200,11 +1207,12 @@ pub async fn send_devlog(
 /// The errors the page sent with "Send to <employee>" (`{"entries": [...]}`,
 /// or nothing), kept in the app's console beside what its batches already
 /// brought, each once: the send never depends on a batch having landed.
-fn keep_page_errors(agent_id: &str, body: &[u8]) {
+fn keep_page_errors(agent_id: &str, ui: Option<&StdPath>, body: &[u8]) {
     let Ok(page) = serde_json::from_slice::<DevlogBatch>(body) else { return };
     let held = tools::app_console::recent(agent_id, None, tools::app_console::RING_CAPACITY);
     tools::app_console::record(
         agent_id,
+        ui,
         page.entries
             .iter()
             .take(DEVLOG_MAX_BATCH)
@@ -2580,10 +2588,10 @@ mod developer_mode_tests {
             {"level": "error", "message": "GET /track.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_001_000i64, "view": "live-7"}
         ]});
         let mark = tools::app_console::mark();
-        assert_eq!(keep_devlog(&id, body.to_string().as_bytes()), Ok(3));
+        assert_eq!(keep_devlog(&id, None, body.to_string().as_bytes()), Ok(3));
         // The view a line came from is kept with it.
         assert_eq!(tools::app_console::view_lines(&id, mark, "live-7").errors, ["GET /track.json \u{2192} 404 Not Found"]);
-        assert_eq!(keep_devlog(&id, b"not json"), Err(StatusCode::BAD_REQUEST));
+        assert_eq!(keep_devlog(&id, None, b"not json"), Err(StatusCode::BAD_REQUEST));
         assert_eq!(tools::app_console::error_count(&id), 2);
 
         let tool = tools::app_console::AppConsoleTool::new(store.clone());

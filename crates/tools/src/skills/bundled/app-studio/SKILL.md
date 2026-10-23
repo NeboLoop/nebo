@@ -31,7 +31,7 @@ and **only** that folder: Nebo serves it at three addresses at once.
 | Where it opens | Address of `ui/index.html` |
 |---|---|
 | Desktop app window | `neboapp://<id>/index.html` |
-| Browser, and `app_screenshot` | `http://127.0.0.1:27895/apps/<id>/ui/index.html` (with `/k/<pass>` in front for a screenshot) |
+| `app_screenshot`, `app_reload(check: true)` | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html`, opened for you |
 | Mobile app and web, through the tunnel | `https://neboai.com/t/<bot>/apps/<id>/ui/index.html` |
 
 So **every path the page uses is relative** (`./app.js`, `./assets/hero.webp`).
@@ -53,7 +53,7 @@ looks matter, Design Depth adds the studio method on top.
    `app_data` and `decide` are tools, never shell commands.** Load them once with
    `find_tools(query: "select:app_status,app_reload,app_console,app_screenshot,generate_media,code")`
    at the start of every build or fix: `code` is how you read and check code.
-   A tool missing from your list is not loaded yet; it is never "not available".
+   See the app run only with these: never curl it, never look for a key.
 4. **Never install a runtime.** No `brew install`, no `curl ... | bash`, no bun or
    node downloads (Step 2 says what each lane needs).
 5. **`ui/` holds what the page serves and nothing else.** No `package.json`,
@@ -258,9 +258,8 @@ The fix loop, in this order, every time:
    past a failed build.
 4. `app_reload`. It says whether a view was open to reload.
 5. `app_console`, and `app_screenshot(width: 390, height: 844)` (add
-   1280x800 for a desktop app). The screenshot loads the page the way the
-   mobile app does, says what it shows, and ends with that load's console, word
-   for word. `app_status` when a file is MISSING or "(outside the app)".
+   1280x800 for a desktop app). The screenshot says what it shows and ends
+   with that load's console. `app_status` when a file is MISSING or "(outside the app)".
    A game is proved in play: screenshot `index.html?play=1` (it skips the
    start screen), never the menu; for 3D, see `references/games.md` 7a.
 6. Report to the owner only when the console has no errors AND the
@@ -275,7 +274,8 @@ ready. Open it from your workforce."
 ## Your App's Data
 
 The page's `storage` and the employee's `app_data` tool are one store: same
-keys, same values. What the owner tells one, the other sees.
+keys, same values: the one place an app keeps data, on all the owner's
+devices. Never `localStorage`.
 
 ```
 app_data(action: "set",   key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
@@ -303,8 +303,8 @@ fight it ("say nothing while you work"): the owner hears silence.
 
 ## The SDK Global
 
-This table is the SDK contract. The page reads the SDK from `NeboAppSDK`.
-`NeboAppSDK.nebo` (a `NeboAppSDK.NeboSDK`) holds every module, each also at
+This table is the SDK contract. A page writes `const { nebo } = window.NeboAppSDK;`
+once. `NeboAppSDK.nebo` holds every module, each also at
 the top level (`NeboAppSDK.identity` is `NeboAppSDK.nebo.identity`), but two
 are renamed there so they don't shadow the browser's: `nebo.fetch` is
 `NeboAppSDK.neboFetch`, `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
@@ -317,7 +317,7 @@ The full top-level list is `nebo`, `identity`, `storage`, `agents`,
 | Call | Does |
 |------|------|
 | `identity.get(): Promise<{id, name, displayName, description, persona, model, skills, inputValues}>` | Who this app's employee is. Cached; `identity.invalidate()` clears it. |
-| `storage.getItem(key): Promise<any \| null>` | Read one key of the app's store. JSON comes back parsed. |
+| `storage.getItem(key): Promise<any \| null>` | Read one key. JSON comes back parsed; `null` for a key never saved (a first run, not an error). |
 | `storage.setItem(key, value): Promise<void>` | Write one key. Non-strings are JSON-encoded. |
 | `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
 | `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write: `source` is `"employee"` (`app_data`) or `"page"` (another open view). Returns an unsubscribe. |

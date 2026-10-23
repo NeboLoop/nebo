@@ -15,6 +15,8 @@ One loop for every fix:
 | Works in the desktop window, blank in the mobile app | Same: the desktop window serves `ui/` at its root, the mobile app serves it under `/t/<bot>/apps/<id>/ui/` | Same |
 | `NeboAppSDK is not defined`, `Cannot destructure property 'nebo' of null`, `Failed to load /sdk/nebo.global.js` | The SDK tag is absolute, missing, or after your module | `<script src="../../../sdk/nebo.global.js"></script>` before your scripts. Never add a fallback |
 | `nebo is not defined` | There is no bare `nebo` global | `const { nebo } = window.NeboAppSDK;` |
+| `Failed to load …/style.css` (or any file) and the file is in `ui/` | Its `Why:` line in `app_console` and the live check says which: the page asked for another path than the file's, or an `@import` in the stylesheet failed | Do what `Why:` says. It is never caching |
+| `storage.getItem` gives `null` | The key was never saved: every app's first run | Start from defaults and `setItem`. Never move to `localStorage` |
 | `Failed to load /src/main.jsx`, or the page shows the build's source | The source entry is being served: `index.html` in the app folder or in `ui/` points at `src/` | Entry source lives in `src/index.html`; serve only built `ui/index.html`; rebuild |
 | `app_status` lists `node_modules/`, `package.json` or `src/` under `ui/` | The project was set up inside `ui/` | Move the project to the app folder (Step 3B), delete those from `ui/`, rebuild |
 | A change does not show | Wrong folder, the build did not run, or no reload | `app_status` (folder, file times), rebuild, `app_reload` |
