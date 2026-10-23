@@ -1802,6 +1802,19 @@ impl PersonaTool {
         }
 
         let mut result = format!("Created employee '{}' (id: {})", name, id);
+        // The one folder it lives in, named exactly: a folder of that name
+        // already there (one made by hand, or a renamed employee's) means it
+        // got another, and saying so is the only way the next call finds it.
+        let folder = agent_dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        if folder == name {
+            result.push_str(&format!("\nIts folder: {}", agent_dir.display()));
+        } else {
+            result.push_str(&format!(
+                "\nIts folder: {}. A folder named '{name}' was already there, so it got '{folder}'; use this folder \
+                 for its files, never the other one.",
+                agent_dir.display()
+            ));
+        }
         if !step_notes.is_empty() {
             result.push_str(&format!("\nStep tools: {}.", step_notes.join("; ")));
         }
@@ -4250,6 +4263,36 @@ mod tests {
     /// update — lands in agent.json and takes effect at once: each operation
     /// asks the owner. A ceiling value other than "approval" is refused and
     /// nothing is made.
+    /// The create names the one folder the employee lives in, and says so
+    /// plainly when a folder of its name was already there (one made by
+    /// hand first): live 2026-10-23, an app was made in "Football League 2"
+    /// while its brief sat in the hand-made "Football League".
+    #[tokio::test]
+    async fn the_create_names_the_folder_it_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let user = loader.user_dir().to_path_buf();
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let persona = super::PersonaTool::new(store.clone(), live, loader);
+
+        let made = persona.handle_create(&serde_json::json!({"name": "Scores", "description": "Keeps scores"}), "emp-s", true).await;
+        assert!(!made.is_error, "{}", made.content);
+        assert!(made.content.contains(&format!("Its folder: {}", user.join("Scores").display())), "{}", made.content);
+        assert!(!made.content.contains("already there"), "{}", made.content);
+
+        std::fs::create_dir_all(user.join("Football League")).unwrap();
+        std::fs::write(user.join("Football League/brief.md"), "# Brief\n").unwrap();
+        let made = persona
+            .handle_create(&serde_json::json!({"name": "Football League", "description": "Runs the league"}), "emp-fl", true)
+            .await;
+        assert!(!made.is_error, "{}", made.content);
+        let used = user.join("Football League 2");
+        assert!(made.content.contains(&format!("Its folder: {}", used.display())), "{}", made.content);
+        assert!(made.content.contains("A folder named 'Football League' was already there, so it got 'Football League 2'"), "{}", made.content);
+        assert_eq!(crate::team::resolve_agent(&store, "Football League 2").map(|a| a.id), Some("emp-fl".to_string()));
+    }
+
     #[tokio::test]
     async fn a_ceiling_the_builder_gives_takes_effect_on_create_and_update() {
         use std::sync::Arc;

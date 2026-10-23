@@ -306,7 +306,8 @@ pub fn resolve_team(store: &Store, label: &str) -> Result<Team, String> {
     })
 }
 
-/// Resolve an employee label (local id, exact name, or handle) against the
+/// Resolve an employee label (local id, exact name, handle, or the name of
+/// its folder) against the
 /// installed roster. Returns the local agent id.
 pub fn resolve_agent(store: &Store, label: &str) -> Option<db::models::Agent> {
     let label = label.trim().trim_start_matches('@');
@@ -320,14 +321,23 @@ pub fn resolve_agent(store: &Store, label: &str) -> Option<db::models::Agent> {
         return Some(a);
     }
     let wanted = comm::handle::slugify(label);
-    store
-        .list_agents(500, 0)
-        .unwrap_or_default()
-        .into_iter()
+    // An employee's folder is its name unless that folder was taken when it
+    // was made ("Football League 2"): the folder name the create named finds
+    // it too.
+    let folder_of = |a: &db::models::Agent| {
+        a.napp_path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p.trim()).file_name().map(|f| f.to_string_lossy().into_owned()))
+    };
+    let agents = store.list_agents(500, 0).unwrap_or_default();
+    agents
+        .iter()
         .find(|a| {
             comm::handle::slugify(&a.name) == wanted
                 || a.handle.as_deref().map(comm::handle::slugify) == Some(wanted.clone())
         })
+        .or_else(|| agents.iter().find(|a| folder_of(a).as_deref() == Some(label)))
+        .cloned()
 }
 
 /// The team's members as `(id, name)`, in team order; a departed employee
@@ -503,6 +513,20 @@ mod tests {
     }
 
     const SAVED: crate::workflows::Lifetime = crate::workflows::Lifetime::Saved;
+
+    /// An employee whose folder name was taken when it was made lives in
+    /// "<name> 2": its name finds it, and so does the folder name the create
+    /// told the employee.
+    #[test]
+    fn an_employee_is_found_by_its_folders_name_too() {
+        let s = store();
+        s.create_agent("fl", Some("agent"), "Football League", "", "", "{}", None, None).unwrap();
+        s.set_agent_napp_path("fl", "/data/user/agents/Football League 2").unwrap();
+        assert_eq!(resolve_agent(&s, "Football League").map(|a| a.id), Some("fl".to_string()));
+        assert_eq!(resolve_agent(&s, "Football League 2").map(|a| a.id), Some("fl".to_string()));
+        assert!(resolve_agent(&s, "Football League 3").is_none());
+    }
+
 
     /// A temporary team is marked as such, reporting to the session that
     /// assembled it, and it needs a lead; a saved one is not temporary.
