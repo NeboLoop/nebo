@@ -8,20 +8,23 @@
 //! `data_dir`, where every employee is fenced out of everything but a few
 //! open parts (`tools::nebo_files`).
 //!
-//! The root is the system's temporary folder, one per user:
-//! `/private/tmp/nebo-<uid>` on macOS, `/tmp/nebo-<uid>` on Linux, and
-//! `nebo` in the user's own temporary folder on Windows. The shared `/tmp`
-//! is anyone's to write in, so the folder is made private (mode 0700) and
-//! refused when someone else made it first (another owner, a looser mode, a
-//! link): the copies then go to the user's own temporary folder (`$TMPDIR`,
-//! or the user's cache folder where that is the shared one), and the log
-//! says so. The choice is made once per start; the folder is checked again
-//! every time it is asked for, and made again (private) when the system
-//! cleared it.
+//! The root is `nebo-copies` in the user's own local data folder, beside
+//! Nebo's own and outside it: `~/Library/Application Support/nebo-copies`
+//! on macOS, `~/.local/share/nebo-copies` on Linux (`$XDG_DATA_HOME`), and
+//! `%LOCALAPPDATA%\nebo-copies` on Windows. No system cleaner prunes those
+//! folders. Every temporary or cache folder is pruned behind the app's back,
+//! file by file, so a copy kept there loses files and reads as the
+//! employee's deletions:
+//! - macOS's `tmp_cleaner` deletes files in `/private/tmp` untouched for
+//!   three days, and `dirhelper` prunes `$TMPDIR` the same way;
+//! - the system may purge `~/Library/Caches` when the disk runs low;
+//! - `systemd-tmpfiles` ages out `/tmp` and `/var/tmp` on Linux, where
+//!   `/tmp` is often memory that a restart empties;
+//! - Storage Sense empties `%TEMP%` on Windows.
 //!
-//! The system may clear it (macOS clears `/private/tmp` at restart and what
-//! sits unused for days): a copy's work is saved where it outlives that, and
-//! a copy that is gone is made again from it.
+//! The folder is made private (mode 0700) and refused unless it is a folder
+//! of this user's own that nobody else can reach. It is checked again every
+//! time it is asked for, and made again (private) when it is gone.
 //!
 //! A relocated Nebo (`NEBO_HOME`: a test, a development copy, a cloud pod)
 //! keeps its copies in a folder of its own under the root, so two Nebos on
@@ -47,42 +50,17 @@ pub fn copies_dir() -> Result<PathBuf, NeboError> {
     Ok(own)
 }
 
-/// The first of the candidate roots that is (or can be made) private to
-/// this user, the refusals logged.
+/// The root, made private to this user ([`root`]).
 fn choose() -> Result<PathBuf, String> {
-    let uid = current_uid();
-    let candidates = candidates(uid);
-    let mut refused = Vec::new();
-    for (n, dir) in candidates.iter().enumerate() {
-        match private_dir(dir, uid) {
-            Ok(()) => {
-                if n > 0 {
-                    tracing::warn!(root = %dir.display(), refused = %refused.join("; "), "working copies kept in the user's own temporary folder");
-                }
-                return Ok(dir.clone());
-            }
-            Err(e) => {
-                tracing::warn!(root = %dir.display(), error = %e, "working-copy root refused");
-                refused.push(e);
-            }
-        }
-    }
-    Err(format!("no private folder for working copies: {}", refused.join("; ")))
+    let dir = root().ok_or("no local data folder for working copies (no home folder)")?;
+    private_dir(&dir, current_uid()).map_err(|e| format!("the working-copy root is refused: {e}"))?;
+    Ok(dir)
 }
 
-/// The roots in the order they are tried: the shared temporary folder's
-/// `nebo-<uid>`, then the user's own temporary folder (`$TMPDIR`; the
-/// user's cache folder where that is the shared one).
-fn candidates(uid: u32) -> Vec<PathBuf> {
-    let name = format!("nebo-{uid}");
-    if cfg!(windows) {
-        return vec![std::env::temp_dir().join("nebo")];
-    }
-    let shared = PathBuf::from(if cfg!(target_os = "macos") { "/private/tmp" } else { "/tmp" });
-    let own_tmp = std::env::temp_dir();
-    let same = |p: &Path| p == shared || std::fs::canonicalize(p).ok() == std::fs::canonicalize(&shared).ok();
-    let own = if same(&own_tmp) { dirs::cache_dir().map(|c| c.join(&name)) } else { Some(own_tmp.join(&name)) };
-    std::iter::once(shared.join(&name)).chain(own).collect()
+/// `nebo-copies` in the user's own local data folder, which no system
+/// cleaner prunes (see the module docs).
+fn root() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("nebo-copies"))
 }
 
 /// Make `dir` (mode 0700) when it is missing, and refuse it unless it is a
@@ -215,14 +193,21 @@ mod tests {
         assert!(private_dir(&file, current_uid()).is_err());
     }
 
+    /// The data-loss review (10-23): macOS's `tmp_cleaner` deleted files of
+    /// copies kept in `/private/tmp`, and a landing read them as the
+    /// employee's deletions. The root is in the user's local data folder,
+    /// outside every temporary and cache folder the system prunes, and
+    /// outside Nebo's own folder.
     #[test]
-    fn the_shared_temporary_folder_comes_first_then_the_users_own() {
-        let c = candidates(501);
-        let shared = if cfg!(target_os = "macos") { "/private/tmp/nebo-501" } else { "/tmp/nebo-501" };
-        assert_eq!(c[0], PathBuf::from(shared));
-        assert_eq!(c.len(), 2, "{c:?}");
-        assert_ne!(c[1], c[0]);
-        assert!(c[1].ends_with("nebo-501"));
+    fn the_root_is_where_no_system_cleaner_prunes() {
+        let r = root().unwrap();
+        assert_eq!(r, dirs::data_local_dir().unwrap().join("nebo-copies"));
+        let pruned = [Some(std::env::temp_dir()), Some(PathBuf::from("/tmp")), Some(PathBuf::from("/private/tmp")), Some(PathBuf::from("/var/tmp")), dirs::cache_dir()];
+        for p in pruned.into_iter().flatten() {
+            let canon = |x: &Path| std::fs::canonicalize(x).unwrap_or_else(|_| x.to_path_buf());
+            assert!(!r.starts_with(&p) && !canon(&r).starts_with(canon(&p)), "{} is under {}", r.display(), p.display());
+        }
+        assert!(!r.starts_with(crate::defaults::default_data_dir().unwrap()), "never inside Nebo's own folder");
     }
 
     #[test]
