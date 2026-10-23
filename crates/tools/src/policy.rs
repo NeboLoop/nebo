@@ -537,18 +537,85 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         out
     };
 
-    for Placed { here, sub, .. } in located(cmd, cwd) {
+    // A tree a command removes, from every folder it may stand in (a `cd`
+    // the text can't prove ran leaves more than one): each place it may
+    // reach. A target only running the command knows, or a command whose
+    // folder only running it knows, is named by the command.
+    let trees = |here: &Option<PathBuf>, reach: &[PathBuf], sub: &Subcommand, target: Option<&str>| -> Vec<String> {
+        let Some(target) = target else { return vec![unread(sub)] };
+        if here.is_none() && !types::pathres::expand(target).is_absolute() {
+            return vec![unread(sub)];
+        }
+        let mut from: Vec<Option<&Path>> = reach.iter().map(|f| Some(f.as_path())).collect();
+        if from.is_empty() {
+            from.push(here.as_deref());
+        }
+        let mut out: Vec<String> = Vec::new();
+        for f in from {
+            if let Some(full) = reached(f, target).map(|p| format!("file:{}", lexical(&p).display()))
+                && !out.contains(&full)
+            {
+                out.push(full);
+            }
+        }
+        out
+    };
+    // Its targets as written, a pattern (`*`, `dir/*`) as its text: what
+    // only the shell expands is still where it removes.
+    let targets = |sub: &Subcommand, ops: Vec<Option<String>>| -> Vec<Option<String>> {
+        let mut patterns = sub.patterns.iter();
+        ops.into_iter().map(|o| o.or_else(|| patterns.next().cloned())).collect()
+    };
+
+    for Placed { here, reach, sub, .. } in located(cmd, cwd) {
         let Some(Some(program)) = sub.words.first() else { continue };
         let args = &sub.words[1..];
         match program.as_str() {
             "rm" | "rmdir" | "unlink" => {
+                // A recursive remove (`-r`, `-R`, `--recursive`) or a
+                // folder's (`rmdir`) removes a tree.
+                let recursive = program == "rmdir"
+                    || args.iter().flatten().any(|a| {
+                        a == "--recursive" || (a.starts_with('-') && !a.starts_with("--") && a.contains(['r', 'R']))
+                    });
                 for operand in operands(args, &[]) {
-                    match operand.and_then(|p| file(&here, &p)) {
+                    match operand.as_deref().and_then(|p| file(&here, p)) {
                         Some(named) if scratch(&named) => {}
                         Some(named) => fx.deletes.push(named),
                         None => fx.deletes.push(unread(&sub)),
                     }
                 }
+                if recursive {
+                    for target in targets(&sub, operands(args, &[])) {
+                        fx.removes_trees.extend(trees(&here, &reach, &sub, target.as_deref()));
+                    }
+                }
+            }
+            // `find … -delete`, or `find … -exec rm …`: everything under
+            // each starting folder (`.` when it names none) may go.
+            "find" if args.iter().any(|a| a.as_deref() == Some("-delete"))
+                || args.windows(2).any(|w| matches!(w[0].as_deref(), Some("-exec" | "-execdir" | "-ok" | "-okdir")) && w[1].as_deref().is_some_and(|p| p == "rm" || p.ends_with("/rm"))) =>
+            {
+                let starts: Vec<Option<String>> = args
+                    .iter()
+                    .skip_while(|a| a.as_deref().is_some_and(|a| matches!(a, "-H" | "-L" | "-P") || a.starts_with("-O")))
+                    .take_while(|a| a.as_deref().is_none_or(|a| !a.starts_with('-') && a != "(" && a != "!"))
+                    .cloned()
+                    .collect();
+                let starts = if starts.is_empty() { vec![Some(".".to_string())] } else { targets(&sub, starts) };
+                for start in starts {
+                    fx.removes_trees.extend(trees(&here, &reach, &sub, start.as_deref()));
+                }
+            }
+            // `xargs rm -r`: what it removes comes from its input.
+            "xargs"
+                if args.iter().position(|a| a.as_deref().is_some_and(|a| a == "rm" || a.ends_with("/rm"))).is_some_and(|at| {
+                    args[at + 1..].iter().flatten().any(|a| {
+                        a == "--recursive" || (a.starts_with('-') && !a.starts_with("--") && a.contains(['r', 'R']))
+                    })
+                }) =>
+            {
+                fx.removes_trees.push(unread(&sub));
             }
             "mkdir" => {
                 fx.creates.extend(operands(args, &["-m"]).iter().flatten().filter_map(|p| file(&here, p)));
@@ -663,6 +730,72 @@ pub fn is_destructive_git(cmd: &str) -> bool {
         }
     }
     false
+}
+
+/// The one-line risk of a destructive command, for the owner's card: the
+/// first that fits, in this order (git's losses first, then removing
+/// files, then databases and infrastructure). Read from each command the
+/// script runs ([`subcommands`]), so a wrapped one counts; SQL is read
+/// from the text, wherever it sits. `None` for anything else.
+pub fn destructive_warning(cmd: &str) -> Option<types::permissions::DestructiveWarning> {
+    use types::permissions::DestructiveWarning as W;
+    static DROP: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\b(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)\b").expect("valid"));
+    static DELETE_ALL: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"(?i)\bDELETE\s+FROM\s+\w+[ \t]*(;|"|'|\n|$)"#).expect("valid"));
+    let subs = subcommands(cmd);
+    let words = |s: &Subcommand| -> Vec<String> { s.words.iter().map(|w| w.clone().unwrap_or_default()).collect() };
+    // Each git command: its verb and the words after it.
+    let gits: Vec<(String, Vec<String>)> = subs
+        .iter()
+        .filter_map(|s| {
+            let w = words(s);
+            let first = w.first()?;
+            if first != "git" && !first.ends_with("/git") {
+                return None;
+            }
+            let mut j = 1;
+            while j < w.len() && w[j].starts_with('-') {
+                j += if matches!(w[j].as_str(), "-C" | "-c" | "--git-dir" | "--work-tree") { 2 } else { 1 };
+            }
+            Some((w.get(j)?.clone(), w.get(j + 1..).unwrap_or_default().to_vec()))
+        })
+        .collect();
+    let git = |verb: &str, fits: &dyn Fn(&[String]) -> bool| gits.iter().any(|(v, a)| v == verb && fits(a));
+    let has = |a: &[String], f: &str| a.iter().any(|x| x == f);
+    let rms: Vec<Vec<String>> =
+        subs.iter().map(words).filter(|w| w.first().is_some_and(|p| p == "rm" || p.ends_with("/rm"))).collect();
+    let short = |a: &str, c: char| a.starts_with('-') && !a.starts_with("--") && a.contains(c);
+    let recursive = |w: &Vec<String>| w[1..].iter().any(|a| a == "--recursive" || short(a, 'r') || short(a, 'R'));
+    let forced = |w: &Vec<String>| w[1..].iter().any(|a| a == "--force" || short(a, 'f'));
+    let tool = |name: &str, verb: &str| subs.iter().map(words).any(|w| w.first().is_some_and(|p| p == name) && w[1..].iter().find(|a| !a.starts_with('-')).is_some_and(|a| a == verb));
+    let checks: [(W, bool); 15] = [
+        (W::DiscardsUncommittedChanges, git("reset", &|a| has(a, "--hard"))),
+        (
+            W::OverwritesRemoteHistory,
+            git("push", &|a| a.iter().any(|x| x == "-f" || x == "--force" || x.starts_with("--force-with-lease") || (x.starts_with('+') && x.len() > 1))),
+        ),
+        (
+            W::DeletesUntrackedFiles,
+            git("clean", &|a| {
+                !a.iter().any(|x| x == "--dry-run" || (x.starts_with('-') && !x.starts_with("--") && x.contains('n')))
+                    && a.iter().any(|x| x.starts_with('-') && !x.starts_with("--") && x.contains('f'))
+            }),
+        ),
+        (W::DiscardsWorkingTreeChanges, git("checkout", &|a| a.iter().filter(|x| *x != "--").eq(["."].iter())) || git("restore", &|a| a.iter().filter(|x| *x != "--").eq(["."].iter()))),
+        (W::RemovesStashedChanges, git("stash", &|a| a.first().is_some_and(|x| x == "drop" || x == "clear"))),
+        (W::ForceDeletesBranch, git("branch", &|a| has(a, "-D") || (has(a, "--delete") && has(a, "--force")))),
+        (W::SkipsSafetyHooks, ["commit", "push", "merge"].iter().any(|v| git(v, &|a| has(a, "--no-verify")))),
+        (W::RewritesLastCommit, git("commit", &|a| has(a, "--amend"))),
+        (W::RecursivelyForceRemovesFiles, rms.iter().any(|w| recursive(w) && forced(w))),
+        (W::RecursivelyRemovesFiles, rms.iter().any(recursive)),
+        (W::ForceRemovesFiles, rms.iter().any(forced)),
+        (W::DropsDatabaseObjects, DROP.is_match(cmd)),
+        (W::DeletesAllRows, DELETE_ALL.is_match(cmd)),
+        (W::DeletesKubernetesResources, tool("kubectl", "delete")),
+        (W::DestroysInfrastructure, tool("terraform", "destroy")),
+    ];
+    checks.into_iter().find(|(_, fits)| *fits).map(|(w, _)| w)
 }
 
 /// Files a shell command writes outside the supervised edit path: `sed -i`
@@ -1091,6 +1224,48 @@ mod tests {
         ] {
             assert!(!is_destructive_git(cmd), "{cmd} is fine");
         }
+    }
+
+    /// A recursive or folder delete names each tree it removes, from every
+    /// folder the command may stand in; one only running it knows is named
+    /// by its command. The card's one-line risk follows the command.
+    #[test]
+    fn tree_removals_and_their_warnings_are_named() {
+        use types::permissions::DestructiveWarning as W;
+        let trees = |cmd: &str| shell_effects(cmd, Some("/w")).removes_trees;
+        assert_eq!(trees("rm -rf build dist"), vec!["file:/w/build", "file:/w/dist"]);
+        assert_eq!(trees("rm -R /tmp/x"), vec!["file:/tmp/x"], "temporary folders are named too");
+        assert_eq!(trees("rmdir empty"), vec!["file:/w/empty"]);
+        assert_eq!(trees("cd a && rm -r b"), vec!["file:/w/a/b"]);
+        assert_eq!(trees("cd a ; rm -r b"), vec!["file:/w/b", "file:/w/a/b"], "a cd that may have failed");
+        assert_eq!(trees("find out -name '*.o' -delete"), vec!["file:/w/out"]);
+        assert_eq!(trees("find -delete"), vec!["file:/w"]);
+        assert_eq!(trees("find . -exec rm -rf {} +"), vec!["file:/w"]);
+        assert_eq!(trees("rm -rf *"), vec!["file:/w/*"]);
+        assert_eq!(trees("rm -rf \"$DIR\""), vec!["command:rm -rf …"]);
+        assert_eq!(trees("cd \"$D\" && rm -rf build"), vec!["command:rm -rf build"]);
+        assert_eq!(trees("ls | xargs rm -rf"), vec!["command:xargs rm -rf"]);
+        assert!(trees("rm -f a.txt").is_empty() && trees("xargs -r rm").is_empty() && trees("find . -name x").is_empty());
+
+        assert_eq!(destructive_warning("rm -rf build"), Some(W::RecursivelyForceRemovesFiles));
+        assert_eq!(destructive_warning("rm -fr build"), Some(W::RecursivelyForceRemovesFiles));
+        assert_eq!(destructive_warning("rm -r build"), Some(W::RecursivelyRemovesFiles));
+        assert_eq!(destructive_warning("rm -f a"), Some(W::ForceRemovesFiles));
+        assert_eq!(destructive_warning("bash -c 'git reset --hard'"), Some(W::DiscardsUncommittedChanges));
+        assert_eq!(destructive_warning("git push -f"), Some(W::OverwritesRemoteHistory));
+        assert_eq!(destructive_warning("git clean -fd"), Some(W::DeletesUntrackedFiles));
+        assert_eq!(destructive_warning("git clean -nfd"), None);
+        assert_eq!(destructive_warning("git checkout -- ."), Some(W::DiscardsWorkingTreeChanges));
+        assert_eq!(destructive_warning("git stash drop"), Some(W::RemovesStashedChanges));
+        assert_eq!(destructive_warning("git branch -D x"), Some(W::ForceDeletesBranch));
+        assert_eq!(destructive_warning("git commit --no-verify -m x"), Some(W::SkipsSafetyHooks));
+        assert_eq!(destructive_warning("git commit --amend"), Some(W::RewritesLastCommit));
+        assert_eq!(destructive_warning("psql -c 'DROP TABLE users'"), Some(W::DropsDatabaseObjects));
+        assert_eq!(destructive_warning("sqlite3 a.db 'DELETE FROM users;'"), Some(W::DeletesAllRows));
+        assert_eq!(destructive_warning("kubectl delete pod x"), Some(W::DeletesKubernetesResources));
+        assert_eq!(destructive_warning("terraform destroy"), Some(W::DestroysInfrastructure));
+        assert_eq!(destructive_warning("ls -la"), None);
+        assert_eq!(destructive_warning("echo rm -rf x"), None);
     }
 
     #[test]

@@ -408,6 +408,10 @@ async fn full_access_unattended_never_removes_others_work() {
         decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
     };
     let refused = |d: &Decision| matches!(d, Decision::Deny { why: Why::HardLimit { limit }, .. } if limit == "not_its_own");
+    // Removing a folder outside the work asks the owner, in every mode
+    // (owner, 10-23): in a run nobody attends, the card goes to his Inbox
+    // and the step is refused.
+    let asked = |d: &Decision| matches!(d, Decision::Ask { case: types::permissions::AskCase::RemovesFolders { .. } });
 
     let wiped = format!("cd {} && rm -rf nebo && git clone git@github.com:acme/nebo.git", workspaces.display());
     let checkout = format!("cd {} && git checkout fix/x && git rebase origin/main", repo.display());
@@ -419,21 +423,27 @@ async fn full_access_unattended_never_removes_others_work() {
         (Origin::User, Door::Coworker { from: "lead".into() }),
     ];
     for (origin, door) in unattended {
-        for command in [&wiped, &checkout] {
-            let d = run(command, origin, door.clone(), false);
-            assert!(refused(&d), "{door:?}: {command}: {d:?}");
-        }
+        let d = run(&wiped, origin, door.clone(), false);
+        assert!(asked(&d), "{door:?}: {wiped}: {d:?}");
+        let d = run(&checkout, origin, door.clone(), false);
+        assert!(refused(&d), "{door:?}: {checkout}: {d:?}");
     }
-    // The owner asked for it in his own chat: Full Access runs it.
-    assert!(matches!(run(&wiped, Origin::User, Door::Chat, true), Decision::Allow { .. }));
+    // The owner's own chat is asked too: removing a folder is his to say.
+    assert!(asked(&run(&wiped, Origin::User, Door::Chat, true)));
 
     // Its own clone, anything in it, and the temp folder stay its own work.
     let clone = format!("cd {} && git clone https://github.com/acme/tool.git", workspaces.display());
     let created = tools::policy::shell_effects(&clone, None).anchored(home).creates;
     assert_eq!(created, vec![format!("file:{}", workspaces.join("tool").display())]);
     store.add_employee_created("dev", &created[0]).unwrap();
-    let own = format!("rm -rf {} && rm -rf /tmp/dev-build", workspaces.join("tool/target").display());
+    let own = format!("rm -rf {}", workspaces.join("tool/target").display());
     assert!(matches!(run(&own, Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
+    // Its own clone itself is not removed unasked; a folder it made in the
+    // temporary folder is its own to remove; one it didn't make there asks.
+    assert!(asked(&run(&format!("rm -rf {}", workspaces.join("tool").display()), Origin::Workflow, Door::Workflow, false)));
+    store.add_employee_created("dev", "file:/tmp/dev-build").unwrap();
+    assert!(matches!(run("rm -rf /tmp/dev-build", Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
+    assert!(asked(&run("rm -rf /tmp/someone-elses", Origin::Workflow, Door::Workflow, false)));
     // The folder the owner gave the job is its own to clean too.
     let job = types::permissions::Rule {
         id: uuid::Uuid::new_v4().to_string(),
@@ -449,7 +459,7 @@ async fn full_access_unattended_never_removes_others_work() {
     store.write_permission_rule(&job, &types::permissions::Writer::Owner).unwrap();
     let in_job = format!("rm -rf {}", workspaces.join("site/old-build").display());
     assert!(matches!(run(&in_job, Origin::System, Door::Schedule, false), Decision::Allow { .. }));
-    assert!(refused(&run(&wiped, Origin::System, Door::Schedule, false)), "outside the job's folder it still may not");
+    assert!(asked(&run(&wiped, Origin::System, Door::Schedule, false)), "outside the job's folder it still may not");
     // Work that removes nothing is untouched by the limit.
     assert!(matches!(run("cargo build --release", Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
 }
@@ -522,7 +532,11 @@ async fn full_access_own_work_is_its_own_across_runs() {
     // The owner's files and another skill's data folder stay refused.
     assert!(refused(&run("inv", "r6", "rm -f /Users/owner/reports/q3.xlsx")));
     assert!(refused(&run("inv", "r7", "rm -f /data/appdata/skills/vw-job-costing/last_run_log.jsonl")));
-    assert!(refused(&run("inv", "r8", "rm -rf /data/appdata/skills")), "the folder above the skill's is not its own");
+    let above = run("inv", "r8", "rm -rf /data/appdata/skills");
+    assert!(
+        matches!(above, Decision::Ask { case: types::permissions::AskCase::RemovesFolders { .. } }),
+        "the folder above the skill's is not its own: removing it asks the owner: {above:?}"
+    );
 }
 
 /// A server on this computer that answers every request with a page titled

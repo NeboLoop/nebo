@@ -1305,6 +1305,14 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
         AskCase::AskMode => "Ask mode: it asks before changing anything".into(),
         AskCase::Widens => "It would give an employee more room, which only you can do".into(),
         AskCase::RemovesEmployee => "It would delete an employee, which needs your OK every time".into(),
+        AskCase::RemovesFolders { targets, critical, .. } => {
+            let named: Vec<&str> = targets.iter().map(|t| t.strip_prefix("file:").unwrap_or(t.strip_prefix("command:").unwrap_or(t))).collect();
+            if *critical {
+                format!("It would remove {}, which needs your OK every time", named.join(", "))
+            } else {
+                format!("It would remove {}, outside its work", named.join(", "))
+            }
+        }
         AskCase::ReachesOwner { reach } => {
             let what = reach.sentence();
             format!("{}{}, which needs your OK", what[..1].to_uppercase(), &what[1..])

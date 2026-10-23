@@ -14,6 +14,7 @@ pub mod judgement;
 pub mod limits;
 pub mod migrate;
 pub mod plan;
+pub mod removals;
 pub mod rules;
 
 use std::sync::Arc;
@@ -204,6 +205,12 @@ impl PermissionGate for Check {
             Decision::Ask { case } => {
                 let sentence = call.tool.describe(call.input);
                 let mut parked = ToolResult::error(ask::parked_text(&sentence, &case, &ctx.door, ctx.origin));
+                // A removal never holds a run nobody attends: its card is in
+                // the owner's Inbox, the step is refused, and the run goes
+                // on with its other work.
+                if matches!(case, AskCase::RemovesFolders { .. }) && !limits::attended(ctx) {
+                    return GateVerdict::Refuse(parked);
+                }
                 parked.parked_ask = ask_id;
                 GateVerdict::Parked(parked)
             }
@@ -386,6 +393,15 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     // or itself, on its own (2026-10-01: one deleted an app to "rename" it).
     if t.effects.removes_employee {
         return Ok(Decision::Ask { case: AskCase::RemovesEmployee });
+    }
+    // Removing a folder or a tree of files outside the run's own work is the
+    // owner's to say, in every mode, Full Access and his own chat included
+    // (owner, 10-23: every `rm -rf` since 10-21 ran without anyone asked,
+    // one of them an app's folder). Plan mode refuses it as a change below.
+    if cx.grant.mode != Mode::Plan
+        && let Some(case) = removals::asked(cx, t, &rules, decided)
+    {
+        return Ok(Decision::Ask { case });
     }
     // Watching the owner (his screen, microphone or camera) or using his
     // own apps (Mail, Calendar, Messages, or any app a command drives) is
