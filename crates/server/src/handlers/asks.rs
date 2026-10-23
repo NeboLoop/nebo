@@ -929,6 +929,10 @@ fn with_approval_item<R>(
     Some(f(&n, extra))
 }
 
+/// How an item settles when nothing waits on its answer any more (the run
+/// that asked ended): what History says of it.
+const WITHDRAWN: &str = "Withdrawn";
+
 /// A parked question was answered (`answer`: the value it was given), or
 /// the run it held ended (`None`): its Inbox item is settled, its push
 /// resolved and every pinned bar updated.
@@ -938,11 +942,36 @@ pub(crate) async fn question_settled(state: &AppState, request_id: &str, answer:
         &state.store,
         Some(&|ev, payload| state.hub.broadcast(ev, payload)),
         &id,
-        answer.unwrap_or("Withdrawn"),
+        answer.unwrap_or(WITHDRAWN),
         None,
     );
     crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
     changed(state).await;
+}
+
+/// The questions and relayed approvals the last process left waiting on
+/// the owner. A parked question and an approval wait in the memory of the
+/// run that raised them, and that run ended with its process: nothing can
+/// take their answer any more, so their Needs-you items (made before
+/// `booted`) are settled as withdrawn, the same as a run that ends at its
+/// own pace, and their pushes resolved. Returns how many were settled.
+pub(crate) fn settle_orphaned(state: &AppState, booted: i64) -> usize {
+    let mut n = 0;
+    for prefix in [push_id(""), approval_push_id("")] {
+        let ids = tools::owner_notify::settle_all(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &prefix,
+            None,
+            Some(booted),
+            WITHDRAWN,
+        );
+        for id in &ids {
+            crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
+        }
+        n += ids.len();
+    }
+    n
 }
 
 /// A permission ask was raised, or the owner is reminded of it: his live
