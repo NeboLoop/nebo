@@ -4541,5 +4541,28 @@
 		"tellIt": "Digli cosa fare",
 		"sending": "Invio…",
 		"sendFailed": "La tua risposta non è stata inviata."
+	},
+	"appPermissions": {
+		"title": "{name} vuole fare di più",
+		"intro": "Di' di sì solo se ti fidi di questa app. Puoi cambiare idea nelle impostazioni dell'app.",
+		"origin": "Questa app non è stata creata qui. L'ha creata qualcuno fuori dalla tua azienda.",
+		"wantsFiles": "{name} vuole vedere i file in {target}",
+		"wantsWeb": "{name} vuole parlare con {target}",
+		"wantsWebAny": "{name} vuole parlare con qualsiasi sito web",
+		"wantsHelper": "{name} vuole chiedere aiuto a {target}",
+		"wantsHelperAny": "{name} vuole chiedere aiuto a uno qualsiasi dei tuoi dipendenti",
+		"canFiles": "Vedere i file in {target}",
+		"canWeb": "Parlare con {target}",
+		"canWebAny": "Parlare con qualsiasi sito web",
+		"canHelper": "Chiedere aiuto a {target}",
+		"canHelperAny": "Chiedere aiuto a uno qualsiasi dei tuoi dipendenti",
+		"allow": "Consenti",
+		"deny": "Non consentire",
+		"off": "No",
+		"notNow": "Non ora",
+		"sectionTitle": "Cosa può fare questa app",
+		"sectionHint": "Questa app viene dal marketplace. Può fare solo ciò che consenti.",
+		"ownHint": "Hai creato questa app qui, quindi può fare ciò che chiede.",
+		"notAnswered": "Senza risposta"
 	}
 }

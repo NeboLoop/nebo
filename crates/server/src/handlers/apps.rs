@@ -72,37 +72,8 @@ async fn validate_app_token(
     Ok(())
 }
 
-/// Check that the app has `network:{domain}` permission for the target URL.
-async fn check_network_permission(
-    state: &AppState,
-    agent_id: &str,
-    url: &str,
-) -> Result<(), Response> {
-    let domain = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(String::from));
-    let domain = match domain {
-        Some(d) => d,
-        None => {
-            return Err((StatusCode::BAD_REQUEST, "invalid URL").into_response());
-        }
-    };
-
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(agent_id) {
-        let perm = format!("network:{}", domain);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
-    }
-    Ok(())
-}
-
-/// Check that the app has `subagent:{target}` permission to invoke another agent.
+/// Check that the app holds `subagent:{target}` to invoke another agent
+/// (`app_grants`): refused when it does not, however it runs.
 async fn check_subagent_permission(
     state: &AppState,
     app_agent_id: &str,
@@ -112,18 +83,16 @@ async fn check_subagent_permission(
     if app_agent_id == target_agent_id {
         return Ok(());
     }
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(app_agent_id) {
-        let perm = format!("subagent:{}", target_agent_id);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
+    holds(state, app_agent_id, &format!("subagent:{target_agent_id}")).await
+}
+
+/// `Ok` when app `agent_id` holds `perm` now (`app_grants::granted`), else
+/// 403 naming it.
+async fn holds(state: &AppState, agent_id: &str, perm: &str) -> Result<(), Response> {
+    if napp::manifest::permission_covers(&crate::app_grants::granted(state, agent_id).await, perm) {
+        return Ok(());
     }
-    Ok(())
+    Err((StatusCode::FORBIDDEN, format!("app lacks permission: {perm}")).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +144,7 @@ async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, na
 /// and its manifest's permissions. By its id alone, never a name: an app's
 /// pass names its id, so a name that happens to equal another app's id must
 /// never serve that app's page or grants.
-async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
+pub(crate) async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
     state
         .agent_loader
         .list()
@@ -1605,7 +1574,10 @@ async fn run_agent_collect(
     while let Some(event) = rx.recv().await {
         match event.event_type {
             ai::StreamEventType::Text => text.push_str(&event.text),
-            ai::StreamEventType::ToolCall | ai::StreamEventType::ToolResult => {
+            // Which tools its employee called, never what they gave back: a
+            // result carries what the employee read, which the page holds
+            // no grant to.
+            ai::StreamEventType::ToolCall => {
                 if let Some(tool_call) = event.tool_call {
                     if let Ok(value) = serde_json::to_value(tool_call) {
                         tools.push(value);
@@ -1634,6 +1606,11 @@ async fn run_agent_sse(
         match start_app_agent_run(&state, &agent_id, &agent_name, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1740,6 +1717,11 @@ async fn run_janus_sse(
         match start_janus_stream(&state, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1819,54 +1801,52 @@ pub async fn http_proxy(
         None => return (StatusCode::BAD_REQUEST, "missing url field").into_response(),
     };
 
-    // Enforce network: permission from manifest
-    if let Err(r) = check_network_permission(&state, &agent_id, &url).await {
-        return r;
+    // The app's `network:` grants (`app_grants`), asked of the address and
+    // of every redirect, through the one checked fetch the web tool uses
+    // (`tools::web_tool::fetch_checked`): never this computer, the network
+    // it is on, or a cloud's metadata address, whatever a name resolves to.
+    let granted = crate::app_grants::granted(&state, &agent_id).await;
+    let allowed = |u: &url::Url| {
+        let host = u.host_str().unwrap_or_default();
+        if napp::manifest::permission_covers(&granted, &format!("network:{host}")) {
+            Ok(())
+        } else {
+            Err(format!("app lacks permission: network:{host}"))
+        }
+    };
+    if let Err(e) = url::Url::parse(&url).map_err(|e| e.to_string()).and_then(|u| allowed(&u)) {
+        return (StatusCode::FORBIDDEN, e).into_response();
     }
 
-    let method = body
-        .get("method")
-        .and_then(|v| v.as_str())
-        .unwrap_or("GET")
-        .to_uppercase();
-
-    let headers: Vec<(String, String)> = body
-        .get("headers")
-        .and_then(|h| h.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
-
-    let client = match tls::http_client().build() {
-        Ok(client) => client,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
-    };
-    let mut req = match method.as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "PATCH" => client.patch(&url),
+    let method = match body.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
         _ => return (StatusCode::BAD_REQUEST, "unsupported method").into_response(),
     };
 
-    for (k, v) in &headers {
-        req = req.header(k.as_str(), v.as_str());
+    let mut req_headers = reqwest::header::HeaderMap::new();
+    for (k, v) in body.get("headers").and_then(|h| h.as_object()).into_iter().flatten() {
+        if let (Ok(name), Ok(value)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v.as_str().unwrap_or("")),
+        ) {
+            req_headers.insert(name, value);
+        }
     }
-
     // Add identifying header
-    req = req.header("X-Nebo-App", &agent_id);
-
-    if let Some(b) = req_body {
-        req = req.body(b);
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&agent_id) {
+        req_headers.insert("x-nebo-app", v);
     }
+    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
 
-    match req.send().await {
+    let client = match tools::web_tool::checked_client().build() {
+        Ok(client) => client,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
+    };
+    match tools::web_tool::fetch_checked(&client, method, &url, req_headers, req_body, allowed).await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let resp_headers: Vec<(String, String)> = resp
@@ -1933,11 +1913,12 @@ fn work_segment(name: &str) -> Option<String> {
 }
 
 /// GET/HEAD /apps/{agent_id}/files/{*path} — `nebo.files.url`: a file of the
-/// owner's workspace (`~/NeboAI`) inside a folder the app's manifest grants
-/// it (`filesystem:read:<folder>`), so a page shows the owner's pictures and
-/// plays his films. It is the app's own route, so its page reaches it
-/// wherever it is open (the desktop window, the browser, the tunnel, an
-/// app-view pass), by the rule every app route admits its caller
+/// owner's workspace (`~/NeboAI`) inside a folder the app holds
+/// (`filesystem:read:<folder>`, `app_grants`: as its manifest asks for an
+/// app built here, once the owner allows it for one from the marketplace),
+/// so a page shows the owner's pictures and plays his films. It is the
+/// app's own route, so its page reaches it wherever it is open, with its
+/// pass, by the rule every app route admits its caller
 /// (`validate_app_token`). Read only. A path no grant covers is 403 naming
 /// the permission; a file that is missing, hidden, or outside the granted
 /// folder once `..` and symlinks are resolved is 404, the same answer, so
@@ -1951,11 +1932,11 @@ pub async fn serve_app_file(
     if let Err(r) = validate_app_token(&state, &agent_id, request.headers()).await {
         return r;
     }
-    let permissions = loaded_app(&state, &agent_id).await.map(|a| a.app_permissions).unwrap_or_default();
+    let permissions = crate::app_grants::granted(&state, &agent_id).await;
     let grants: Vec<&str> = permissions.iter().filter_map(|p| napp::manifest::file_read_folder(p)).collect();
     let Some(grant) = covering_grant(&grants, &path) else {
         let refusal = format!(
-            "{path} is in no folder this app may read: its manifest grants a folder with {}<folder>",
+            "{path} is in no folder this app may read: its manifest asks for a folder with {}<folder>, and an app from the marketplace reads it once the owner allows it",
             napp::manifest::FILESYSTEM_READ
         );
         return (StatusCode::FORBIDDEN, refusal).into_response();
@@ -2360,6 +2341,7 @@ mod developer_mode_tests {
     fn app(store: &db::Store, id: &str, name: &str) {
         store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
         store.set_agent_app_fields(id, true, Some("/tmp/ui"), None, None).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
     }
 
     const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
@@ -2377,6 +2359,7 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
 
         let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         assert_eq!(desktop_script(&store, 27895, "app-m", "p"), "", "installed: no developer tooling");
@@ -2595,6 +2578,7 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
         store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
 
         assert_eq!(devlog_target(&store, "app-a"), Ok(()), "an own app, mode off");

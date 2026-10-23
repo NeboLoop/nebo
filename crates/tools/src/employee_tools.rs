@@ -851,6 +851,7 @@ mod tests {
         store.set_agent_napp_path(id, &folder.to_string_lossy()).unwrap();
         let ui = folder.join("ui");
         store.set_agent_app_fields(id, true, Some(&ui.to_string_lossy()), None, Some("{\"fullscreen\":true}")).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
         store.update_agent_input_values(id, "{\"level\":\"hard\"}").unwrap();
         store
             .upsert_agent_workflow(id, "nightly", "schedule", "0 3 * * *", Some("Nightly"), None, None, None, None, false)

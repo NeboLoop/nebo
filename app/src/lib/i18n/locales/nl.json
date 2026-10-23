@@ -4541,5 +4541,28 @@
 		"tellIt": "Zeg wat het moet doen",
 		"sending": "Versturen…",
 		"sendFailed": "Je antwoord is niet verstuurd."
+	},
+	"appPermissions": {
+		"title": "{name} wil meer doen",
+		"intro": "Zeg alleen ja als je deze app vertrouwt. Je kunt het later wijzigen in de instellingen van de app.",
+		"origin": "Deze app is niet hier gemaakt. Iemand buiten je bedrijf heeft hem gemaakt.",
+		"wantsFiles": "{name} wil de bestanden in {target} zien",
+		"wantsWeb": "{name} wil met {target} praten",
+		"wantsWebAny": "{name} wil met elke website praten",
+		"wantsHelper": "{name} wil {target} om hulp vragen",
+		"wantsHelperAny": "{name} wil al je medewerkers om hulp vragen",
+		"canFiles": "De bestanden in {target} zien",
+		"canWeb": "Met {target} praten",
+		"canWebAny": "Met elke website praten",
+		"canHelper": "{target} om hulp vragen",
+		"canHelperAny": "Al je medewerkers om hulp vragen",
+		"allow": "Toestaan",
+		"deny": "Niet toestaan",
+		"off": "Uit",
+		"notNow": "Niet nu",
+		"sectionTitle": "Wat deze app mag",
+		"sectionHint": "Deze app komt uit de marketplace. Hij mag alleen wat jij toestaat.",
+		"ownHint": "Je hebt deze app hier gemaakt, dus hij mag doen wat hij vraagt.",
+		"notAnswered": "Nog niet beantwoord"
 	}
 }
