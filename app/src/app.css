@@ -794,6 +794,89 @@
    and the two adjustments together jumped the view a page past the reader. */
 .chat-scroller {
 	overflow-anchor: none;
+	/* Room at the end for what floats over it (chat-floating) and its fade,
+	   so the last row is never under either. */
+	padding: 18px 24px calc(18px + var(--chat-fade) + var(--chat-float, 0px));
+	/* What is brought into view (the running tasks' list) lands above the
+	   composer, never under it. */
+	scroll-padding-bottom: calc(var(--chat-fade) + var(--chat-float, 0px));
+}
+/* The scroller's frame: its height is the visible conversation, which the
+   running tasks' list is sized to (`cqh`). Its size comes from the column,
+   never its content, so containing it changes nothing. */
+.chat-scroll-frame {
+	@apply relative min-h-0 flex-1;
+	container-type: size;
+}
+
+/* The conversation fills the column; the composer floats over its end, the
+   messages fading out behind it in the column's own color. */
+.chat-stage {
+	@apply relative flex min-h-0 flex-1 flex-col;
+	/* The fade over the conversation's end, above the composer. Read by
+	   ChatPane too (the room left for a streaming reply): one value, in px. */
+	--chat-fade: 16px;
+}
+.chat-floating {
+	/* No band: the space beside and under the composer's card stays clear,
+	   the conversation running on under it. Neither a z-index nor a filter
+	   here, so the full-window sheets the composer opens are the window's. */
+	@apply pointer-events-none absolute inset-x-0 bottom-0;
+}
+/* Its gutters pass the wheel and clicks to the conversation under them;
+   what stands in them (the goal, the notices, the composer's card, the
+   sheets it opens) takes them. */
+.chat-floating > * > *,
+.composer-dock > * {
+	@apply pointer-events-auto;
+}
+.composer-dock {
+	@apply pointer-events-none;
+}
+/* A small, subtle fade just above the composer. It never takes a click. */
+.chat-floating::before {
+	content: '';
+	@apply pointer-events-none absolute inset-x-0 bottom-full;
+	height: var(--chat-fade);
+	background-image: linear-gradient(to bottom, transparent, color-mix(in oklab, var(--color-base-100) 50%, transparent));
+}
+/* The composer's card and its menus (@mentions, commands, the intelligence
+   picker) stand above all that floats under them: the conversation and the
+   scroll-to-bottom button (z-20). The running tasks' list (z-50) stands
+   above the card. */
+.composer-card {
+	@apply z-30;
+}
+/* The composer's card: nearly opaque, with a light blur, so words running
+   under it show only faintly. Solid where the browser can't blur. The glass
+   is a layer under the card's content, never the card itself: a filtered
+   element contains its fixed children, and the intelligence picker's
+   click-away cover must span the window. */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+	.composer-card {
+		background-color: transparent;
+	}
+	.composer-card::before {
+		content: '';
+		@apply pointer-events-none absolute inset-0 -z-10;
+		border-radius: inherit;
+		background-color: color-mix(in oklab, var(--color-surface, var(--color-base-100)) 94%, transparent);
+		-webkit-backdrop-filter: blur(8px);
+		backdrop-filter: blur(8px);
+	}
+}
+.chat-under-float {
+	padding-bottom: calc(1.5rem + var(--chat-float, 0px));
+}
+.chat-scroll-button {
+	@apply absolute left-1/2 z-20 -translate-x-1/2;
+	bottom: calc(1rem + var(--chat-float, 0px));
+}
+
+/* The reply an Inbox item opened the conversation at (`?message=`): marked
+   with a quiet edge so the eye lands on it. */
+.chat-turn-focus {
+	@apply border-l-2 border-primary/60 pl-3;
 }
 
 /* Helpers still working after the turn that started them ended: one quiet
@@ -1253,8 +1336,8 @@
   --bg-thinking-dim: 0.75;
 }
 .bg-status {
-  /* In line with the composer card under it (ChatComposer's px-6). */
-  @apply relative px-7 -mb-2;
+  /* The conversation's last line, under the newest message. */
+  @apply relative mt-2;
 }
 .bg-status-row {
   @apply flex items-center min-w-0 h-6 overflow-hidden whitespace-nowrap text-xs text-base-content/60 tabular-nums;
@@ -1292,7 +1375,11 @@
   @apply fixed inset-0 z-40 cursor-default;
 }
 .bg-status-popover {
-  @apply absolute bottom-full start-6 end-6 z-50 mb-1 max-h-[60vh] overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg;
+  @apply relative z-50 mt-1 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg;
+  /* Never taller than the room above the composer, its line (h-6 + mt-1)
+     in view even at the end of the conversation (the scroller's 18px end
+     padding): it never reaches over the card. */
+  max-height: min(60vh, calc(100cqh - var(--chat-float, 0px) - var(--chat-fade) - 18px - 1.75rem));
 }
 
 .bg-panel {
@@ -1484,6 +1571,27 @@
 }
 .verify-sheet {
   @apply flex flex-col gap-3 text-xs;
+}
+.verify-question {
+  @apply flex flex-col gap-2 rounded-box bg-base-200 px-3 py-2.5;
+}
+.verify-question-text {
+  @apply m-0 text-sm font-medium text-base-content;
+}
+.verify-question-choices {
+  @apply flex flex-wrap gap-2;
+}
+.verify-question-more {
+  @apply flex items-center justify-between;
+}
+.verify-question-chosen {
+  @apply ring-2 ring-primary;
+}
+.verify-question-status {
+  @apply m-0 flex items-center gap-2 text-base-content/60;
+}
+.verify-question-failed {
+  @apply text-error;
 }
 .verify-sheet-phase {
   @apply m-0 font-medium text-info;

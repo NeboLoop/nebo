@@ -1,0 +1,7 @@
+id: sc142-a-timer-asked-for-in-a-conversation-answers-in-it
+name: "SC142 — A timer asked for in a conversation answers in it"
+description: |
+  A one-shot schedule made in a conversation runs in that conversation when it fires: the turn reads what was said there, its answer is the employee's next message in it, the request it ran on is hidden, and the Inbox item opens that conversation at that answer.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_timer_asked_for_in_a_conversation_answers_in_it
+conversation: []

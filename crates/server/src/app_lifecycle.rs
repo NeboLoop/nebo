@@ -25,39 +25,9 @@ use tools::sidecar_tool::{SidecarActionTool, SidecarCaller, SidecarResponse, Sid
 /// How long a request waits for a sidecar that is starting or restarting.
 pub(crate) const REQUEST_WAIT: Duration = Duration::from_secs(15);
 
-/// One `UIService.HandleRequest` call to the sidecar on `sock`. The one way
-/// Nebo talks to a sidecar: the proxy and the sidecar tools both call it.
-#[cfg(unix)]
-pub(crate) async fn handle_request(
-    sock: &Path,
-    req: proto::HttpRequest,
-) -> Result<proto::HttpResponse, tonic::Status> {
-    let sock = sock.to_path_buf();
-    let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
-        .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
-            let sock = sock.clone();
-            async move {
-                tokio::net::UnixStream::connect(sock)
-                    .await
-                    .map(hyper_util::rt::TokioIo::new)
-            }
-        }));
-    let mut client = proto::ui_service_client::UiServiceClient::new(channel)
-        .max_decoding_message_size(32 * 1024 * 1024);
-    client.handle_request(req).await.map(|r| r.into_inner())
-}
-
-#[cfg(not(unix))]
-pub(crate) async fn handle_request(
-    _sock: &Path,
-    _req: proto::HttpRequest,
-) -> Result<proto::HttpResponse, tonic::Status> {
-    Err(tonic::Status::unavailable("sidecars require Unix sockets"))
-}
-
 /// gRPC-based caller that routes through the sidecar's UIService.HandleRequest.
 struct GrpcSidecarCaller {
-    sock_path: PathBuf,
+    launched: Arc<Launched>,
 }
 
 impl SidecarCaller for GrpcSidecarCaller {
@@ -78,7 +48,7 @@ impl SidecarCaller for GrpcSidecarCaller {
             body: body.to_vec(),
         };
         Box::pin(async move {
-            match handle_request(&self.sock_path, req).await {
+            match self.launched.handle_request(req).await {
                 Ok(inner) => Ok(SidecarResponse { status_code: inner.status_code, body: inner.body }),
                 Err(e) => Err(format!("gRPC call failed: {}", e)),
             }
@@ -112,11 +82,9 @@ impl Unavailable {
 pub struct AppLifecycle {
     agent_id: String,
     supervisor: Supervisor,
-    /// Follows every state change: tools, broadcasts, the last launch. Ends
+    /// Follows every state change: tools and broadcasts. Ends
     /// on `Off`, after unregistering the app's tools.
     follower: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// The most recent launch, for its manifest permissions.
-    latest: Arc<tokio::sync::RwLock<Option<Arc<Launched>>>>,
     skill_loader: Arc<tools::skills::Loader>,
     /// Names of skills loaded for this app (for cleanup on shutdown).
     loaded_skill_names: Vec<String>,
@@ -144,7 +112,6 @@ impl AppLifecycle {
         };
         let runtime = Arc::new(napp::Runtime::new(data_dir));
         let supervisor = Supervisor::start(runtime, tool_dir.clone(), api_port, policy);
-        let latest = Arc::new(tokio::sync::RwLock::new(None));
         let follower = tokio::spawn(follow(
             agent.id.clone(),
             tools::sidecar_tool::app_slug(&agent.name),
@@ -152,14 +119,12 @@ impl AppLifecycle {
             supervisor.subscribe(),
             hub,
             registry,
-            latest.clone(),
         ));
         let loaded_skill_names = skill_loader.load_app_skills(&tool_dir).await;
         Some(Self {
             agent_id: agent.id.clone(),
             supervisor,
             follower: tokio::sync::Mutex::new(Some(follower)),
-            latest,
             skill_loader,
             loaded_skill_names,
         })
@@ -189,22 +154,6 @@ impl AppLifecycle {
         }
     }
 
-    /// Check if this app has a specific permission declared in its manifest.
-    ///
-    /// Supports exact match, prefix match, and wildcard (`network:*`).
-    pub async fn has_permission(&self, perm: &str) -> bool {
-        let latest = self.latest.read().await;
-        let Some(launched) = latest.as_ref() else {
-            return false;
-        };
-        let prefix = perm.split(':').next().unwrap_or("");
-        launched.manifest.permissions.iter().any(|p| {
-            p == perm
-                || p == &format!("{}:*", prefix)
-                || (p.ends_with(':') && perm.starts_with(p.as_str()))
-        })
-    }
-
     /// The running sidecar, waiting for one that is starting or restarting.
     /// A failed or stopped sidecar is reported at once, never waited on.
     pub(crate) async fn ready(&self, wait: Duration) -> Result<Arc<Launched>, Unavailable> {
@@ -223,7 +172,7 @@ impl AppLifecycle {
     /// safe to repeat (GET, HEAD) is sent again to the relaunched one.
     pub(crate) async fn serve(&self, req: proto::HttpRequest) -> Result<proto::HttpResponse, Unavailable> {
         let launched = self.ready(REQUEST_WAIT).await?;
-        match handle_request(&launched.sock_path, req.clone()).await {
+        match launched.handle_request(req.clone()).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 warn!(agent = %self.agent_id, error = %e, "sidecar did not answer — reviving it");
@@ -235,7 +184,7 @@ impl AppLifecycle {
                 if !repeatable {
                     return Err(Unavailable { state: SidecarState::Running(again) });
                 }
-                handle_request(&again.sock_path, req).await.map_err(|e| {
+                again.handle_request(req).await.map_err(|e| {
                     warn!(agent = %self.agent_id, error = %e, "sidecar did not answer after reviving");
                     Unavailable { state: SidecarState::Running(again.clone()) }
                 })
@@ -254,8 +203,8 @@ impl AppLifecycle {
     }
 }
 
-/// Follow a sidecar's state: register its tools each time it runs, remember
-/// the launch, and broadcast every change.
+/// Follow a sidecar's state: register its tools each time it runs, and
+/// broadcast every change.
 async fn follow(
     agent_id: String,
     app: String,
@@ -263,7 +212,6 @@ async fn follow(
     mut rx: tokio::sync::watch::Receiver<SidecarState>,
     hub: Arc<ClientHub>,
     registry: Arc<tools::Registry>,
-    latest: Arc<tokio::sync::RwLock<Option<Arc<Launched>>>>,
 ) {
     let mut launches: u32 = 0;
     let mut was_running = false;
@@ -275,12 +223,11 @@ async fn follow(
         match &state {
             SidecarState::Running(launched) => {
                 launches += 1;
-                *latest.write().await = Some(launched.clone());
-                register_tools(&agent_id, &app, &tool_dir, &launched.sock_path, &registry).await;
+                register_tools(&agent_id, &app, &tool_dir, launched, &registry).await;
                 if launches == 1 {
                     hub.broadcast(
                         "app_started",
-                        serde_json::json!({ "agentId": agent_id, "sockPath": launched.sock_path }),
+                        serde_json::json!({ "agentId": agent_id, "addr": launched.addr }),
                     );
                 } else {
                     hub.broadcast(
@@ -308,17 +255,17 @@ async fn follow(
     }
 }
 
-/// Register the sidecar tools declared in agent.json against the socket.
+/// Register the sidecar tools declared in agent.json against the running sidecar.
 ///
 /// Follows the same filesystem-based pattern as skills and plugins — tool
 /// definitions live in agent.json, not behind an HTTP endpoint. Re-read on
 /// every launch, so a rebuilt app's changed tools take effect.
-async fn register_tools(agent_id: &str, app: &str, tool_dir: &Path, sock: &Path, registry: &tools::Registry) {
+async fn register_tools(agent_id: &str, app: &str, tool_dir: &Path, launched: &Arc<Launched>, registry: &tools::Registry) {
     registry.unregister_agent_tools(agent_id).await;
     let Some(defs) = read_tool_defs_from_config(tool_dir, agent_id) else {
         return;
     };
-    let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller { sock_path: sock.to_path_buf() });
+    let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller { launched: launched.clone() });
     let count = defs.len();
     for def in defs {
         registry

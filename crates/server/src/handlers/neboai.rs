@@ -1609,7 +1609,7 @@ fn callback_html(_email: &str, err_msg: &str) -> Html<String> {
 pub async fn force_reconnect(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     info!("neboai: force reconnect requested (sleep/wake)");
 
-    state.comm_manager.shutdown().await;
+    state.comm_manager.shutdown(None).await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     match crate::codes::activate_neboai(&state).await {

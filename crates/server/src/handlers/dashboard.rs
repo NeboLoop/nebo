@@ -436,15 +436,11 @@ fn local_day(ts: i64) -> Option<String> {
 }
 
 /// A run's error or exit reason as the owner should read it: the evaluator's
-/// "Step 2/8 evaluator:" bookkeeping dropped, a guard's counter turned into
-/// what happened, everything else its first line.
+/// "Step 2/8 evaluator:" bookkeeping dropped, everything else its first
+/// line.
 fn owner_wording(raw: &str) -> String {
     let line = first_line(raw);
     let line = line.trim();
-    // "activity run exceeded…" (older) and "activity <id> exceeded…" (engine)
-    if line.starts_with("activity ") && line.contains("exceeded token budget") {
-        return "Ran out of room and stopped".to_string();
-    }
     // "Step 2/8 evaluator: No meetings ..." -> "No meetings ..."
     line.strip_prefix("Step ")
         .and_then(|rest| rest.split_once("evaluator:"))
@@ -598,8 +594,6 @@ mod tests {
     #[test]
     fn exit_reasons_read_as_the_owner_would_say_them() {
         assert_eq!(owner_wording("Step 1/8 evaluator: No meetings with external guests in the next 24 hours"), "No meetings with external guests in the next 24 hours");
-        assert_eq!(owner_wording("activity run exceeded token budget (4772/4096)"), "Ran out of room and stopped");
-        assert_eq!(owner_wording("activity store-snapshot exceeded token budget (4042/4000)"), "Ran out of room and stopped");
         assert_eq!(owner_wording("connection refused\nsecond line"), "connection refused");
         assert_eq!(owner_wording(""), "");
         let skipped = db::models::WorkflowRun { error: Some("Step 2/8 evaluator: No meetings found.".into()), ..sample_run("exited") };

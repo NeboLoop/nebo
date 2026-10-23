@@ -133,11 +133,7 @@ export interface ChatControllerConfig {
   sessionKey?: string;
   /** Channel for outbound messages (e.g., 'app', 'web'). */
   channel?: string;
-  /** Fields merged into EVERY outbound chat frame — a send, an edit, a redo
-   *  alike — read at send time (the embed's app context changes between
-   *  turns). The ONE door for per-surface payload. */
-  extraPayload?: () => Record<string, unknown>;
-  /** Called when a response completes — use for embed postMessage, etc. */
+  /** Called when a response completes. */
   onResponseComplete?: (content: string) => void;
 }
 
@@ -1047,7 +1043,6 @@ export function createChatController(config: ChatControllerConfig) {
 
     const payload: Record<string, unknown> = {
       prompt: text,
-      ...(config.extraPayload?.() || {}),
       ...turnTarget(),
     };
     if (options?.attachments?.length) payload.attachments = options.attachments;

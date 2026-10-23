@@ -136,6 +136,11 @@ pub struct PluginRuntime {
     /// Carries per-invocation context (channel ids, per-agent account dirs)
     /// that callers used to set by hand-rolling their own Command.
     extra_env: Vec<(String, String)>,
+    /// Where [`run_capture_args`](Self::run_capture_args) sends each line
+    /// the plugin writes (stdout and stderr), as it writes it: a caller
+    /// showing a long command's progress. The whole output is captured
+    /// either way.
+    output: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl PluginRuntime {
@@ -149,6 +154,7 @@ impl PluginRuntime {
             agent_config: None,
             enforce_permissions: false,
             extra_env: Vec::new(),
+            output: None,
         }
     }
 
@@ -177,6 +183,13 @@ impl PluginRuntime {
 
     pub fn with_permissions(mut self) -> Self {
         self.enforce_permissions = true;
+        self
+    }
+
+    /// Send each line the plugin writes to `lines` as it is written
+    /// ([`PluginRuntime::output`]).
+    pub fn with_output(mut self, lines: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        self.output = Some(lines);
         self
     }
 
@@ -356,12 +369,25 @@ impl PluginRuntime {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let child = spawn_with_etxtbsy_retry(&mut cmd).await?;
+        let mut child = spawn_with_etxtbsy_retry(&mut cmd).await?;
         let pid = child.id();
         if let Some(p) = pid {
             crate::child_guard::register_child(p);
         }
-        let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let result = tokio::time::timeout(timeout, async {
+            // Both pipes are read while the process runs, as
+            // `wait_with_output` reads them: a full pipe would stall it.
+            let (status, stdout, stderr) =
+                tokio::join!(child.wait(), read_pipe(stdout, self.output.clone()), read_pipe(stderr, self.output.clone()));
+            Ok::<_, std::io::Error>(std::process::Output {
+                status: status?,
+                stdout: stdout?,
+                stderr: stderr?,
+            })
+        })
+        .await;
         if let Some(p) = pid {
             crate::child_guard::unregister_child(p);
         }
@@ -369,7 +395,7 @@ impl PluginRuntime {
         match result {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(e)) => Err(LaunchError::Wait(e)),
-            // The wait future is dropped here, which triggers kill_on_drop.
+            // The child is dropped when this returns, which triggers kill_on_drop.
             Err(_) => Err(LaunchError::TimedOut { after: timeout }),
         }
     }
@@ -406,6 +432,108 @@ impl PluginRuntime {
             .map(|p| p.max_timeout_seconds)
             .unwrap_or(300);
         requested.min(Duration::from_secs(max))
+    }
+}
+
+/// The most of one output pipe a run keeps. The rest is read and let go, so
+/// the plugin never stalls on a full pipe, and the output says it was cut.
+const CAPTURE_MAX: usize = 32 * 1024 * 1024;
+
+/// The longest progress line sent on; a longer one is cut.
+const LINE_MAX: usize = 4096;
+
+/// What a plugin's output may carry back to whoever reads it (an employee's
+/// model, an app's page): never the credential in its `NEBO_LOCAL_URL`
+/// ([`crate::plugin::plugin_local_token`]: one for every plugin, for the
+/// life of the process). A plugin that prints the address (an HTTP client's
+/// error names it) shows it without the credential.
+pub fn without_local_credential(bytes: &[u8]) -> Vec<u8> {
+    let token = crate::plugin::plugin_local_token().as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while let Some(at) = rest.windows(token.len()).position(|w| w == token) {
+        out.extend_from_slice(&rest[..at]);
+        out.extend_from_slice(b"<credential>");
+        rest = &rest[at + token.len()..];
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+/// Read one of a plugin's output pipes to its end, sending each line to
+/// `lines` as it arrives. A carriage return ends a line too: a progress bar
+/// redraws its line with one. Keeps at most [`CAPTURE_MAX`] bytes, and what
+/// it keeps and sends carries no local credential
+/// ([`without_local_credential`]): taken out before any cut, and a cut
+/// that would end on the start of one drops that start.
+async fn read_pipe(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin>,
+    lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut all = Vec::new();
+    let Some(mut pipe) = pipe else { return Ok(all) };
+    let mut buf = [0u8; 8192];
+    let mut line_start = 0;
+    let mut cut = false;
+    loop {
+        let n = pipe.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        if cut {
+            continue;
+        }
+        // Only the new bytes are searched for a line's end.
+        let scan_from = all.len();
+        if all.len() + n > CAPTURE_MAX {
+            all.extend_from_slice(&buf[..CAPTURE_MAX - all.len()]);
+            cut = true;
+        } else {
+            all.extend_from_slice(&buf[..n]);
+        }
+        if let Some(tx) = &lines {
+            let mut from = scan_from;
+            while let Some(end) = all[from..].iter().position(|b| *b == b'\n' || *b == b'\r') {
+                send_line(tx, &all[line_start..from + end], false);
+                line_start = from + end + 1;
+                from = line_start;
+            }
+        }
+    }
+    if let Some(tx) = &lines {
+        send_line(tx, &all[line_start..], cut);
+    }
+    let mut kept = without_local_credential(&all);
+    if cut {
+        drop_credential_start(&mut kept);
+        kept.extend_from_slice(format!("\n[Output cut: only the first {} MB were kept.]\n", CAPTURE_MAX / (1024 * 1024)).as_bytes());
+    }
+    Ok(kept)
+}
+
+/// Drop a tail of `bytes` that is the start of the local credential: what a
+/// cut through the credential would leave.
+fn drop_credential_start(bytes: &mut Vec<u8>) {
+    let token = crate::plugin::plugin_local_token().as_bytes();
+    if let Some(k) = (1..token.len()).rev().find(|&k| bytes.ends_with(&token[..k])) {
+        bytes.truncate(bytes.len() - k);
+    }
+}
+
+/// Send one line: the credential taken out of the whole line first, then
+/// cut to [`LINE_MAX`]. `cut_short`: the line ends where the capture was
+/// cut, so a start of the credential there is dropped too.
+fn send_line(tx: &tokio::sync::mpsc::UnboundedSender<String>, bytes: &[u8], cut_short: bool) {
+    let mut bytes = without_local_credential(bytes);
+    if cut_short {
+        drop_credential_start(&mut bytes);
+    }
+    bytes.truncate(LINE_MAX);
+    let line = String::from_utf8_lossy(&bytes);
+    let line = line.trim_end();
+    if !line.is_empty() {
+        let _ = tx.send(line.to_string());
     }
 }
 
@@ -453,4 +581,78 @@ fn spawn_with_etxtbsy_retry_blocking(
         }
     }
     cmd.spawn().map_err(LaunchError::Spawn)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A caller that asks for the output line by line gets each line as the
+    /// plugin writes it (a progress bar's carriage returns included), and
+    /// the whole output is still captured.
+    #[tokio::test]
+    async fn each_line_is_sent_as_it_is_written_and_the_output_is_still_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(PluginStore::new(tmp.path().join("plugins"), tmp.path().join("user"), None));
+        let bin = tmp.path().join("progress");
+        std::fs::write(&bin, "#!/bin/sh\nprintf 'step 1\\r'\nsleep 0.3\nprintf 'step 2\\n'\necho warn >&2\nprintf 'done'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let run = PluginRuntime::new("progress", bin, store).with_output(tx);
+        let mut task = tokio::spawn(async move { run.run_capture_args(&[], Duration::from_secs(60)).await });
+        let first = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.unwrap();
+        assert_eq!(first.as_deref(), Some("step 1"), "the first line arrives before the plugin ends");
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut task).await.is_err(), "the plugin is still running");
+
+        let output = task.await.unwrap().unwrap();
+        let mut rest = Vec::new();
+        while let Some(line) = rx.recv().await {
+            rest.push(line);
+        }
+        rest.sort();
+        assert_eq!(rest, ["done", "step 2", "warn"]);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "step 1\rstep 2\ndone");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "warn\n");
+    }
+
+    /// The plugins' local credential never comes back in what a plugin
+    /// prints, whole or line by line.
+    #[tokio::test]
+    async fn the_local_credential_never_comes_back_in_the_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(PluginStore::new(tmp.path().join("plugins"), tmp.path().join("user"), None));
+        let bin = tmp.path().join("leaky");
+        let token = crate::plugin::plugin_local_token();
+        std::fs::write(&bin, format!("#!/bin/sh\necho \"error sending request for url (http://127.0.0.1:1/k/{token}/x)\"\necho {token} >&2\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let output = PluginRuntime::new("leaky", bin, store).with_output(tx).run_capture_args(&[], Duration::from_secs(60)).await.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout, "error sending request for url (http://127.0.0.1:1/k/<credential>/x)\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "<credential>\n");
+        while let Some(line) = rx.recv().await {
+            assert!(!line.contains(token), "{line}");
+        }
+    }
+
+    /// A line cut to its most, or an output cut at the capture's end, never
+    /// leaves part of the credential where the cut fell.
+    #[test]
+    fn a_cut_never_leaves_part_of_the_credential() {
+        let token = crate::plugin::plugin_local_token();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let line = format!("{}{token}/x", "q".repeat(LINE_MAX - 2));
+        send_line(&tx, line.as_bytes(), false);
+        let sent = rx.try_recv().unwrap();
+        assert!(sent.len() <= LINE_MAX && !sent.contains(&token[..2]), "{}", &sent[sent.len() - 20..]);
+
+        send_line(&tx, format!("fetch: {}", &token[..60]).as_bytes(), true);
+        assert_eq!(rx.try_recv().unwrap(), "fetch:");
+        let mut kept = format!("ok {}", &token[..63]).into_bytes();
+        drop_credential_start(&mut kept);
+        assert_eq!(kept, b"ok ");
+    }
 }

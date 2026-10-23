@@ -203,6 +203,77 @@ export function badgeWords(
   }
 }
 
+/** The question a verification waits on the owner for, with the choices
+ *  it offered; null when it waits on none. */
+export function askOf(v: VerificationView): { question: string; options: string[] } | null {
+  const ask = v.pendingAsk as { question?: unknown; options?: unknown } | null | undefined;
+  const question = typeof ask?.question === "string" ? ask.question.trim() : "";
+  if (!question) return null;
+  const options = Array.isArray(ask?.options) ? ask.options.filter((o): o is string => typeof o === "string") : [];
+  return { question, options };
+}
+
+/** Answers the question a verification waits on with a choice or Skip,
+ *  once: true when the bot took it (it no longer waits on the question),
+ *  false when it did not, or the question could not be found. */
+export type VerificationAnswer = (v: VerificationView, value: string) => Promise<boolean>;
+
+/** A conversation message as far as its questions go. */
+type AskLike = { type: string; requestId?: string; prompt?: string; response?: string | null; cancelled?: boolean };
+
+/** The latest open question in `messages` asking `question`. */
+export function openAskFor<M extends AskLike>(messages: M[], question: string | undefined): M | null {
+  if (!question) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type === "ask" && m.response == null && !m.cancelled && m.prompt?.trim() === question) return m;
+  }
+  return null;
+}
+
+/** The open question the verify loop waits on in conversation `sessionKey`:
+ *  the ask whose question one of its waiting verifications holds. */
+export function loopQuestion<M extends AskLike>(
+  messages: M[],
+  all: Record<string, VerificationView>,
+  sessionKey: string,
+): M | null {
+  for (const v of inProgress(all, sessionKey)) {
+    if (v.badge.state !== "waiting") continue;
+    const ask = openAskFor(messages, askOf(v)?.question);
+    if (ask) return ask;
+  }
+  return null;
+}
+
+/** How long an answer from the sheet waits for the bot to take it. */
+export const ANSWER_CONFIRM_MS = 10_000;
+
+/** Answer a question the bot waits on, once, and confirm it took it: the
+ *  ask found by `question` among what the bot still waits on (the card need
+ *  not be on screen), `send` given its id, and the bot asked until it no
+ *  longer waits on it. True when it took it. */
+export async function answerWaiting(
+  question: string | undefined,
+  send: (requestId: string) => void,
+  waiting: () => Promise<{ id: string; question: string }[]>,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+  if (!question) return false;
+  try {
+    const ask = (await waiting()).find((a) => a.question.trim() === question);
+    if (!ask) return false;
+    send(ask.id);
+    for (let waited = 0; waited < ANSWER_CONFIRM_MS; waited += 1000) {
+      await wait(1000);
+      if (!(await waiting()).some((a) => a.id === ask.id)) return true;
+    }
+  } catch {
+    // Not reached: the sheet says it did not send, with Try again.
+  }
+  return false;
+}
+
 /** The one line a verification is in the conversation, the size of a tool
  *  row: "Checking · round 2", then "Verified", "2 issues left", "Not
  *  verified" or "Waiting on you". Its detail is in the sheet it opens. */

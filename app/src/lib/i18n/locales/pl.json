@@ -4464,7 +4464,7 @@
 			"needs_decision": "Potrzebuje Twojej decyzji: {items}",
 			"stopped_by_owner": "Zatrzymane przez Ciebie; otwarte problemy: {open, plural, other {#}}",
 			"stalled": "Przestało robić postępy; otwarte problemy: {open, plural, other {#}}",
-			"no_checks": "Nie udało się uruchomić testów ani kompilacji",
+			"no_checks": "Nic nie potwierdziło, że to działa: projekt nie ma kompilacji, sprawdzania typów ani testów do uruchomienia",
 			"landed_unreviewed": "Wdrożone bez zaliczonego przeglądu, na Twoje życzenie",
 			"edits_in_way": "Jeszcze nie wdrożone: Twoje zmiany wciąż stoją na drodze",
 			"kept_own_edits": "Nie wdrożone: zachowałeś własne zmiany, a ta zmiana czeka w swojej kopii",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "Odpowiedź na: {question}",
+		"tellIt": "Powiedz, co ma zrobić",
+		"sending": "Wysyłanie…",
+		"sendFailed": "Twoja odpowiedź nie została wysłana."
+	},
+	"appPermissions": {
+		"title": "{name} chce zrobić więcej",
+		"intro": "Zgódź się tylko, jeśli ufasz tej aplikacji. Możesz to później zmienić w jej ustawieniach.",
+		"origin": "Ta aplikacja nie powstała tutaj. Zrobił ją ktoś spoza twojej firmy.",
+		"wantsFiles": "{name} chce zobaczyć pliki w {target}",
+		"wantsWeb": "{name} chce rozmawiać z {target}",
+		"wantsWebAny": "{name} chce rozmawiać z dowolną stroną",
+		"wantsHelper": "{name} chce poprosić {target} o pomoc",
+		"wantsHelperAny": "{name} chce prosić o pomoc dowolnego z Twoich pracowników",
+		"wantsPlugin": "{name} chce używać {target}",
+		"canFiles": "Widzieć pliki w {target}",
+		"canWeb": "Rozmawiać z {target}",
+		"canWebAny": "Rozmawiać z dowolną stroną",
+		"canHelper": "Prosić {target} o pomoc",
+		"canHelperAny": "Prosić o pomoc dowolnego z Twoich pracowników",
+		"canPlugin": "Używać {target}",
+		"allow": "Zezwól",
+		"deny": "Nie zezwalaj",
+		"off": "Wył.",
+		"notNow": "Nie teraz",
+		"sectionTitle": "Co może ta aplikacja",
+		"sectionHint": "Ta aplikacja pochodzi z marketplace. Może tylko to, na co pozwolisz.",
+		"ownHint": "Ta aplikacja powstała tutaj, więc może robić to, o co prosi.",
+		"notAnswered": "Bez odpowiedzi"
 	}
 }

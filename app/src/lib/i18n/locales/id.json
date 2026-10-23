@@ -4464,7 +4464,7 @@
 			"needs_decision": "Perlu keputusan Anda: {items}",
 			"stopped_by_owner": "Dihentikan oleh Anda; masalah terbuka: {open, plural, other {#}}",
 			"stalled": "Berhenti membuat kemajuan; masalah terbuka: {open, plural, other {#}}",
-			"no_checks": "Tidak ada tes atau build yang bisa dijalankan",
+			"no_checks": "Tidak ada yang membuktikan ini berfungsi: proyek tidak punya build, pemeriksaan tipe, atau tes untuk dijalankan",
 			"landed_unreviewed": "Dimasukkan tanpa lolos tinjauan, atas pilihan Anda",
 			"edits_in_way": "Belum dimasukkan: suntingan Anda masih menghalangi",
 			"kept_own_edits": "Tidak dimasukkan: Anda mempertahankan suntingan Anda sendiri, dan perubahan ini menunggu di salinannya",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} mnt {s} dtk"
-		}
+		},
+		"answering": "Menjawab: {question}",
+		"tellIt": "Katakan apa yang harus dilakukan",
+		"sending": "Mengirim…",
+		"sendFailed": "Jawabanmu tidak terkirim."
+	},
+	"appPermissions": {
+		"title": "{name} ingin melakukan lebih banyak",
+		"intro": "Setujui hanya jika Anda memercayai aplikasi ini. Anda bisa mengubahnya nanti di pengaturan aplikasi.",
+		"origin": "Aplikasi ini tidak dibuat di sini. Orang di luar perusahaan Anda yang membuatnya.",
+		"wantsFiles": "{name} ingin melihat file di {target}",
+		"wantsWeb": "{name} ingin berbicara dengan {target}",
+		"wantsWebAny": "{name} ingin berbicara dengan situs web mana pun",
+		"wantsHelper": "{name} ingin meminta bantuan {target}",
+		"wantsHelperAny": "{name} ingin meminta bantuan karyawan Anda yang mana pun",
+		"wantsPlugin": "{name} ingin memakai {target}",
+		"canFiles": "Melihat file di {target}",
+		"canWeb": "Berbicara dengan {target}",
+		"canWebAny": "Berbicara dengan situs web mana pun",
+		"canHelper": "Meminta bantuan {target}",
+		"canHelperAny": "Meminta bantuan karyawan Anda yang mana pun",
+		"canPlugin": "Memakai {target}",
+		"allow": "Izinkan",
+		"deny": "Jangan izinkan",
+		"off": "Mati",
+		"notNow": "Nanti saja",
+		"sectionTitle": "Yang bisa dilakukan aplikasi ini",
+		"sectionHint": "Aplikasi ini dari marketplace. Ia hanya bisa melakukan yang Anda izinkan.",
+		"ownHint": "Anda membuat aplikasi ini di sini, jadi ia bisa melakukan yang dimintanya.",
+		"notAnswered": "Belum dijawab"
 	}
 }

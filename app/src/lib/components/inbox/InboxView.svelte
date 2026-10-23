@@ -14,7 +14,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { parseMarkdown } from '$lib/markdown';
+  import { parseMarkdown, plainText } from '$lib/markdown';
   import SearchIcon from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
   import Copy from 'lucide-svelte/icons/copy';
@@ -290,7 +290,7 @@
                   <AgentAvatar id={ASSISTANT_ID} name={assistantName} color={roster[ASSISTANT_ID]?.color} shape={roster[ASSISTANT_ID]?.shape} size="sm" />
                   <span>{$t('inbox.yourAssistant', { values: { name: assistantName } })}</span>
                 </div>
-                <p class="text-sm text-base-content">{brief.body || brief.title}</p>
+                <p class="text-sm text-base-content">{plainText(brief.body ?? '') || brief.title}</p>
                 <button type="button" class="inbox-ask" onclick={() => { markAsRead(brief.id); onnavigate('/assistant'); }}>
                   {$t('inbox.askAbout', { values: { name: assistantName } })}
                 </button>

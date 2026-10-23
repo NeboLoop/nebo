@@ -20,36 +20,27 @@ use crate::handlers::{HandlerResult, to_error_response};
 use crate::state::AppState;
 use db;
 
-/// Validate the per-app auth token from the `Authorization: Bearer <token>` header.
+/// Who may use an app's own routes (`/api/v1/apps/<id>/…`): the caller
+/// proves it is that app, or the owner through the tunnel.
 ///
-/// Returns Ok(()) if the token matches the running app's token, or if the
-/// request arrived through the bot's own tunnel (`X-Nebo-Tunnel-Auth` stamped
-/// by comm::tunnel with a per-boot process-local secret): the hub already
-/// owner-authenticated it, so an app UI opened at /t/<botID>/apps/… may invoke
-/// without holding the sidecar's NEBO_APP_TOKEN. A drive-by page can't forge
-/// the stamp — the secret never leaves this process, and the tunnel strips
-/// inbound copies. On this computer the owner's browser proves itself the
-/// same way, with its session (`signed_in_app_page`): the app's own page in
-/// a browser window opened from Nebo's web UI.
-/// Returns 401 if the token is missing/invalid, or if the app has no running lifecycle.
-async fn validate_app_token(
+/// - The app's page, wherever it is open (a browser, the mobile app through
+///   the tunnel, the desktop window, Nebo's headless browser), carries the
+///   app's pass (`napp::page_pass`) as its path credential, and
+///   `middleware::path_credential` shows it here (`app_view_admits`). A pass
+///   is minted for one app and opens that app alone.
+/// - The app's sidecar sends its `NEBO_APP_TOKEN` as `Authorization: Bearer`.
+/// - A request the hub owner-authenticated before it entered the bot's
+///   tunnel (`came_through_tunnel`).
+///
+/// Nothing else counts: not the owner's browser session (an app page runs in
+/// an origin of its own and never holds it), not a Referer a page can set,
+/// not the install key. Returns 401 for anything else.
+pub(crate) async fn validate_app_token(
     state: &AppState,
     agent_id: &str,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), Response> {
-    if crate::middleware::came_through_tunnel(headers) {
-        return Ok(());
-    }
-    let install_key = config::read_install_key();
-    if desktop_window_reaches(headers, agent_id, install_key.as_deref()) {
-        return Ok(());
-    }
-    if signed_in_app_page(headers, agent_id, install_key.as_deref()) {
-        return Ok(());
-    }
-    // The app's page as Nebo's headless browser opened it for a screenshot:
-    // its console and its own calls are the app's.
-    if crate::middleware::app_view_admits(headers, agent_id) {
+    if crate::middleware::came_through_tunnel(headers) || crate::middleware::app_view_admits(headers, agent_id) {
         return Ok(());
     }
 
@@ -74,80 +65,15 @@ async fn validate_app_token(
     };
 
     let expected = lifecycle.app_token().await;
-    if expected.is_empty() || token != expected {
+    if expected.is_empty() || !crate::handlers::ws::constant_time_eq(token, &expected) {
         return Err((StatusCode::UNAUTHORIZED, "invalid app token").into_response());
     }
 
     Ok(())
 }
 
-/// The desktop's app window reaching its own app's routes (storage, agents,
-/// janus, identity, ...): its `neboapp://` proxy is the owner's own client
-/// and proves itself with the install key, and it passes on the page's
-/// origin, `neboapp://<id>`, by the rule the app socket admits a window by
-/// (`ws::from_its_desktop_window`). A window reaches only its own app.
-fn desktop_window_reaches(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
-    bearer_is(headers, install_key) && crate::handlers::ws::from_its_desktop_window(headers, agent_id)
-}
-
-/// The app's own page in the owner's signed-in browser reaching its own
-/// app's routes: Nebo's web UI opens an app in a browser window at
-/// `/apps/<id>/ui/` on this server (`launcher.ts`), and that page holds the
-/// owner's session cookie (`local_access`), as a page through the tunnel
-/// holds the hub's sign-in. The request must carry the session, be
-/// same-origin (`Sec-Fetch-Site`, so no other site on this computer rides
-/// the cookie), and come from this app's page (its Referer, at
-/// `/apps/<id>/ui/`): one app's page never reaches another app's data, and
-/// a request naming no app page gets nothing.
-fn signed_in_app_page(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
-    let Some(key) = install_key.filter(|k| !k.is_empty()) else { return false };
-    if agent_id.is_empty() || !crate::middleware::carries_session(headers, &crate::local_access::session_for(key)) {
-        return false;
-    }
-    let same_origin = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("same-origin");
-    let page_app = headers
-        .get(header::REFERER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|r| url::Url::parse(r).ok())
-        .and_then(|u| {
-            let rest = u.path().strip_prefix("/apps/")?;
-            let (id, ui) = rest.split_once('/')?;
-            (ui == "ui" || ui.starts_with("ui/")).then(|| urlencoding::decode(id).map(|c| c.into_owned()).unwrap_or_else(|_| id.to_string()))
-        });
-    same_origin && page_app.as_deref() == Some(agent_id)
-}
-
-/// Check that the app has `network:{domain}` permission for the target URL.
-async fn check_network_permission(
-    state: &AppState,
-    agent_id: &str,
-    url: &str,
-) -> Result<(), Response> {
-    let domain = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(String::from));
-    let domain = match domain {
-        Some(d) => d,
-        None => {
-            return Err((StatusCode::BAD_REQUEST, "invalid URL").into_response());
-        }
-    };
-
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(agent_id) {
-        let perm = format!("network:{}", domain);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
-    }
-    Ok(())
-}
-
-/// Check that the app has `subagent:{target}` permission to invoke another agent.
+/// Check that the app holds `subagent:{target}` to invoke another agent
+/// (`app_grants`): refused when it does not, however it runs.
 async fn check_subagent_permission(
     state: &AppState,
     app_agent_id: &str,
@@ -157,18 +83,16 @@ async fn check_subagent_permission(
     if app_agent_id == target_agent_id {
         return Ok(());
     }
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(app_agent_id) {
-        let perm = format!("subagent:{}", target_agent_id);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
+    holds(state, app_agent_id, &format!("subagent:{target_agent_id}")).await
+}
+
+/// `Ok` when app `agent_id` holds `perm` now (`app_grants::granted`), else
+/// 403 naming it.
+async fn holds(state: &AppState, agent_id: &str, perm: &str) -> Result<(), Response> {
+    if napp::manifest::permission_covers(&crate::app_grants::granted(state, agent_id).await, perm) {
+        return Ok(());
     }
-    Ok(())
+    Err((StatusCode::FORBIDDEN, format!("app lacks permission: {perm}")).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,11 +123,8 @@ pub struct JanusRequest {
 /// page to be shown (`device:motion`, `window.isolated`); a row the loader
 /// does not hold is read from the window stored with it.
 async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, napp::manifest::AppWindow)> {
-    let agents = state.agent_loader.list().await;
-    let fs_match = agents.iter().find(|a| {
-        a.id.as_deref() == Some(agent_id)
-            || a.agent_def.name.eq_ignore_ascii_case(agent_id)
-    });
+    let fs_match = loaded_app(state, agent_id).await;
+    let fs_match = fs_match.as_ref();
     let window = fs_match.and_then(|a| a.app_window());
     if let Some(p) = fs_match.and_then(|a| a.app_ui_path.clone()) {
         let window = window.unwrap_or_else(|| super::agents::stored_app_window(None));
@@ -217,6 +138,19 @@ async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, na
         }
     }
     None
+}
+
+/// The app `agent_id` as the loader holds its files: its `ui/`, its window
+/// and its manifest's permissions. By its id alone, never a name: an app's
+/// pass names its id, so a name that happens to equal another app's id must
+/// never serve that app's page or grants.
+pub(crate) async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
+    state
+        .agent_loader
+        .list()
+        .await
+        .into_iter()
+        .find(|a| a.id.as_deref() == Some(agent_id))
 }
 
 /// The one folder an app's page is served from: its `ui/`. A recorded path
@@ -323,25 +257,61 @@ impl<'a> Rebase<'a> {
 pub async fn serve_app_ui_root(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    serve_app_ui_inner(&state, &agent_id, "", &headers).await
+    serve_app_ui_inner(&state, &agent_id, "", &uri, &headers).await
 }
 
 /// GET /apps/{agent_id}/ui/*path — serve static app assets with SPA fallback.
 pub async fn serve_app_ui(
     State(state): State<AppState>,
     Path((agent_id, path)): Path<(String, String)>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    serve_app_ui_inner(&state, &agent_id, &path, &headers).await
+    serve_app_ui_inner(&state, &agent_id, &path, &uri, &headers).await
+}
+
+/// How long an app page's pass (`napp::page_pass`) outlives its last use:
+/// the page's requests keep it, and so does its open socket
+/// (`ws::handle_app_ws`). Each open gets a new one, and a reload of a page
+/// whose pass is gone (left unused, or the bot restarted) gets a new one too
+/// ([`with_pass`]).
+pub const PAGE_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The Content-Security-Policy every file of an app's page goes out with:
+/// a sandbox without `allow-same-origin`, so the page runs in an origin of
+/// its own (opaque) in a browser and through the tunnel. It shares nothing
+/// with Nebo's own page or the hub's console: not their cookies, not their
+/// storage, not their origin. What it reaches, it reaches with its pass
+/// ([`validate_app_token`]). Its `localStorage` is kept for it in its own
+/// storage ([`LOCAL_STORAGE_KEY`]).
+pub const APP_PAGE_CSP: &str = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox \
+     allow-modals allow-downloads allow-pointer-lock allow-presentation allow-orientation-lock";
+
+/// The key of the app's storage its page's `localStorage` is kept under,
+/// where the sandbox has none ([`APP_PAGE_CSP`], `inject_app_bridge`).
+pub const LOCAL_STORAGE_KEY: &str = "localStorage";
+
+/// Where an app page asked for without its pass is opened instead: the same
+/// page under `/k/<pass>/`, relative to where it was asked for, so a prefix
+/// before `/apps/` (`/t/<bot>` through the tunnel) stays. Every address the
+/// page makes from its own (`./app.js`, the SDK's base) then carries it.
+/// `replacing`: the address carried a credential of its own (`/k/<old>/`, a
+/// pass gone with a restart), which the new one takes the place of.
+fn with_pass(uri: &axum::http::Uri, pass: &str, replacing: bool) -> String {
+    let path = uri.path();
+    let up = path.matches('/').count().saturating_sub(1) + if replacing { 2 } else { 0 };
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    format!("{}k/{pass}{path}{query}", "../".repeat(up))
 }
 
 fn range_header(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::RANGE).and_then(|v| v.to_str().ok())
 }
 
-async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, headers: &HeaderMap) -> Response {
+async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, uri: &axum::http::Uri, headers: &HeaderMap) -> Response {
     let (ui_path, window) = match resolve_app_ui(state, agent_id).await {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND.into_response(),
@@ -351,6 +321,22 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         Ok(t) => t,
         Err(s) => return s.into_response(),
     };
+
+    // A page opened by the owner (his browser's session, the tunnel's
+    // sign-in) is opened again with a pass of its own: the page never rides
+    // the owner's sign-in, and everything it asks for proves itself with
+    // the pass.
+    if is_html(&target) && !crate::middleware::app_view_admits(headers, agent_id) {
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_IDLE);
+        let mut r = Response::new(Body::empty());
+        *r.status_mut() = StatusCode::SEE_OTHER;
+        let replacing = crate::middleware::carried_path_credential(headers);
+        if let Ok(v) = HeaderValue::from_str(&with_pass(uri, &pass, replacing)) {
+            r.headers_mut().insert(header::LOCATION, v);
+        }
+        r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return r;
+    }
 
     // Developer tooling goes only into the owner's own apps, never into one
     // installed from the marketplace (`app_dev::is_own_app`). An own app's
@@ -371,7 +357,27 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         target.strip_prefix(&ui_path).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default()
     };
     let rebase = Rebase::new(&ui_path, &at);
-    serve_ui_file(&target, headers, devtools, Some(&window), Some(&rebase)).await
+    let kept = kept_local_storage(&state.store, agent_id);
+    serve_ui_file(&target, headers, devtools, Some(&window), Some(&rebase), &kept).await
+}
+
+/// The page's `localStorage` as its storage keeps it ([`LOCAL_STORAGE_KEY`]),
+/// a JSON object of strings, for `inject_app_bridge`; `null` for none.
+fn kept_local_storage(store: &db::Store, agent_id: &str) -> String {
+    let kept = tools::app_data::read(store, agent_id, LOCAL_STORAGE_KEY).ok().flatten().map(|raw| tools::app_data::decode(&raw));
+    match kept {
+        Some(serde_json::Value::Object(map)) => {
+            let strings: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| match v {
+                    serde_json::Value::String(_) => (k, v),
+                    other => (k, serde_json::Value::String(other.to_string())),
+                })
+                .collect();
+            serde_json::Value::Object(strings).to_string()
+        }
+        _ => "null".to_string(),
+    }
 }
 
 /// The developer script an app page carries: whose page it is (for "Send
@@ -391,15 +397,11 @@ struct Devtools<'a> {
 #[derive(Debug, Clone, Copy)]
 struct DesktopPage<'a> {
     app_id: &'a str,
-    /// A pass for this one app's socket (`napp::app_view`): the window's
+    /// A pass for this one app's socket (`napp::page_pass`): the window's
     /// WebSocket goes to this server directly, carrying no session.
     pass: &'a str,
     port: u16,
 }
-
-/// How long a desktop app window's socket pass lasts: longer than a window
-/// stays open between reloads; each load gets a new one.
-const DESKTOP_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
 /// What the desktop shell's window for one app needs from this server
 /// (`GET /api/v1/apps/{id}/desktop`), read by its `neboapp://` handler and
@@ -424,6 +426,12 @@ struct DesktopApp {
     /// folder scan alone never finds it (live 2026-10-05: "App not found"
     /// for Design Studio on the desktop).
     ui_dir: Option<PathBuf>,
+    /// The app's pass (`napp::page_pass`, [`PAGE_PASS_IDLE`]): the one
+    /// credential the window's requests carry. The shell's proxy sends the
+    /// page's calls on with it, never the install key, and the page reaches
+    /// this server with it directly (its socket, a film it streams). Empty
+    /// for an id that names no app.
+    pass: String,
 }
 
 /// GET /api/v1/apps/{agent_id}/desktop: [`DesktopApp`], for the desktop
@@ -438,9 +446,12 @@ pub async fn desktop_app(
     }
     let store = &state.store;
     let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
+    let is_app = matches!(store.get_agent(&agent_id), Ok(Some(a)) if a.is_app.unwrap_or(0) != 0);
+    let pass = if is_app { napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_IDLE) } else { String::new() };
     axum::Json(DesktopApp {
         offers_publish: developer && store.app_developer_mode() && own_app(store, &agent_id).is_some(),
-        developer_script: desktop_script(store, state.config.port, &agent_id),
+        developer_script: desktop_script(store, state.config.port, &agent_id, &pass),
+        pass,
         ui_dir: store
             .get_agent(&agent_id)
             .ok()
@@ -451,13 +462,14 @@ pub async fn desktop_app(
     .into_response()
 }
 
-fn desktop_script(store: &db::Store, port: u16, agent_id: &str) -> String {
-    let Some(app) = own_app(store, agent_id) else { return String::new() };
-    let pass = napp::app_view::grant(&app.id, DESKTOP_PASS_TTL);
+/// The developer script for the desktop window of `agent_id` (an own app;
+/// empty for any other), its socket carrying the window's `pass`.
+fn desktop_script(store: &db::Store, port: u16, agent_id: &str, pass: &str) -> String {
+    let Some(app) = own_app(store, agent_id).filter(|a| a.id == agent_id) else { return String::new() };
     developer_script(Devtools {
         employee: &app.name,
         console: store.app_developer_mode(),
-        desktop: Some(DesktopPage { app_id: &app.id, pass: &pass, port }),
+        desktop: Some(DesktopPage { app_id: &app.id, pass, port }),
     })
 }
 
@@ -519,6 +531,7 @@ async fn serve_ui_file(
     devtools: Option<Devtools<'_>>,
     window: Option<&napp::manifest::AppWindow>,
     rebase: Option<&Rebase<'_>>,
+    local_storage: &str,
 ) -> Response {
     let is_page = is_html(target);
     let is_css = mime_from_path(target).starts_with("text/css");
@@ -541,7 +554,7 @@ async fn serve_ui_file(
         // script derives both from location before the SDK loads. Apps
         // that ship their own meta tags win — the script only fills gaps.
         let contents = match fs::read(target).await {
-            Ok(c) => inject_app_bridge(c, devtools, rebase),
+            Ok(c) => inject_app_bridge(c, devtools, rebase, local_storage),
             Err(e) => {
                 warn!(path = %target.display(), error = %e, "failed to read app UI file");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -612,10 +625,12 @@ async fn serve_ui_file(
         );
     }
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(app_file_cache_control(target, no_store)));
-    if let Some(origin) = own_origin(headers) {
-        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-        h.append(header::VARY, HeaderValue::from_static("Origin"));
-    }
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(APP_PAGE_CSP));
+    // The page's origin is opaque (`APP_PAGE_CSP`), so its `crossorigin`
+    // module scripts and stylesheets ask with `Origin: null`. Any origin may
+    // read an app's own files: the request names the pass (or the owner
+    // signed it), and `*` never shares a response sent with a cookie.
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     if window.is_some_and(|w| w.motion) {
         h.insert(
             "permissions-policy",
@@ -653,17 +668,6 @@ pub fn ui_is_isolated(ui: &StdPath) -> bool {
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .and_then(|m| serde_json::from_value::<napp::manifest::AppWindowConfig>(m.get("window")?.clone()).ok())
         .is_some_and(|w| w.isolated)
-}
-
-/// The request's `Origin` when it is the page's own: the same host the
-/// request was sent to (a `crossorigin` module script or stylesheet on a
-/// page served from here, over the tunnel or on this machine). Another
-/// site's origin gets nothing.
-fn own_origin(headers: &HeaderMap) -> Option<HeaderValue> {
-    let origin = headers.get(header::ORIGIN)?;
-    let host = headers.get(header::HOST)?.to_str().ok()?;
-    let origin_host = origin.to_str().ok()?.split_once("://")?.1;
-    origin_host.eq_ignore_ascii_case(host).then(|| origin.clone())
 }
 
 /// The `Cache-Control` an app file goes out with (see `serve_ui_file`).
@@ -819,7 +823,15 @@ fn set_content_length(r: &mut Response, len: u64) {
 /// `devtools` is set for the owner's own apps: the developer script follows
 /// the bridge, before any of the app's own scripts, so it sees the app's
 /// first log line.
-fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>, rebase: Option<&Rebase<'_>>) -> Vec<u8> {
+///
+/// `local_storage`: the page's kept `localStorage` (JSON, `null` for none,
+/// [`kept_local_storage`]). The page's sandbox ([`APP_PAGE_CSP`]) has no
+/// storage of its own, so the bridge gives it `localStorage` and
+/// `sessionStorage` that work: `localStorage` starts from what was kept and
+/// is kept again in the app's own storage ([`LOCAL_STORAGE_KEY`]) through
+/// its own route, with its pass; `sessionStorage` lasts as long as the page.
+fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>, rebase: Option<&Rebase<'_>>, local_storage: &str) -> Vec<u8> {
+    const STORAGE: &str = r#"<script data-nebo-storage>(function(){try{if(window.localStorage)return;}catch(e){}var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);var U=m?location.origin+m[1]+'/api/v1/apps/'+m[2]+'/storage/__NEBO_LOCAL_STORAGE_KEY__':null;function mk(d,save){var s={getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},setItem:function(k,v){d[String(k)]=String(v);save();},removeItem:function(k){delete d[String(k)];save();},clear:function(){for(var k in d)delete d[k];save();},key:function(i){var ks=Object.keys(d);return i>=0&&i<ks.length?ks[i]:null;}};Object.defineProperty(s,'length',{get:function(){return Object.keys(d).length;}});return s;}var L=__NEBO_LOCAL_STORAGE__;if(!L||typeof L!=='object'||Array.isArray(L))L={};var t=null;function put(keep){t=null;if(!U)return;try{fetch(U,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:L}),keepalive:!!keep});}catch(e){}}function save(){if(!t)t=setTimeout(put,300);}addEventListener('pagehide',function(){if(t){clearTimeout(t);put(true);}});function def(n,v){try{Object.defineProperty(window,n,{configurable:true,enumerable:true,value:v});}catch(e){}}def('localStorage',mk(L,save));try{if(window.sessionStorage)return;}catch(e){}def('sessionStorage',mk({},function(){}));})();</script>"#;
     // `R`: the names at the top of the app's `ui/`. A root-absolute fetch or
     // XHR into one of them (`fetch('/models/bird.glb')`, a Three.js loader)
     // is sent to the app's own `ui/`, where the file is.
@@ -838,9 +850,13 @@ fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>, rebase: 
         Some(r) => r.apply(&html),
         None => html,
     };
+    // `<` escaped: kept text can never close the script element.
+    let storage = STORAGE
+        .replace("__NEBO_LOCAL_STORAGE_KEY__", LOCAL_STORAGE_KEY)
+        .replace("__NEBO_LOCAL_STORAGE__", &local_storage.replace('<', "\\u003c"));
     let scripts = match devtools {
-        Some(d) => format!("{bridge}{}", developer_script(d)),
-        None => bridge,
+        Some(d) => format!("{bridge}{storage}{}", developer_script(d)),
+        None => format!("{bridge}{storage}"),
     };
     let lower = html.to_ascii_lowercase();
     let out = if let Some(idx) = lower.find("<head>") {
@@ -1049,53 +1065,22 @@ struct DevlogBatch {
     entries: Vec<DevlogEntry>,
 }
 
-/// Whether `agent_id`'s console may be written or sent from this request,
-/// before the app's token is checked: the id is one of the owner's own apps
-/// (the ones whose pages carry the developer script; never one installed
-/// from the marketplace), and a page that names itself (its Referer, an app
-/// page at `/apps/<id>/ui/`) is that same app — one app's page never writes
-/// into another app's console.
-fn devlog_target(store: &db::Store, agent_id: &str, headers: &axum::http::HeaderMap) -> Result<(), StatusCode> {
+/// Whether `agent_id`'s console may be written or sent: the id is one of
+/// the owner's own apps (the ones whose pages carry the developer script;
+/// never one installed from the marketplace).
+fn devlog_target(store: &db::Store, agent_id: &str) -> Result<(), StatusCode> {
     match store.get_agent(agent_id) {
-        Ok(Some(a)) if tools::app_dev::is_own_app(&a) => {}
-        _ => return Err(StatusCode::NOT_FOUND),
+        Ok(Some(a)) if tools::app_dev::is_own_app(&a) => Ok(()),
+        _ => Err(StatusCode::NOT_FOUND),
     }
-    let page_app = headers
-        .get(header::REFERER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|r| r.split("/apps/").nth(1))
-        .and_then(|rest| rest.split_once("/ui").map(|(id, _)| id.to_string()));
-    if let Some(page_app) = page_app {
-        let page_app = urlencoding::decode(&page_app).map(|c| c.into_owned()).unwrap_or(page_app);
-        if page_app != agent_id {
-            return Err(StatusCode::FORBIDDEN);
-        }
-    }
-    Ok(())
 }
 
-/// The devlog routes' gate: [`devlog_target`], then the same app-token
-/// check every app route makes, or the install key: the desktop's app
-/// window posts through its `neboapp://` proxy, the owner's own client,
-/// which proves itself with the key.
+/// The devlog routes' gate: [`devlog_target`], then the check every app
+/// route makes ([`validate_app_token`]): one app's page never writes into
+/// another app's console, since its pass opens its own routes alone.
 async fn devlog_gate(state: &AppState, agent_id: &str, headers: &axum::http::HeaderMap) -> Result<(), Response> {
-    devlog_target(&state.store, agent_id, headers).map_err(|s| s.into_response())?;
-    if bearer_is(headers, config::read_install_key().as_deref()) {
-        return Ok(());
-    }
+    devlog_target(&state.store, agent_id).map_err(|s| s.into_response())?;
     validate_app_token(state, agent_id, headers).await
-}
-
-/// Whether the request's bearer token is `key`.
-fn bearer_is(headers: &axum::http::HeaderMap, key: Option<&str>) -> bool {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    match (token, key) {
-        (Some(t), Some(k)) => !k.is_empty() && crate::handlers::ws::constant_time_eq(t, k),
-        _ => false,
-    }
 }
 
 /// POST /apps/{agent_id}/devlog — the developer script's console batches,
@@ -1351,10 +1336,12 @@ fn connected_profile(
     })))
 }
 
-/// The native scheme proxy is a server-side request (no Origin). HTTP app
-/// windows are same-origin; authenticated tunnel requests carry a private stamp.
-fn app_connection_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
-    if crate::middleware::came_through_tunnel(headers) {
+/// Whether a sidecar request that carries the owner's connections comes
+/// from the app itself: its page with its pass (an opaque origin, `null`,
+/// in a browser; the desktop's proxy, a server-side request), the owner
+/// through the tunnel, or a request with no foreign page behind it.
+fn app_connection_origin_allowed(headers: &axum::http::HeaderMap, agent_id: &str) -> bool {
+    if crate::middleware::came_through_tunnel(headers) || crate::middleware::app_view_admits(headers, agent_id) {
         return true;
     }
     let Some(origin) = headers.get(header::ORIGIN) else {
@@ -1370,10 +1357,32 @@ fn app_connection_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
         && origin[url::Position::BeforeHost..url::Position::AfterPort].eq_ignore_ascii_case(host)
 }
 
+/// Whether a request header is passed on to the app's sidecar. Nebo's own
+/// credentials never are: the owner's session cookie and bearer, a proxy's
+/// credential, the tunnel's stamp, the app page's pass, a run's credential,
+/// and the connected-account metadata the platform adds itself. A sidecar
+/// calls Nebo with its own `NEBO_APP_TOKEN`; whatever holds its address sees
+/// nothing that opens Nebo.
+fn reaches_sidecar(name: &axum::http::HeaderName) -> bool {
+    let name = name.as_str();
+    !(name.starts_with("x-nebo-connected-")
+        || name == agent::tool_credentials::HEADER
+        || matches!(
+            name,
+            "authorization"
+                | "cookie"
+                | "proxy-authorization"
+                | comm::tunnel::TUNNEL_AUTH_HEADER
+                | comm::tunnel::TUNNEL_UNVERIFIED_HEADER
+                | crate::middleware::APP_VIEW_PASS
+        ))
+}
+
 /// ANY /apps/{agent_id}/api/*path — proxy HTTP request to sidecar via gRPC UIService.
 ///
-/// Sidecar binaries communicate over Unix socket. Nebo converts the HTTP request
-/// to a gRPC `UIService.HandleRequest` call and returns the response.
+/// The sidecar serves gRPC on its loopback address, on every OS. Nebo converts
+/// the HTTP request to a `UIService.HandleRequest` call, with the launch's
+/// token, and returns the response.
 pub async fn proxy_to_sidecar(
     State(state): State<AppState>,
     Path((agent_id, path)): Path<(String, String)>,
@@ -1396,21 +1405,12 @@ pub async fn proxy_to_sidecar(
     let Some(lifecycle) = crate::app_lifecycle::start(&state, &agent, false).await else {
         return sidecar_unavailable(&agent, None);
     };
-    #[cfg(not(unix))]
-    {
-        let _ = (req, lifecycle);
-        return (StatusCode::SERVICE_UNAVAILABLE, "sidecar proxy requires Unix sockets").into_response();
-    }
-
-    #[cfg(unix)]
-    {
     // Extract HTTP request parts for gRPC
     let method = req.method().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let mut headers_map = std::collections::HashMap::new();
     for (name, value) in req.headers() {
-        // Native connection metadata is platform-owned, never browser-supplied.
-        if name.as_str().starts_with("x-nebo-connected-") { continue; }
+        if !reaches_sidecar(name) { continue; }
         if let Ok(v) = value.to_str() {
             headers_map.insert(name.to_string(), v.to_string());
         }
@@ -1443,7 +1443,7 @@ pub async fn proxy_to_sidecar(
     } else { String::new() };
     // Credential-bearing sidecar requests must come from the app UI (or the
     // native protocol proxy, which has no browser Origin), never a foreign page.
-    if (!connections.is_empty() || !neboai_token.is_empty()) && !app_connection_origin_allowed(req.headers()) {
+    if (!connections.is_empty() || !neboai_token.is_empty()) && !app_connection_origin_allowed(req.headers(), &agent_id) {
         return (StatusCode::FORBIDDEN, "app connection request has an untrusted origin").into_response();
     }
     headers_map.insert("x-nebo-connected-profiles".into(), serde_json::Value::Object(connections).to_string());
@@ -1453,30 +1453,29 @@ pub async fn proxy_to_sidecar(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-        let grpc_req = proto::HttpRequest {
-            method,
-            path: path.trim_start_matches('/').to_string(),
-            query,
-            headers: headers_map,
-            body: body_bytes,
-        };
+    let grpc_req = proto::HttpRequest {
+        method,
+        path: path.trim_start_matches('/').to_string(),
+        query,
+        headers: headers_map,
+        body: body_bytes,
+    };
 
-        match lifecycle.serve(grpc_req).await {
-            Ok(inner) => {
-                let status = StatusCode::from_u16(inner.status_code as u16)
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let mut response = Response::builder().status(status);
-                for (name, value) in &inner.headers {
-                    if let Ok(v) = HeaderValue::from_str(value) {
-                        response = response.header(name.as_str(), v);
-                    }
+    match lifecycle.serve(grpc_req).await {
+        Ok(inner) => {
+            let status = StatusCode::from_u16(inner.status_code as u16)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let mut response = Response::builder().status(status);
+            for (name, value) in &inner.headers {
+                if let Ok(v) = HeaderValue::from_str(value) {
+                    response = response.header(name.as_str(), v);
                 }
-                response
-                    .body(Body::from(inner.body))
-                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
             }
-            Err(unavailable) => sidecar_unavailable(&agent, Some(&unavailable)),
+            response
+                .body(Body::from(inner.body))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
+        Err(unavailable) => sidecar_unavailable(&agent, Some(&unavailable)),
     }
 }
 
@@ -1575,7 +1574,10 @@ async fn run_agent_collect(
     while let Some(event) = rx.recv().await {
         match event.event_type {
             ai::StreamEventType::Text => text.push_str(&event.text),
-            ai::StreamEventType::ToolCall | ai::StreamEventType::ToolResult => {
+            // Which tools its employee called, never what they gave back: a
+            // result carries what the employee read, which the page holds
+            // no grant to.
+            ai::StreamEventType::ToolCall => {
                 if let Some(tool_call) = event.tool_call {
                     if let Ok(value) = serde_json::to_value(tool_call) {
                         tools.push(value);
@@ -1604,6 +1606,11 @@ async fn run_agent_sse(
         match start_app_agent_run(&state, &agent_id, &agent_name, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1638,46 +1645,323 @@ async fn start_app_agent_run(
     agent_name: &str,
     body: InvokeRequest,
 ) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
-    let session_key = format!("app:{}:api", agent_id);
-    let cancel_token = CancellationToken::new();
-    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
-    let mention_context = body.data.map(|data| format!("App data context: {}", data));
-    crate::chat_dispatch::run_chat_events(
-        state,
-        crate::chat_dispatch::ChatConfig {
-            session_key,
-            prompt: body.message,
-            user_id: String::new(),
-            channel: "app".to_string(),
-            origin: tools::Origin::App,
-            door: types::permissions::Door::Chat,
-            narrow: None,
-            agent_id: agent_id.to_string(),
-            cancel_token,
-            lane: types::constants::lanes::EVENTS.to_string(),
-            comm_reply: None,
-            entity_config,
-            images: vec![],
-            attachments: vec![],
-            entity_name: agent_name.to_string(),
-            origin_agent_id: None,
-            mention_context,
-            tool_scope: None,
-            channel_ctx: None,
-            handoff_depth: 0,
-            seed_taint: vec![],
-            tool_allowlist: None,
-            hidden_prompt: false,
-            coworker: None,
-            audience: None,
-            cwd: None,
-            model_override: None,
-            client_id: None,
-            platform: None,
-            message_id: None,
-        },
-    )
-    .await
+    let run = AppRun {
+        session_key: format!("app:{}:api", agent_id),
+        prompt: body.message,
+        context: body.data.map(|data| format!("App data context: {}", data)),
+        scope: None,
+        lane: types::constants::lanes::EVENTS,
+        hidden: false,
+    };
+    crate::chat_dispatch::run_chat_events(state, app_run_config(state, agent_id, agent_name, run)).await
+}
+
+/// One turn an app asks of an employee: from its page (its chat, a click on
+/// one of its cards) or its sidecar (`agents/invoke`).
+pub(crate) struct AppRun {
+    /// The conversation it runs in: one of the app's own (`keyparser::app_page_key`,
+    /// `app:<id>:api`).
+    pub session_key: String,
+    pub prompt: String,
+    /// What the app says about what is on its page, read beside the prompt.
+    pub context: Option<String>,
+    /// One of the tool scopes the employee's agent.json declares.
+    pub scope: Option<String>,
+    pub lane: &'static str,
+    /// The words are the house's, not a person's: the model reads them, no
+    /// one sees them (a click described).
+    pub hidden: bool,
+}
+
+/// The ONE run configuration of an app's request: whatever the page or its
+/// sidecar sends runs as `Origin::App` (an app's words, never the owner's:
+/// no shell, no owner's answer to an open question, no relay as his
+/// message), on the app's own conversation, with nothing of the owner's
+/// composer (codes, slash commands, local paths, @mentions, a folder or a
+/// model of his choosing).
+pub(crate) fn app_run_config(state: &AppState, agent_id: &str, agent_name: &str, run: AppRun) -> crate::chat_dispatch::ChatConfig {
+    crate::chat_dispatch::ChatConfig {
+        session_key: run.session_key,
+        prompt: run.prompt,
+        user_id: String::new(),
+        channel: "app".to_string(),
+        origin: tools::Origin::App,
+        door: types::permissions::Door::Chat,
+        narrow: None,
+        agent_id: agent_id.to_string(),
+        cancel_token: CancellationToken::new(),
+        lane: run.lane.to_string(),
+        comm_reply: None,
+        entity_config: crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id),
+        images: vec![],
+        attachments: vec![],
+        entity_name: agent_name.to_string(),
+        origin_agent_id: None,
+        mention_context: run.context,
+        tool_scope: run.scope,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: run.hidden,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+        client_id: None,
+        platform: None,
+        message_id: None,
+    }
+}
+
+/// Whether chat `chat_id` is an app page's conversation with its employee
+/// (`keyparser::Conversation::App`): the app's, never opened as one of the
+/// owner's.
+pub(crate) fn is_app_chat(store: &db::Store, chat_id: &str) -> bool {
+    store
+        .get_chat(chat_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.session_name)
+        .and_then(|n| types::keyparser::conversation_of(&n))
+        == Some(types::keyparser::Conversation::App)
+}
+
+/// Whether the owner's own doors (his composer, his call) must stay out of
+/// conversation `session_key`: it is an app page's (`agent:<id>:page…`), or
+/// a thread key naming an app page's chat. His turns there would be read by
+/// the page, and the page's words would be history his turns act on.
+pub(crate) fn kept_from_owner(store: &db::Store, session_key: &str) -> bool {
+    types::keyparser::conversation_of(session_key) == Some(types::keyparser::Conversation::App)
+        || types::keyparser::chat_id_from_thread_key(session_key).is_some_and(|chat| is_app_chat(store, chat))
+}
+
+/// A thread name a page may give its chat: letters, digits, `-`, `_` and
+/// `.`, at most 128 of them. No `:`, so it never reaches another key.
+fn chat_thread(thread: Option<&str>) -> Result<Option<&str>, Response> {
+    match thread.map(str::trim).filter(|t| !t.is_empty()) {
+        None => Ok(None),
+        Some(t) if t.len() <= 128 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')) => Ok(Some(t)),
+        Some(_) => Err((StatusCode::BAD_REQUEST, "thread: letters, digits, '-', '_' or '.', at most 128").into_response()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatQuery {
+    thread: Option<String>,
+    before: Option<String>,
+    limit: Option<u32>,
+}
+
+/// GET /apps/{agent_id}/chat — the page's conversation with its own
+/// employee: the words each side said (no tool rows, nothing the model
+/// alone reads), oldest first, and whether a turn is running in it.
+pub async fn get_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<ChatQuery>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let thread = match chat_thread(q.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let (messages, has_more) = match crate::handlers::agent::session_messages(&state, &key, q.limit, q.before.as_deref()) {
+        Ok(v) => v,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    let messages: Vec<serde_json::Value> = messages
+        .iter()
+        .filter(|m| matches!(m.role.as_str(), "user" | "assistant") && !m.content.trim().is_empty())
+        .map(|m| serde_json::json!({ "id": m.id, "role": m.role, "content": m.content, "createdAt": m.created_at }))
+        .collect();
+    axum::Json(serde_json::json!({
+        "sessionId": key,
+        "running": chat_busy(&state, &key).await,
+        "waiting": waits_on_owner(&state, &key).await,
+        "messages": messages,
+        "hasMore": has_more,
+    }))
+    .into_response()
+}
+
+/// Whether the turn in conversation `key` waits on the owner: an approval
+/// he has not answered, or a question it asked him. Only that it waits,
+/// never what about: the page shows "waiting for the owner's OK".
+async fn waits_on_owner(state: &AppState, key: &str) -> bool {
+    crate::chat_dispatch::open_approval_cards(&state.approval_channels).await.iter().any(|(_, card)| card.session_key == key)
+        || state.run_registry.pending_asks().await.iter().any(|(session, _)| session == key)
+}
+
+/// Whether a turn runs in the page's conversation `key`: registered (from
+/// the moment `run_chat` takes a message) or running in the harness.
+async fn chat_busy(state: &AppState, key: &str) -> bool {
+    state.run_registry.is_session_active(key).await || state.harness.is_session_busy(key)
+}
+
+/// Held while a page's message is checked and handed to its turn, and while
+/// a page starts its conversation over: one at a time, so two messages sent
+/// together never both find the conversation free. `run_chat` registers the
+/// run before it returns, so the next one finds it busy.
+static PAGE_SEND: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The refusal when a turn runs in the page's conversation: one message at
+/// a time, so the context and scope a message carries are always the ones
+/// its own turn runs with.
+fn busy(name: &str) -> Response {
+    (StatusCode::CONFLICT, format!("{name} is still answering. Wait for the reply or stop it, then send.")).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatSend {
+    message: String,
+    thread: Option<String>,
+    context: Option<serde_json::Value>,
+    scope: Option<String>,
+}
+
+/// POST /apps/{agent_id}/chat — the page says something to its own
+/// employee. It runs as the app's words (`app_run_config`) in the page's
+/// conversation; the reply streams on the app's socket (`chat_stream`,
+/// `chat_complete` for that `session_id`, `chat_waiting` while it waits on
+/// the owner). One message at a time: sent while a turn runs there, it is
+/// refused (409), never queued without its own context.
+pub async fn post_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<ChatSend>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    let (_, name) = match validate_app_agent(&state.store, &agent_id, None) {
+        Ok(v) => v,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    let thread = match chat_thread(body.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let message = body.message.trim().to_string();
+    if message.is_empty() {
+        return (StatusCode::BAD_REQUEST, "message is empty").into_response();
+    }
+    let scope = body.scope.filter(|s| !s.is_empty());
+    if let Some(s) = scope.as_deref() {
+        // The employee's own agent.json, as the store holds it.
+        let declared = state
+            .store
+            .get_agent(&agent_id)
+            .ok()
+            .flatten()
+            .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+            .is_some_and(|c| c.scopes.contains_key(s));
+        if !declared {
+            return (StatusCode::BAD_REQUEST, "scope: not one the employee's agent.json declares").into_response();
+        }
+    }
+    // A page never turns its employee on: the owner turned it off, and only
+    // he turns it back on.
+    if !state.agent_registry.read().await.contains_key(&agent_id) {
+        return (StatusCode::CONFLICT, format!("{name} is turned off. The owner turns it on in Nebo.")).into_response();
+    }
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let _sending = PAGE_SEND.lock().await;
+    if chat_busy(&state, &key).await {
+        return busy(&name);
+    }
+    let context = body.context.filter(|v| !v.is_null()).map(|v| match v.as_str() {
+        Some(s) => s.to_string(),
+        None => format!("App context: {v}"),
+    });
+    // Every open view of this conversation (another window of the app, the
+    // owner's Nebo) shows the words as they are sent.
+    state.hub.broadcast(
+        "chat_user_message",
+        serde_json::json!({
+            "session_id": &key,
+            "agentId": &agent_id,
+            "id": uuid::Uuid::new_v4().to_string(),
+            "content": &message,
+            "createdAt": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
+    let run = AppRun { session_key: key.clone(), prompt: message, context, scope, lane: types::constants::lanes::MAIN, hidden: false };
+    crate::chat_dispatch::run_chat(&state, app_run_config(&state, &agent_id, &name, run)).await;
+    axum::Json(serde_json::json!({ "sessionId": key, "status": "sent" })).into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ChatThread {
+    thread: Option<String>,
+}
+
+/// POST /apps/{agent_id}/chat/new — the page starts its conversation over:
+/// the next words begin a new one under the same key, and the one before is
+/// kept (an app's conversation, never listed among the owner's). Nothing to
+/// do when the page has not said anything yet. Refused while a turn runs
+/// there: stop it first.
+pub async fn new_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<ChatThread>>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let thread = match chat_thread(body.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let _sending = PAGE_SEND.lock().await;
+    if chat_busy(&state, &key).await {
+        return busy(&app_employee_name(&state, &agent_id));
+    }
+    if let Ok(Some(session)) = state.store.get_session_by_name(&key)
+        && let Err(e) = state.harness.sessions().rotate_chat(&session.id, None)
+    {
+        return to_error_response(e).into_response();
+    }
+    axum::Json(serde_json::json!({ "sessionId": key })).into_response()
+}
+
+/// POST /apps/{agent_id}/chat/stop — stop the turn running in the page's
+/// conversation, and what it handed off; nothing else of the owner's.
+pub async fn stop_chat(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<ChatThread>>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let thread = match chat_thread(body.thread.as_deref()) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let key = types::keyparser::app_page_key(&agent_id, thread);
+    let stopped = crate::chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, &key).await;
+    state.hub.broadcast("chat_cancelled", serde_json::json!({ "session_id": &key }));
+    axum::Json(serde_json::json!({ "sessionId": key, "stopped": stopped })).into_response()
 }
 
 async fn run_janus_collect(
@@ -1710,6 +1994,11 @@ async fn run_janus_sse(
         match start_janus_stream(&state, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1789,54 +2078,52 @@ pub async fn http_proxy(
         None => return (StatusCode::BAD_REQUEST, "missing url field").into_response(),
     };
 
-    // Enforce network: permission from manifest
-    if let Err(r) = check_network_permission(&state, &agent_id, &url).await {
-        return r;
+    // The app's `network:` grants (`app_grants`), asked of the address and
+    // of every redirect, through the one checked fetch the web tool uses
+    // (`tools::web_tool::fetch_checked`): never this computer, the network
+    // it is on, or a cloud's metadata address, whatever a name resolves to.
+    let granted = crate::app_grants::granted(&state, &agent_id).await;
+    let allowed = |u: &url::Url| {
+        let host = u.host_str().unwrap_or_default();
+        if napp::manifest::permission_covers(&granted, &format!("network:{host}")) {
+            Ok(())
+        } else {
+            Err(format!("app lacks permission: network:{host}"))
+        }
+    };
+    if let Err(e) = url::Url::parse(&url).map_err(|e| e.to_string()).and_then(|u| allowed(&u)) {
+        return (StatusCode::FORBIDDEN, e).into_response();
     }
 
-    let method = body
-        .get("method")
-        .and_then(|v| v.as_str())
-        .unwrap_or("GET")
-        .to_uppercase();
-
-    let headers: Vec<(String, String)> = body
-        .get("headers")
-        .and_then(|h| h.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
-
-    let client = match tls::http_client().build() {
-        Ok(client) => client,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
-    };
-    let mut req = match method.as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "PATCH" => client.patch(&url),
+    let method = match body.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
         _ => return (StatusCode::BAD_REQUEST, "unsupported method").into_response(),
     };
 
-    for (k, v) in &headers {
-        req = req.header(k.as_str(), v.as_str());
+    let mut req_headers = reqwest::header::HeaderMap::new();
+    for (k, v) in body.get("headers").and_then(|h| h.as_object()).into_iter().flatten() {
+        if let (Ok(name), Ok(value)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v.as_str().unwrap_or("")),
+        ) {
+            req_headers.insert(name, value);
+        }
     }
-
     // Add identifying header
-    req = req.header("X-Nebo-App", &agent_id);
-
-    if let Some(b) = req_body {
-        req = req.body(b);
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&agent_id) {
+        req_headers.insert("x-nebo-app", v);
     }
+    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
 
-    match req.send().await {
+    let client = match tools::web_tool::checked_client().build() {
+        Ok(client) => client,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
+    };
+    match tools::web_tool::fetch_checked(&client, method, &url, req_headers, req_body, allowed).await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let resp_headers: Vec<(String, String)> = resp
@@ -1889,22 +2176,101 @@ fn share_requested_event(agent_id: &str, req: &ShareRequest, artifact: &str, tit
     origin.stamp(serde_json::json!({ "agentId": agent_id, "chatId": req.thread, "artifact": artifact, "title": title }))
 }
 
-/// A file or folder name an app may write into Work: one plain segment,
-/// no separators, not hidden, at most 120 characters. The file needs an
-/// extension so it opens in the right viewer.
-fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
+/// A file name an app may hand the owner: one plain segment, no
+/// separators, not hidden, at most 120 characters, with an extension so it
+/// opens in the right viewer.
+fn work_segment(name: &str) -> Option<String> {
     let name = name.trim();
     let ok = !name.is_empty()
         && name.chars().count() <= 120
         && !name.starts_with('.')
         && !name.contains(['/', '\\', '\0'])
-        && (!needs_ext || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty()));
+        && name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
     ok.then(|| name.to_string())
 }
 
+/// GET/HEAD /apps/{agent_id}/files/{*path} — `nebo.files.url`: a file of the
+/// owner's workspace (`~/NeboAI`) inside a folder the app holds
+/// (`filesystem:read:<folder>`, `app_grants`: as its manifest asks for an
+/// app built here, once the owner allows it for one from the marketplace),
+/// so a page shows the owner's pictures and plays his films. It is the
+/// app's own route, so its page reaches it wherever it is open, with its
+/// pass, by the rule every app route admits its caller
+/// (`validate_app_token`). Read only. A path no grant covers is 403 naming
+/// the permission; a file that is missing, hidden, or outside the granted
+/// folder once `..` and symlinks are resolved is 404, the same answer, so
+/// nothing learns what else is on the disk. The file streams with the files
+/// route's own range and type rules (`files::stream_file`).
+pub async fn serve_app_file(
+    State(state): State<AppState>,
+    Path((agent_id, path)): Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, request.headers()).await {
+        return r;
+    }
+    let permissions = crate::app_grants::granted(&state, &agent_id).await;
+    let grants: Vec<&str> = permissions.iter().filter_map(|p| napp::manifest::file_read_folder(p)).collect();
+    let Some(grant) = covering_grant(&grants, &path) else {
+        let refusal = format!(
+            "{path} is in no folder this app may read: its manifest asks for a folder with {}<folder>, and an app from the marketplace reads it once the owner allows it",
+            napp::manifest::FILESYSTEM_READ
+        );
+        return (StatusCode::FORBIDDEN, refusal).into_response();
+    };
+    let Ok(workspace) = config::workspace_dir() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match granted_file(&workspace, grant, &path).await {
+        Some(file) => super::files::stream_file(&file, super::files::content_type_for(&file), request).await,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The grant whose folder holds `rel` (a path inside the workspace), part by
+/// part: `Media/Projects` holds `Media/Projects/a/b.mp4`, never
+/// `Media/ProjectsOld/b.mp4`. A path with an empty, `.` or `..` part, or a
+/// `\`, `:` (a Windows stream, `a.mp4:secret`) or NUL anywhere, is covered
+/// by nothing.
+fn covering_grant<'a>(grants: &[&'a str], rel: &str) -> Option<&'a str> {
+    if rel.contains(['\\', ':', '\0']) {
+        return None;
+    }
+    let parts: Vec<&str> = rel.split('/').collect();
+    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+        return None;
+    }
+    grants.iter().copied().find(|grant| {
+        let folder: Vec<&str> = grant.split('/').collect();
+        parts.len() > folder.len() && parts[..folder.len()] == folder[..]
+    })
+}
+
+/// The file `rel` names under `grant`'s folder of `workspace`, resolved:
+/// `None` when it is missing or a folder, when the one rule for what of the
+/// workspace any route serves says no (`config::workspace_private`: a
+/// hidden part anywhere, a coding agent's folder, Nebo's own names), or
+/// when a symlink takes it, or the granted folder itself, out of the folder
+/// or the workspace (`files::within_files_root`).
+async fn granted_file(workspace: &StdPath, grant: &str, rel: &str) -> Option<PathBuf> {
+    let below = rel.strip_prefix(grant)?.strip_prefix('/')?;
+    if config::workspace_private(rel) {
+        return None;
+    }
+    let (folder, root) = super::files::within_files_root(workspace, &workspace.join(grant)).await?;
+    let (file, _) = super::files::within_files_root(&folder, &folder.join(below)).await?;
+    // The rule again, of what the path opens: a link, or a name the disk
+    // reads another way (`Claude-Code`, `CLAUDE~1`), never reaches a private
+    // folder.
+    if config::workspace_private(&file.strip_prefix(&root).ok()?.to_string_lossy()) {
+        return None;
+    }
+    fs::metadata(&file).await.ok()?.is_file().then_some(file)
+}
+
 /// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
-/// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
-/// replaced when shared again), and the owner's open chat shows the one
+/// a file to share. The file is kept like every file handed to him
+/// (`.shared/<content hash>/<name>`), and the owner's open chat shows the one
 /// Share dialog on it. The page never calls the share API: who can open the
 /// link, and until when, is his choice there.
 pub async fn share_file(
@@ -1916,11 +2282,10 @@ pub async fn share_file(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let app_name = match validate_app_agent(&state.store, &agent_id, None) {
-        Ok((_, name)) => name,
-        Err(e) => return to_error_response(e).into_response(),
-    };
-    let Some(name) = work_segment(&body.name, true) else {
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let Some(name) = work_segment(&body.name) else {
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
             "error": "name must be a file name with an extension, like \"Launch deck.html\""
         }))).into_response();
@@ -1928,21 +2293,34 @@ pub async fn share_file(
     if body.content.is_empty() {
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "content is empty" }))).into_response();
     }
-    let folder = work_segment(&app_name, false).unwrap_or_else(|| agent_id.clone());
-    let dir = match config::files_dir() {
-        Ok(d) => d.join(&folder),
-        Err(e) => return to_error_response(e).into_response(),
+    // Kept the way every file handed to the owner is
+    // (`chat_dispatch::keep_shared_file`): `.shared/<content hash>/<name>`,
+    // in the store, never a folder of the owner's that shares the app's
+    // name, and never over another file. Its page opens sandboxed with no
+    // folder pass (`files::document_folder`).
+    let Ok(files_dir) = config::files_dir() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if let Err(e) = fs::create_dir_all(&dir).await {
-        warn!(error = %e, "app share: cannot make the Work folder");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    if let Err(e) = fs::write(dir.join(&name), body.content.as_bytes()).await {
-        warn!(error = %e, "app share: cannot write the file");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    // The same unencoded reference a run's own Work files carry.
-    let artifact = format!("/api/v1/files/{folder}/{name}");
+    let staging = std::env::temp_dir().join(format!("nebo-app-share-{}", uuid::Uuid::new_v4()));
+    let staged = staging.join(&name);
+    let kept = match fs::create_dir_all(&staging).await {
+        Ok(()) => match fs::write(&staged, body.content.as_bytes()).await {
+            Ok(()) => crate::chat_dispatch::keep_shared_file(&files_dir, &staged),
+            Err(e) => {
+                warn!(error = %e, "app share: cannot write the file");
+                None
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, "app share: cannot stage the file");
+            None
+        }
+    };
+    let _ = fs::remove_dir_all(&staging).await;
+    let artifact: String = match kept {
+        Some(artifact) => artifact,
+        None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
     axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }
@@ -2051,6 +2429,9 @@ pub fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("m4a") => "audio/mp4",
         Some("aac") => "audio/aac",
         Some("flac") => "audio/flac",
+        // Captions: a browser takes a <track> only as text/vtt.
+        Some("vtt") => "text/vtt; charset=utf-8",
+        Some("srt") => "application/x-subrip",
         Some("glb") => "model/gltf-binary",
         Some("gltf") => "model/gltf+json",
         _ => "application/octet-stream",
@@ -2153,15 +2534,69 @@ mod connection_origin_tests {
     fn native_and_same_origin_only() {
         let mut h = axum::http::HeaderMap::new();
         h.insert(header::HOST, "127.0.0.1:27895".parse().unwrap());
-        assert!(app_connection_origin_allowed(&h));
+        assert!(app_connection_origin_allowed(&h, "app-a"));
         h.insert(header::ORIGIN, "http://127.0.0.1:27895".parse().unwrap());
-        assert!(app_connection_origin_allowed(&h));
+        assert!(app_connection_origin_allowed(&h, "app-a"));
         h.insert(header::ORIGIN, "https://untrusted.example".parse().unwrap());
-        assert!(!app_connection_origin_allowed(&h));
+        assert!(!app_connection_origin_allowed(&h, "app-a"));
         h.insert(header::ORIGIN, "null".parse().unwrap());
-        assert!(!app_connection_origin_allowed(&h));
+        assert!(!app_connection_origin_allowed(&h, "app-a"));
         h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
-        assert!(!app_connection_origin_allowed(&h));
+        assert!(!app_connection_origin_allowed(&h, "app-a"));
+        // The app's own sandboxed page (`Origin: null`) with its pass.
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
+        h.insert(crate::middleware::APP_VIEW_PASS, pass.parse().unwrap());
+        assert!(app_connection_origin_allowed(&h, "app-a"));
+        assert!(!app_connection_origin_allowed(&h, "app-b"), "another app's pass");
+        napp::page_pass::revoke(&pass);
+    }
+
+    /// A sidecar is sent the request's own headers, never a credential the
+    /// request carried: not the owner's install key or session, not the
+    /// app's pass, not the tunnel's stamps, not a run's credential.
+    #[test]
+    fn a_sidecar_never_sees_the_owners_key_or_cookie() {
+        for name in [
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "x-nebo-tunnel-auth",
+            "x-nebo-tunnel-unverified",
+            "x-nebo-app-view",
+            "x-nebo-run-credential",
+            "x-nebo-connected-profiles",
+        ] {
+            assert!(!reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name}");
+        }
+        for name in ["content-type", "accept", "x-nebo-connection-id", "user-agent", "range"] {
+            assert!(reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod sidecar_header_tests {
+    use super::reaches_sidecar;
+
+    /// Whatever holds a sidecar's address sees the app's own request, never
+    /// a credential that opens Nebo.
+    #[test]
+    fn a_sidecar_never_sees_nebos_credentials() {
+        for name in [
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "x-nebo-tunnel-auth",
+            "x-nebo-app-view",
+            "x-nebo-run-credential",
+            "x-nebo-connected-neboai",
+            "x-nebo-connected-profiles",
+        ] {
+            assert!(!reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name} must not reach the sidecar");
+        }
+        for name in ["content-type", "accept", "x-app-thing", "range"] {
+            assert!(reaches_sidecar(&axum::http::HeaderName::from_static(name)), "{name} is the app's own");
+        }
     }
 }
 
@@ -2183,12 +2618,7 @@ mod developer_mode_tests {
     fn app(store: &db::Store, id: &str, name: &str) {
         store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
         store.set_agent_app_fields(id, true, Some("/tmp/ui"), None, None).unwrap();
-    }
-
-    fn from_page(app: &str) -> axum::http::HeaderMap {
-        let mut h = axum::http::HeaderMap::new();
-        h.insert(header::REFERER, format!("https://neboai.com/t/bot-1/apps/{app}/ui/index.html").parse().unwrap());
-        h
+        store.set_agent_built_here(id, true).unwrap();
     }
 
     const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
@@ -2206,37 +2636,37 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
 
-        assert_eq!(desktop_script(&store, 27895, "app-m"), "", "installed: no developer tooling");
-        assert_eq!(desktop_script(&store, 27895, "nope"), "");
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
+        assert_eq!(desktop_script(&store, 27895, "app-m", "p"), "", "installed: no developer tooling");
+        assert_eq!(desktop_script(&store, 27895, "nope", "p"), "");
 
-        let quiet = desktop_script(&store, 27895, "app-a");
+        let quiet = desktop_script(&store, 27895, "app-a", &pass);
         assert!(quiet.contains("data-nebo-devtools") && quiet.contains(r#""console":false"#), "{quiet}");
         assert!(quiet.contains(r#""appId":"app-a""#) && quiet.contains(r#""api":"neboapp://app-a/api/v1/apps/app-a""#));
-        let pass = quiet
-            .split("ws://127.0.0.1:27895/k/")
-            .nth(1)
-            .and_then(|r| r.split_once("/ws/app/app-a\""))
-            .map(|(p, _)| p.to_string())
-            .expect("the socket and its pass");
-        assert!(napp::app_view::admits(&pass, "app-a") && !napp::app_view::admits(&pass, "app-m"));
+        assert!(
+            quiet.contains(&format!("ws://127.0.0.1:27895/k/{pass}/ws/app/app-a")),
+            "the socket carries the window's pass: {quiet}"
+        );
 
         developer_mode(&store, true);
-        assert!(desktop_script(&store, 27895, "Racer").contains(r#""console":true"#), "by name, the console shows");
-        assert_eq!(desktop_script(&store, 27895, "app-m"), "", "installed, mode on");
+        assert!(desktop_script(&store, 27895, "app-a", &pass).contains(r#""console":true"#), "the console shows");
+        assert_eq!(desktop_script(&store, 27895, "Racer", &pass), "", "by id alone");
+        assert_eq!(desktop_script(&store, 27895, "app-m", &pass), "", "installed, mode on");
     }
 
     #[test]
     fn the_developer_script_is_injected_only_into_the_owners_own_apps() {
-        let off = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), None, None)).unwrap();
+        let off = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), None, None, "null")).unwrap();
         assert!(off.contains("data-nebo-bridge"), "the bridge is always there");
         assert!(!off.contains("data-nebo-devtools"), "no developer script in an installed app");
         assert!(!off.contains("__neboDevtools"));
 
-        let quiet = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", false), None)).unwrap();
+        let quiet = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", false), None, "null")).unwrap();
         assert!(quiet.contains(r#""console":false"#) && quiet.contains(r#""employee":"Kart Racer""#), "reload and capture, no console: {quiet}");
 
-        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", true), None)).unwrap();
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", true), None, "null")).unwrap();
         let bridge = on.find("data-nebo-bridge").unwrap();
         let dev = on.find("data-nebo-devtools").expect("the developer script");
         let app = on.find("main.js").unwrap();
@@ -2245,40 +2675,22 @@ mod developer_mode_tests {
         assert!(!on.contains("__NEBO_DEVTOOLS_CONFIG__"));
         let hook = on.find(tools::app_publish::ON_REOPEN).expect("the re-arm hook");
         assert!(dev < hook && hook < on.find("__neboDevtools").unwrap(), "the hook opens the developer script");
-        assert_eq!(on.matches("</script>").count(), 3, "bridge, developer script, the app's own");
+        assert_eq!(on.matches("</script>").count(), 4, "bridge, storage, developer script, the app's own");
     }
 
     #[test]
     fn a_name_can_never_close_the_script() {
-        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true), None)).unwrap();
-        assert_eq!(on.matches("</script>").count(), 3, "{on}");
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true), None, "null")).unwrap();
+        assert_eq!(on.matches("</script>").count(), 4, "{on}");
         assert!(on.contains(r"\u003c/script>\u003cb>x"));
     }
 
-    /// The SDK in a desktop app window (`neboapp://<id>`, proxied with the
-    /// install key and the page's origin) reaches its own app's store and
-    /// round-trips a value; another app's routes, a missing or wrong key,
-    /// and a request naming no window are refused.
+    /// What `put_storage` then `get_storage` do for an app's page: its own
+    /// store round-trips a value, and another app's store has none of it.
     #[test]
-    fn a_desktop_window_reaches_its_own_apps_store_and_no_other() {
+    fn an_apps_store_round_trips_its_own_values_alone() {
         let (_d, store) = store();
         app(&store, "crm", "CRM");
-        let window = |origin: Option<&str>, key: &str| {
-            let mut h = axum::http::HeaderMap::new();
-            h.insert(header::AUTHORIZATION, format!("Bearer {key}").parse().unwrap());
-            if let Some(o) = origin {
-                h.insert(header::ORIGIN, o.parse().unwrap());
-            }
-            h
-        };
-        let own = window(Some("neboapp://crm"), "key-1");
-        assert!(desktop_window_reaches(&own, "crm", Some("key-1")));
-        assert!(!desktop_window_reaches(&own, "notes", Some("key-1")), "another app's routes");
-        assert!(!desktop_window_reaches(&own, "crm", Some("key-2")), "a wrong key");
-        assert!(!desktop_window_reaches(&own, "crm", None), "no key on this install");
-        assert!(!desktop_window_reaches(&window(None, "key-1"), "crm", Some("key-1")), "no window named");
-        assert!(!desktop_window_reaches(&window(Some("http://evil.test"), "key-1"), "crm", Some("key-1")));
-
         // What put_storage then get_storage do for that window.
         let contact = serde_json::json!({ "name": "John Smith", "phone": "+1 555 0100" });
         let sent = serde_json::Value::String(contact.to_string()).to_string();
@@ -2317,63 +2729,9 @@ mod developer_mode_tests {
         assert!(time("b") > b0, "a rewritten key gets the new time");
     }
 
-    /// The app's page in the owner's signed-in browser (Open App from the
-    /// web UI on this computer) reaches its own app's store with the session
-    /// cookie; another app's page, a page that is not an app's, another
-    /// site, a wrong or missing session, and no install key are refused.
-    #[test]
-    fn a_signed_in_browser_reaches_only_the_app_whose_page_it_is() {
-        let session = crate::local_access::session_for("key-1");
-        let page = |cookie: Option<&str>, site: Option<&str>, referer: Option<&str>| {
-            let mut h = axum::http::HeaderMap::new();
-            if let Some(c) = cookie {
-                h.insert(header::COOKIE, c.parse().unwrap());
-            }
-            if let Some(s) = site {
-                h.insert("sec-fetch-site", s.parse().unwrap());
-            }
-            if let Some(r) = referer {
-                h.insert(header::REFERER, r.parse().unwrap());
-            }
-            h
-        };
-        let cookie = format!("theme=dark; nebo_session={session}");
-        let own = "http://localhost:27895/apps/crm/ui/index.html?thread=t1&client=c1";
-        let h = page(Some(&cookie), Some("same-origin"), Some(own));
-        assert!(signed_in_app_page(&h, "crm", Some("key-1")));
-        assert!(
-            signed_in_app_page(&page(Some(&cookie), Some("same-origin"), Some("http://localhost:27895/apps/crm/ui/")), "crm", Some("key-1")),
-            "the page's root"
-        );
-        assert!(!signed_in_app_page(&h, "notes", Some("key-1")), "another app's routes");
-        assert!(!signed_in_app_page(&h, "crm", Some("key-2")), "a session from another key");
-        assert!(!signed_in_app_page(&h, "crm", None), "no key on this install");
-        assert!(!signed_in_app_page(&h, "", Some("key-1")));
-        assert!(!signed_in_app_page(&page(None, Some("same-origin"), Some(own)), "crm", Some("key-1")), "no session");
-        assert!(
-            !signed_in_app_page(&page(Some("nebo_session=forged"), Some("same-origin"), Some(own)), "crm", Some("key-1")),
-            "a forged session"
-        );
-        for site in [Some("same-site"), Some("cross-site"), Some("none"), None] {
-            assert!(!signed_in_app_page(&page(Some(&cookie), site, Some(own)), "crm", Some("key-1")), "{site:?}");
-        }
-        for referer in [
-            None,
-            Some("http://localhost:27895/"),
-            Some("http://localhost:27895/agents/crm/chat"),
-            Some("http://localhost:27895/apps/notes/ui/index.html"),
-            Some("http://localhost:27895/apps/crm/api/x"),
-            Some("http://localhost:27895/apps/crmx/ui/index.html"),
-            Some("http://localhost:27895/files/apps/crm/ui/index.html"),
-        ] {
-            assert!(!signed_in_app_page(&page(Some(&cookie), Some("same-origin"), referer), "crm", Some("key-1")), "{referer:?}");
-        }
-    }
-
-    /// `nebo.decide` (POST /apps/{id}/janus/decide) is admitted like
-    /// janus/complete: a desktop window reaches only its own app's route by
-    /// the install key and its origin, and the id must be an app. Admitted,
-    /// the request goes to the one decision client, traced as the app.
+    /// `nebo.decide` (POST /apps/{id}/janus/decide): the id must be an app.
+    /// Admitted (by the app's pass, `validate_app_token`), the request goes
+    /// to the one decision client, traced as the app.
     #[tokio::test]
     async fn an_apps_decision_is_its_own_and_goes_to_the_one_client() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2381,12 +2739,6 @@ mod developer_mode_tests {
         app(&store, "crm", "CRM");
         store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
 
-        let mut own = axum::http::HeaderMap::new();
-        own.insert(header::AUTHORIZATION, "Bearer key-1".parse().unwrap());
-        own.insert(header::ORIGIN, "neboapp://crm".parse().unwrap());
-        assert!(desktop_window_reaches(&own, "crm", Some("key-1")));
-        assert!(!desktop_window_reaches(&own, "notes", Some("key-1")), "another app's decide route");
-        assert!(!desktop_window_reaches(&own, "crm", Some("key-2")), "a wrong install key");
         assert!(validate_app_agent(&store, "crm", None).is_ok());
         assert!(matches!(validate_app_agent(&store, "emp-1", None), Err(types::NeboError::Unauthorized)), "not an app");
         assert!(matches!(validate_app_agent(&store, "nope", None), Err(types::NeboError::NotFound)));
@@ -2498,42 +2850,21 @@ mod developer_mode_tests {
     }
 
     #[test]
-    fn the_install_key_is_the_desktop_windows_proof() {
-        let mut h = axum::http::HeaderMap::new();
-        assert!(!bearer_is(&h, Some("key-1")));
-        h.insert(header::AUTHORIZATION, "Bearer key-1".parse().unwrap());
-        assert!(bearer_is(&h, Some("key-1")));
-        assert!(!bearer_is(&h, Some("key-2")));
-        assert!(!bearer_is(&h, None));
-        assert!(!bearer_is(&h, Some("")));
-    }
-
-    #[test]
-    fn the_devlog_routes_take_only_an_own_apps_own_page() {
+    fn the_devlog_routes_take_only_an_own_app() {
         let (_d, store) = store();
         app(&store, "app-a", "Racer");
-        app(&store, "app-b", "Notes");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
         store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
 
-        assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Ok(()), "an own app, mode off");
-        assert_eq!(devlog_target(&store, "app-m", &from_page("app-m")), Err(StatusCode::NOT_FOUND), "installed");
+        assert_eq!(devlog_target(&store, "app-a"), Ok(()), "an own app, mode off");
+        assert_eq!(devlog_target(&store, "app-m"), Err(StatusCode::NOT_FOUND), "installed");
         developer_mode(&store, true);
-        assert_eq!(devlog_target(&store, "app-m", &from_page("app-m")), Err(StatusCode::NOT_FOUND), "installed, mode on");
-        assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Ok(()));
-        assert_eq!(
-            devlog_target(&store, "app-a", &axum::http::HeaderMap::new()),
-            Ok(()),
-            "no Referer: the app token decides"
-        );
-        assert_eq!(
-            devlog_target(&store, "app-b", &from_page("app-a")),
-            Err(StatusCode::FORBIDDEN),
-            "one app's page never writes another app's console"
-        );
-        assert_eq!(devlog_target(&store, "emp-1", &from_page("emp-1")), Err(StatusCode::NOT_FOUND), "not an app");
-        assert_eq!(devlog_target(&store, "nope", &from_page("nope")), Err(StatusCode::NOT_FOUND));
+        assert_eq!(devlog_target(&store, "app-m"), Err(StatusCode::NOT_FOUND), "installed, mode on");
+        assert_eq!(devlog_target(&store, "app-a"), Ok(()));
+        assert_eq!(devlog_target(&store, "emp-1"), Err(StatusCode::NOT_FOUND), "not an app");
+        assert_eq!(devlog_target(&store, "nope"), Err(StatusCode::NOT_FOUND));
     }
 
     #[tokio::test]
@@ -2549,7 +2880,7 @@ mod developer_mode_tests {
         let mark = tools::app_console::mark();
         assert_eq!(keep_devlog(&id, body.to_string().as_bytes()), Ok(3));
         // The view a line came from is kept with it.
-        assert_eq!(tools::app_console::view_errors(&id, mark, "live-7"), ["GET /track.json \u{2192} 404 Not Found"]);
+        assert_eq!(tools::app_console::view_lines(&id, mark, "live-7").errors, ["GET /track.json \u{2192} 404 Not Found"]);
         assert_eq!(keep_devlog(&id, b"not json"), Err(StatusCode::BAD_REQUEST));
         assert_eq!(tools::app_console::error_count(&id), 2);
 
@@ -2578,6 +2909,109 @@ mod developer_mode_tests {
         assert!(prompt.contains("Uncaught TypeError") && prompt.contains("/track.json"), "{prompt}");
         assert!(!prompt.contains("booted"), "only errors are sent");
         assert_eq!(devlog_send_prompt("Kart Racer", &[]), None);
+    }
+}
+
+#[cfg(test)]
+mod app_file_tests {
+    use super::*;
+
+    /// The owner's workspace: a granted folder with a film, its hidden
+    /// proxies and a folder, a sibling folder whose name starts the same, a
+    /// secret beside the folder, and one outside the workspace.
+    fn workspace() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("NeboAI");
+        let project = ws.join("Media/Projects/reel");
+        std::fs::create_dir_all(project.join(".proxies")).unwrap();
+        std::fs::create_dir_all(ws.join("Media/ProjectsOld")).unwrap();
+        std::fs::write(project.join("render.mp4"), b"film").unwrap();
+        std::fs::write(project.join(".proxies/render-proxy.mp4"), b"proxy").unwrap();
+        std::fs::write(project.join(".env"), b"KEY=1").unwrap();
+        std::fs::write(ws.join("Media/ProjectsOld/old.mp4"), b"old").unwrap();
+        std::fs::write(ws.join("Media/secret.txt"), b"secret").unwrap();
+        std::fs::write(tmp.path().join("outside.txt"), b"outside").unwrap();
+        (tmp, ws)
+    }
+
+    #[test]
+    fn a_grant_covers_its_folder_part_by_part() {
+        let grants = ["Media/Projects", "Docs"];
+        assert_eq!(covering_grant(&grants, "Media/Projects/reel/render.mp4"), Some("Media/Projects"));
+        assert_eq!(covering_grant(&grants, "Docs/a.pdf"), Some("Docs"));
+        for refused in [
+            // An ungranted folder, and one whose name only starts the same.
+            "Media/secret.txt",
+            "Media/ProjectsOld/old.mp4",
+            // The folder itself is not a file.
+            "Media/Projects",
+            // Climbing, absolute, and odd parts.
+            "Media/Projects/../secret.txt",
+            "Media/Projects/reel/../../../outside.txt",
+            "/Media/Projects/reel/render.mp4",
+            "Media/Projects//reel/render.mp4",
+            "Media/Projects/./reel/render.mp4",
+            "Media/Projects/reel\\..\\..\\secret.txt",
+            "Media/Projects/reel/render.mp4\0",
+            // A Windows alternate data stream.
+            "Media/Projects/reel/render.mp4:hidden",
+            "Media/Projects/reel/render.mp4::$DATA",
+        ] {
+            assert_eq!(covering_grant(&grants, refused), None, "{refused}");
+        }
+        assert_eq!(covering_grant(&[], "Media/Projects/reel/render.mp4"), None);
+    }
+
+    #[tokio::test]
+    async fn only_a_visible_file_inside_the_granted_folder_is_served() {
+        let (_tmp, ws) = workspace();
+        let got = granted_file(&ws, "Media/Projects", "Media/Projects/reel/render.mp4").await.unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"film");
+        for refused in [
+            // Hidden below the grant: proxies, secrets.
+            "Media/Projects/reel/.proxies/render-proxy.mp4",
+            "Media/Projects/reel/.env",
+            // A folder, and a file that isn't there.
+            "Media/Projects/reel",
+            "Media/Projects/reel/gone.mp4",
+        ] {
+            assert_eq!(granted_file(&ws, "Media/Projects", refused).await, None, "{refused}");
+        }
+        // The one servability rule holds even where a grant names the
+        // folder: nothing hidden, no coding agent's folder.
+        let proxies = "Media/Projects/reel/.proxies";
+        assert_eq!(granted_file(&ws, proxies, "Media/Projects/reel/.proxies/render-proxy.mp4").await, None);
+        std::fs::create_dir_all(ws.join("claude-code/repo")).unwrap();
+        std::fs::write(ws.join("claude-code/repo/main.rs"), b"code").unwrap();
+        assert_eq!(granted_file(&ws, "claude-code", "claude-code/repo/main.rs").await, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_never_leads_out_of_the_granted_folder() {
+        let (tmp, ws) = workspace();
+        let project = ws.join("Media/Projects/reel");
+        // A file and a folder that point out of the granted folder.
+        std::os::unix::fs::symlink(ws.join("Media/secret.txt"), project.join("secret.mp4")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), project.join("up")).unwrap();
+        // A link inside the folder to a file inside it is fine.
+        std::os::unix::fs::symlink(project.join("render.mp4"), project.join("latest.mp4")).unwrap();
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/secret.mp4").await, None);
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/up/outside.txt").await, None);
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/up/outside.txt").await, None);
+        assert!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/latest.mp4").await.is_some());
+        // The granted folder itself a link out of the workspace: nothing.
+        std::fs::create_dir_all(tmp.path().join("elsewhere")).unwrap();
+        std::fs::write(tmp.path().join("elsewhere/a.mp4"), b"a").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("elsewhere"), ws.join("Linked")).unwrap();
+        assert_eq!(granted_file(&ws, "Linked", "Linked/a.mp4").await, None);
+        // A granted folder that is a link to a private one inside the
+        // workspace is judged by what it opens.
+        std::fs::create_dir_all(ws.join("claude-code/repo")).unwrap();
+        std::fs::write(ws.join("claude-code/repo/main.rs"), b"code").unwrap();
+        std::os::unix::fs::symlink(ws.join("claude-code"), ws.join("Code")).unwrap();
+        assert_eq!(granted_file(&ws, "Code", "Code/repo/main.rs").await, None);
+        assert_eq!(granted_file(&ws, "Claude-Code", "Claude-Code/repo/main.rs").await, None, "whatever its case");
     }
 }
 
@@ -2647,7 +3081,7 @@ mod media_serving_tests {
         let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         std::fs::write(&model, &bytes).unwrap();
 
-        let resp = serve_ui_file(&model, &HeaderMap::new(), None, None, None).await;
+        let resp = serve_ui_file(&model, &HeaderMap::new(), None, None, None, "null").await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::CONTENT_LENGTH], len.to_string().as_str());
         let mut stream = resp.into_body().into_data_stream();
@@ -2667,7 +3101,7 @@ mod media_serving_tests {
             let mut h = HeaderMap::new();
             h.insert(header::RANGE, HeaderValue::from_str(&format!("bytes={start}-{end}")).unwrap());
             h
-        }, None, None, None)
+        }, None, None, None, "null")
         .await;
         assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(part.headers()[header::CONTENT_LENGTH], (end - start + 1).to_string().as_str());
@@ -2727,7 +3161,7 @@ mod app_file_caching_tests {
     #[tokio::test]
     async fn a_hashed_file_is_immutable_for_a_year() {
         let (_d, ui) = ui();
-        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, None, None).await;
+        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, None, None, "null").await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(get(&r, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
         assert!(get(&r, header::ETAG).is_some_and(|t| t.starts_with('"')));
@@ -2739,7 +3173,7 @@ mod app_file_caching_tests {
     async fn a_plain_asset_revalidates_and_answers_304_when_unchanged() {
         let (_d, ui) = ui();
         let film = ui.join("assets/hero.mp4");
-        let first = serve_ui_file(&film, &HeaderMap::new(), None, None, None).await;
+        let first = serve_ui_file(&film, &HeaderMap::new(), None, None, None, "null").await;
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(get(&first, header::ACCEPT_RANGES), Some("bytes"));
@@ -2747,7 +3181,7 @@ mod app_file_caching_tests {
         assert!(!etag.starts_with("W/"), "a strong tag");
         assert_eq!(body(first).await.len(), 256);
 
-        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
+        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None, "null").await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(get(&again, header::ETAG), Some(etag.as_str()));
         assert_eq!(get(&again, header::CACHE_CONTROL), Some("no-cache"));
@@ -2756,14 +3190,14 @@ mod app_file_caching_tests {
 
         // Weak and listed forms of the same tag match too; another does not.
         let listed = format!("\"other\", W/{etag}");
-        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, None, None).await;
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, None, None, "null").await;
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
-        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, None, None).await;
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, None, None, "null").await;
         assert_eq!(r.status(), StatusCode::OK);
 
         // A changed file is a new tag: the old one gets the new bytes.
         std::fs::write(&film, b"new film").unwrap();
-        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
+        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None, "null").await;
         assert_eq!(changed.status(), StatusCode::OK);
         assert_ne!(get(&changed, header::ETAG), Some(etag.as_str()));
         assert_eq!(body(changed).await, b"new film");
@@ -2774,18 +3208,18 @@ mod app_file_caching_tests {
     async fn the_entry_page_revalidates_and_answers_304() {
         let (_d, ui) = ui();
         let index = ui.join("index.html");
-        let first = serve_ui_file(&index, &HeaderMap::new(), None, None, None).await;
+        let first = serve_ui_file(&index, &HeaderMap::new(), None, None, None, "null").await;
         assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(get(&first, header::CONTENT_TYPE), Some("text/html; charset=utf-8"));
         let etag = get(&first, header::ETAG).unwrap().to_string();
         assert!(String::from_utf8(body(first).await).unwrap().contains("data-nebo-bridge"));
 
-        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
+        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None, "null").await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         assert!(body(again).await.is_empty());
 
         std::fs::write(&index, "<html><head></head><body>v2</body></html>").unwrap();
-        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
+        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None, "null").await;
         assert_eq!(changed.status(), StatusCode::OK);
     }
 
@@ -2800,16 +3234,16 @@ mod app_file_caching_tests {
         std::fs::write(ui.join("help/faq.htm"), "<p>faq</p>").unwrap();
         let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
         for name in ["render.html", "help/faq.htm"] {
-            let r = serve_ui_file(&ui.join(name), &HeaderMap::new(), own, None, None).await;
+            let r = serve_ui_file(&ui.join(name), &HeaderMap::new(), own, None, None, "null").await;
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             let html = String::from_utf8(body(r).await).unwrap();
             assert!(html.contains("data-nebo-bridge") && html.contains("nebo-app-id"), "{name}: {html}");
             assert!(html.contains("data-nebo-devtools"), "{name}");
-            let bought = serve_ui_file(&ui.join(name), &HeaderMap::new(), None, None, None).await;
+            let bought = serve_ui_file(&ui.join(name), &HeaderMap::new(), None, None, None, "null").await;
             let html = String::from_utf8(body(bought).await).unwrap();
             assert!(html.contains("data-nebo-bridge") && !html.contains("data-nebo-devtools"), "{name}");
         }
-        let js = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, None, None).await;
+        let js = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, None, None, "null").await;
         assert_eq!(body(js).await, b"console.log(1)");
     }
 
@@ -2819,14 +3253,14 @@ mod app_file_caching_tests {
         let (_d, ui) = ui();
         for name in ["index.html", "main-0a8ksftt.js", "assets/hero.mp4"] {
             let file = ui.join(name);
-            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, None, None).await;
+            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, None, None, "null").await;
             let etag = get(&tagged, header::ETAG).unwrap().to_string();
-            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), None, None).await;
+            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), None, None, "null").await;
             assert_eq!(r.status(), StatusCode::OK, "{name}");
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             assert!(get(&r, header::ETAG).is_none(), "{name}");
         }
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), None, None).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), None, None, "null").await;
         assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
     }
 
@@ -2836,12 +3270,12 @@ mod app_file_caching_tests {
     async fn an_own_apps_entry_page_is_never_kept() {
         let (_d, ui) = ui();
         let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), own, None, None).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), own, None, None, "null").await;
         assert_eq!(get(&page, header::CACHE_CONTROL), Some("no-store"));
         assert!(get(&page, header::ETAG).is_none());
-        let hashed = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, None, None).await;
+        let hashed = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, None, None, "null").await;
         assert_eq!(get(&hashed, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
-        let film = serve_ui_file(&ui.join("assets/hero.mp4"), &HeaderMap::new(), own, None, None).await;
+        let film = serve_ui_file(&ui.join("assets/hero.mp4"), &HeaderMap::new(), own, None, None, "null").await;
         assert_eq!(get(&film, header::CACHE_CONTROL), Some("no-cache"));
     }
 
@@ -2850,16 +3284,16 @@ mod app_file_caching_tests {
     async fn ranges_follow_the_tag() {
         let (_d, ui) = ui();
         let film = ui.join("assets/hero.mp4");
-        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, None, None).await, header::ETAG).unwrap().to_string();
+        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, None, None, "null").await, header::ETAG).unwrap().to_string();
 
-        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, None, None).await;
+        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, None, None, "null").await;
         assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(get(&part, header::CONTENT_RANGE), Some("bytes 10-19/256"));
         assert_eq!(get(&part, header::ETAG), Some(etag.as_str()));
         assert_eq!(get(&part, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(body(part).await, (10..=19u8).collect::<Vec<_>>());
 
-        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, None, None).await;
+        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, None, None, "null").await;
         assert_eq!(stale.status(), StatusCode::OK);
         assert_eq!(body(stale).await.len(), 256);
     }
@@ -2869,10 +3303,10 @@ mod app_file_caching_tests {
     async fn device_motion_opens_the_sensors_for_the_page() {
         let (_d, ui) = ui();
         let motion = napp::manifest::AppWindow::from_manifest(None, &[napp::manifest::DEVICE_MOTION.into()]);
-        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, Some(&motion), None).await;
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, Some(&motion), None, "null").await;
         let policy = get(&r, header::HeaderName::from_static("permissions-policy")).unwrap();
         assert!(policy.contains("accelerometer=(self)") && policy.contains("gyroscope=(self)"), "{policy}");
-        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, None, None).await;
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, None, None, "null").await;
         assert!(r.headers().get("permissions-policy").is_none(), "the default comes from the middleware");
     }
 
@@ -2893,7 +3327,7 @@ mod app_file_caching_tests {
         let off = vec![None, None, None];
 
         let film = ui.join("assets/hero.mp4");
-        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, None, None).await, header::ETAG).unwrap().to_string();
+        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, None, None, "null").await, header::ETAG).unwrap().to_string();
         let cases: Vec<(&str, PathBuf, HeaderMap, StatusCode)> = vec![
             ("page", ui.join("index.html"), HeaderMap::new(), StatusCode::OK),
             ("wasm", ui.join("game.wasm"), HeaderMap::new(), StatusCode::OK),
@@ -2903,16 +3337,16 @@ mod app_file_caching_tests {
             ("unchanged", film.clone(), req(&[(header::IF_NONE_MATCH, &etag)]), StatusCode::NOT_MODIFIED),
         ];
         for (what, file, h, status) in cases {
-            let r = serve_ui_file(&file, &h, None, Some(&isolated), Some(&Rebase::new(&ui, ""))).await;
+            let r = serve_ui_file(&file, &h, None, Some(&isolated), Some(&Rebase::new(&ui, "")), "null").await;
             assert_eq!(r.status(), status, "{what}");
             assert_eq!(isolation(&r), on, "{what}");
-            let r = serve_ui_file(&file, &h, None, Some(&plain), Some(&Rebase::new(&ui, ""))).await;
+            let r = serve_ui_file(&file, &h, None, Some(&plain), Some(&Rebase::new(&ui, "")), "null").await;
             assert_eq!(r.status(), status, "{what}");
             assert_eq!(isolation(&r), off, "{what}: an app that did not ask");
-            let r = serve_ui_file(&file, &h, None, None, None).await;
+            let r = serve_ui_file(&file, &h, None, None, None, "null").await;
             assert_eq!(isolation(&r), off, "{what}: no window");
         }
-        let wasm = serve_ui_file(&ui.join("game.wasm"), &HeaderMap::new(), None, Some(&isolated), None).await;
+        let wasm = serve_ui_file(&ui.join("game.wasm"), &HeaderMap::new(), None, Some(&isolated), None, "null").await;
         assert_eq!(get(&wasm, header::CONTENT_TYPE), Some("application/wasm"));
     }
 
@@ -2985,12 +3419,12 @@ mod app_file_caching_tests {
         ] {
             let target = resolve_ui_file(&ui, rel).unwrap();
             let rebase = Rebase::new(&ui, rel);
-            let html = String::from_utf8(body(serve_ui_file(&target, &HeaderMap::new(), None, None, Some(&rebase)).await).await).unwrap();
+            let html = String::from_utf8(body(serve_ui_file(&target, &HeaderMap::new(), None, None, Some(&rebase), "null").await).await).unwrap();
             let src = module_src(&html);
             let asked = browser_resolves(page, &src);
             let inside = asked.split("/apps/app-1/ui/").nth(1).unwrap_or_else(|| panic!("{page}: {src} leaves the app: {asked}"));
             let js = resolve_ui_file(&ui, inside).unwrap();
-            let r = serve_ui_file(&js, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, inside))).await;
+            let r = serve_ui_file(&js, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, inside)), "null").await;
             assert_eq!(r.status(), StatusCode::OK, "{page}");
             assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"), "{page}");
             assert_eq!(body(r).await, b"console.log('flap')", "{page}");
@@ -3004,7 +3438,7 @@ mod app_file_caching_tests {
 
         // A stylesheet's root paths resolve from its own place; a file the app lacks is left as written.
         let css = ui.join("assets/index-Bx1y2z3q.css");
-        let r = serve_ui_file(&css, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, "assets/index-Bx1y2z3q.css"))).await;
+        let r = serve_ui_file(&css, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, "assets/index-Bx1y2z3q.css")), "null").await;
         assert_eq!(get(&r, header::CONTENT_TYPE), Some("text/css; charset=utf-8"));
         assert!(get(&r, header::ETAG).is_some());
         let text = String::from_utf8(body(r).await).unwrap();
@@ -3017,17 +3451,16 @@ mod app_file_caching_tests {
     async fn a_module_script_with_crossorigin_loads() {
         let (_d, ui) = vite_build();
         let js = ui.join("assets/index-C_-Z6QB_.js");
-        for (origin, host) in [("https://neboai.com", "neboai.com"), ("http://localhost:27895", "localhost:27895")] {
-            let h = req(&[(header::ORIGIN, origin), (header::HOST, host), (header::HeaderName::from_static("sec-fetch-mode"), "cors")]);
-            let r = serve_ui_file(&js, &h, None, None, Some(&Rebase::new(&ui, "assets/index-C_-Z6QB_.js"))).await;
+        // The page is sandboxed (its origin is opaque), so its module script
+        // asks with `Origin: null`; any origin may read an app's own files.
+        for origin in ["null", "https://neboai.com", "http://localhost:27895"] {
+            let h = req(&[(header::ORIGIN, origin), (header::HeaderName::from_static("sec-fetch-mode"), "cors")]);
+            let r = serve_ui_file(&js, &h, None, None, Some(&Rebase::new(&ui, "assets/index-C_-Z6QB_.js")), "null").await;
             assert_eq!(r.status(), StatusCode::OK, "{origin}");
             assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"), "{origin}");
-            assert_eq!(get(&r, header::ACCESS_CONTROL_ALLOW_ORIGIN), Some(origin), "{origin}");
-            assert!(r.headers().get_all(header::VARY).iter().any(|v| v == "Origin"), "{origin}");
+            assert_eq!(get(&r, header::ACCESS_CONTROL_ALLOW_ORIGIN), Some("*"), "{origin}");
+            assert_eq!(get(&r, header::CONTENT_SECURITY_POLICY), Some(APP_PAGE_CSP), "{origin}");
         }
-        let foreign = req(&[(header::ORIGIN, "https://evil.example"), (header::HOST, "neboai.com")]);
-        let r = serve_ui_file(&js, &foreign, None, None, None).await;
-        assert!(r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
         // A missing script is a 404, never the entry page in its place.
         assert_eq!(resolve_ui_file(&ui, "assets/index-old.js"), Err(StatusCode::NOT_FOUND));
     }
@@ -3052,7 +3485,7 @@ mod app_file_caching_tests {
             match resolve_ui_file(&ui, rel) {
                 Ok(f) => {
                     assert_eq!(f, ui.join("index.html"), "{rel}");
-                    let html = String::from_utf8(body(serve_ui_file(&f, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, rel))).await).await).unwrap();
+                    let html = String::from_utf8(body(serve_ui_file(&f, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, rel)), "null").await).await).unwrap();
                     assert!(!html.contains("main.tsx") && html.contains("index-C_-Z6QB_.js"), "{rel}: {html}");
                 }
                 Err(s) => assert!(s == StatusCode::NOT_FOUND || s == StatusCode::BAD_REQUEST, "{rel}: {s}"),
@@ -3104,6 +3537,7 @@ mod developer_console_tests {
             html.replace("</body>", &format!("{PROBE}</body>")).into_bytes(),
             Some(Devtools { employee: "Proof", console: true, desktop: None }),
             None,
+            "null",
         );
         // Where an app page is served from (`/apps/<id>/ui/`): the script
         // finds its app by its own address.
@@ -3206,16 +3640,15 @@ mod developer_console_tests {
 mod share_tests {
     use super::*;
 
-    /// `nebo.share` writes one plain file into the app's Work folder:
-    /// nothing that climbs out of it, hides, or has no extension.
+    /// `nebo.share` hands the owner one plain named file: nothing that
+    /// climbs out of its folder, hides, or has no extension.
     #[test]
     fn a_shared_file_is_one_plain_named_file() {
-        assert_eq!(work_segment("  Launch deck.html ", true).as_deref(), Some("Launch deck.html"));
-        assert_eq!(work_segment("Design Studio", false).as_deref(), Some("Design Studio"));
-        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html"] {
-            assert_eq!(work_segment(bad, true), None, "{bad:?}");
+        assert_eq!(work_segment("  Launch deck.html ").as_deref(), Some("Launch deck.html"));
+        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html", "Design Studio"] {
+            assert_eq!(work_segment(bad), None, "{bad:?}");
         }
-        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120)), true), None);
+        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120))), None);
     }
 
     fn asked(client: &str) -> ShareRequest {

@@ -113,12 +113,12 @@ pub const PERMISSIONS_POLICY_WITH_MOTION: &str =
 /// HSTS, Permissions-Policy, X-Frame-Options, X-Content-Type-Options,
 /// X-XSS-Protection, Referrer-Policy.
 pub async fn security_headers(request: Request, next: Next) -> Response {
-    // Frameable surfaces: the chat-embed page (app SDK iframes), run-produced
-    // files (rendered in the Work panel's sandboxed iframe), and the
-    // standalone /work document viewer (framed by the web Library so the
-    // owner stays on the console while the bot's renderer does the formats).
-    let is_embed = request.uri().path().starts_with("/chat-embed/")
-        || request.uri().path().starts_with("/api/v1/files/")
+    // Frameable surfaces: run-produced files (rendered in the Work panel's
+    // sandboxed iframe) and the standalone /work document viewer (framed by
+    // the web Library so the owner stays on the console while the bot's
+    // renderer does the formats). Nebo's own pages never are: an app talks
+    // to its employee through its own chat (`nebo.chat`), not a frame of them.
+    let is_embed = request.uri().path().starts_with("/api/v1/files/")
         || request.uri().path().starts_with("/work/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -161,6 +161,7 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     // runs with an opaque origin and cannot reach the API or storage.
     let is_served_file = request.uri().path().starts_with("/files/")
         || request.uri().path().starts_with("/api/v1/files/");
+    let app_route = app_route_rest(request.uri().path()).map(str::to_string);
     let mut response = next.run(request).await;
 
     let is_html = response
@@ -169,7 +170,31 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
 
-    let csp = if is_served_file {
+    // A document that can run script (a page, an SVG) from the owner's
+    // files runs sandboxed wherever it opens, framed or not: an origin of
+    // its own, never Nebo's, so it never rides the owner's session. What it
+    // loads from beside it carries its folder's pass (`files::serve_file`).
+    let runs_script = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| ["text/html", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/xml"].iter().any(|t| v.starts_with(t)));
+
+    let csp = if app_route.as_deref().is_some_and(|rest| rest.starts_with("files/")) {
+        // An owner's file an app page reads (`nebo.files`): a picture or a
+        // film it shows. Opened as a page (an HTML or SVG file), it runs in
+        // a sandbox, an origin of its own: never Nebo's, never the app's.
+        "sandbox; default-src 'none'; frame-ancestors 'none'"
+    } else if app_route.is_some() {
+        // Whatever an app's routes answer (its page's files, its sidecar's
+        // replies, its data) is the app's, never Nebo's: it goes out in the
+        // app's sandbox, an origin of its own, whatever the handler or the
+        // sidecar set. Opened at the top, a page there never runs as
+        // Nebo's origin with the owner's session.
+        crate::handlers::apps::APP_PAGE_CSP
+    } else if is_served_file && runs_script {
+        "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads; frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri:"
+    } else if is_served_file {
         "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri:"
     } else if is_html {
         // 'self' so app UIs served over HTTP (browser popups, cloud bots via the
@@ -190,6 +215,17 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     );
     headers.insert("pragma", "no-cache".parse().unwrap());
     response
+}
+
+/// What follows the app's id on one of its routes (`/apps/<id>/<rest>`, as
+/// the `/api/v1` nest sees it, or whole); `None` off an app's routes.
+fn app_route_rest(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/v1")
+        .unwrap_or(path)
+        .strip_prefix("/apps/")
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(id, _)| !id.is_empty())
+        .map(|(_, rest)| rest)
 }
 
 /// Who may reach this server and how each caller proves itself, fixed when
@@ -266,7 +302,18 @@ pub(crate) fn carries_session(headers: &axum::http::HeaderMap, session: &str) ->
 /// secret that exists only in this process (`comm::tunnel`).
 pub(crate) fn came_through_tunnel(headers: &axum::http::HeaderMap) -> bool {
     headers
-        .get("x-nebo-tunnel-auth")
+        .get(comm::tunnel::TUNNEL_AUTH_HEADER)
+        .and_then(|v| v.to_str().ok())
+        == Some(comm::tunnel::tunnel_auth_secret())
+}
+
+/// A request the bot's own tunnel forwarded WITHOUT the hub checking the
+/// owner (`comm::tunnel::UNVERIFIED_PREFIX`): an app page served through
+/// the tunnel runs in an origin of its own and carries no hub sign-in, so
+/// its calls prove themselves with the app's pass alone (`local_boundary`).
+pub(crate) fn came_through_tunnel_unverified(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(comm::tunnel::TUNNEL_UNVERIFIED_HEADER)
         .and_then(|v| v.to_str().ok())
         == Some(comm::tunnel::tunnel_auth_secret())
 }
@@ -303,6 +350,8 @@ pub struct PathCredential(pub String);
 /// see the path without it. It wraps the whole router: a layer on the
 /// router runs after routing, too late to change the path.
 pub fn path_credential(mut request: Request) -> Request {
+    // The header below is this function's to set: never a caller's.
+    request.headers_mut().remove(APP_VIEW_PASS);
     let Some(rest) = request.uri().path().strip_prefix("/k/") else {
         return request;
     };
@@ -324,8 +373,8 @@ pub fn path_credential(mut request: Request) -> Request {
         *request.uri_mut() = uri;
         // An app's own routes check their caller themselves (`handlers::apps`),
         // from the headers: a page Nebo's headless browser opened with an
-        // app-view pass (`napp::app_view`) shows it there too.
-        if napp::app_view::app_of_path(request.uri().path()).is_some()
+        // app-view pass (`napp::page_pass`) shows it there too.
+        if napp::page_pass::app_of_path(request.uri().path()).is_some()
             && let Ok(value) = axum::http::HeaderValue::from_str(&credential)
         {
             request.headers_mut().insert(APP_VIEW_PASS, value);
@@ -337,17 +386,23 @@ pub fn path_credential(mut request: Request) -> Request {
 
 /// The header an app's route reads a path credential from
 /// ([`app_view_admits`]).
-const APP_VIEW_PASS: &str = "x-nebo-app-view";
+pub(crate) const APP_VIEW_PASS: &str = "x-nebo-app-view";
+
+/// Whether an app route's address carried a credential (`/k/<…>/`), live or
+/// not: `path_credential` shows every one on the app's routes.
+pub(crate) fn carried_path_credential(headers: &axum::http::HeaderMap) -> bool {
+    headers.contains_key(APP_VIEW_PASS)
+}
 
 /// Whether the request carries a live app-view pass for `app_id`
-/// (`napp::app_view`): the page and routes of the one app Nebo's headless
+/// (`napp::page_pass`): the page and routes of the one app Nebo's headless
 /// browser opened. Only a live pass for that app counts, so the header is
 /// worth no more than the pass it carries.
 pub(crate) fn app_view_admits(headers: &axum::http::HeaderMap, app_id: &str) -> bool {
     headers
         .get(APP_VIEW_PASS)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|pass| napp::app_view::admits(pass, app_id))
+        .is_some_and(|pass| napp::page_pass::admits(pass, &napp::page_pass::Scope::App(app_id.to_string())))
 }
 
 /// Nebo's own UI origins: the app as this server serves it, and the Vite
@@ -364,14 +419,12 @@ pub(crate) const UI_ORIGINS: &[&str] = &[
 
 /// Routes a caller reaches with no proof: each proves its caller itself, or
 /// has nothing to protect.
+///
+/// The owner's files (`/api/v1/files/…`) are not among them: a caller
+/// proves itself there like anywhere (a document opened from them carries
+/// its folder's pass, [`page_pass_reaches`]).
 fn proves_itself(method: &axum::http::Method, path: &str) -> bool {
-    // A file in the workspace, read: the folder an employee works in, and
-    // its commands read it anyway. The Work panel renders a document in a
-    // sandboxed frame whose origin is opaque, so the images and styles it
-    // loads from beside it carry no session.
-    if matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD) && path.starts_with("/api/v1/files/") {
-        return true;
-    }
+    let _ = method;
     matches!(
         path,
         // Status and version only: a liveness probe calls it bare.
@@ -418,6 +471,39 @@ fn app_of(path: &str) -> Option<&str> {
     path.strip_prefix("/api/v1/apps/")?.split('/').next().filter(|id| !id.is_empty())
 }
 
+/// A page's pass (`napp::page_pass`) carried as the path's credential, on
+/// what it was minted for: an app's page, routes or socket (the credential
+/// every app page holds, in a browser, through the tunnel, in the desktop
+/// window, in Nebo's own headless browser), or a read of the owner's files
+/// in one folder (a document opened from them, `handlers::files`). It
+/// reaches that and nothing else.
+fn page_pass_reaches(path_credential: Option<&str>, method: &axum::http::Method, path: &str) -> bool {
+    let Some(pass) = path_credential else { return false };
+    if let Some(app) = napp::page_pass::app_of_path(path) {
+        return napp::page_pass::admits(pass, &napp::page_pass::Scope::App(app.to_string()));
+    }
+    matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
+        && files_rel(path).is_some_and(|rel| {
+            // Nothing private to the workspace (`config::workspace_private`:
+            // the store's own uploads and kept files, hidden or agent
+            // folders) is ever read with a document's pass.
+            !config::workspace_private(&rel) && napp::page_pass::admits(pass, &napp::page_pass::Scope::Folder(rel))
+        })
+}
+
+/// The file a `/api/v1/files/<path>` request names, as the route reads it
+/// (percent-decoded).
+pub(crate) fn files_rel(path: &str) -> Option<String> {
+    let raw = path.strip_prefix("/api/v1/files/").filter(|r| !r.is_empty())?;
+    urlencoding::decode(raw).ok().map(|r| r.into_owned())
+}
+
+/// Whether the path credential a request carried is a live pass that
+/// opens `path` (CORS for an app's sandboxed page, `cors_layer`).
+pub(crate) fn pass_opens(credential: Option<&PathCredential>, method: &axum::http::Method, path: &str) -> bool {
+    page_pass_reaches(credential.map(|c| c.0.as_str()), method, path)
+}
+
 impl Boundary {
     /// The caller holds the install key, as its bearer token or its path's
     /// credential.
@@ -434,9 +520,16 @@ impl Boundary {
     /// site as this one, and a SameSite cookie rides its requests too, so
     /// the request itself must be same-origin. Browsers say so in
     /// `Sec-Fetch-Site`; one that doesn't send it is judged by its Origin.
+    ///
+    /// A request whose Origin is `null` comes from a document with an opaque
+    /// origin, an app page above all (served sandboxed, `handlers::apps`):
+    /// it is never the owner's browser, whatever it carries.
     fn signed_in_browser(&self, headers: &axum::http::HeaderMap) -> bool {
         let Some(session) = self.session.as_deref() else { return false };
         if !carries_session(headers, session) {
+            return false;
+        }
+        if headers.get(axum::http::header::ORIGIN).is_some_and(|o| o.as_bytes() == b"null") {
             return false;
         }
         match headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
@@ -459,7 +552,7 @@ impl Boundary {
     /// reaches: a CLI provider's run credential (`/agent/mcp`), the plugins'
     /// credential (`plugin_route`), an app sidecar's token (its own app's
     /// routes).
-    async fn scoped(&self, path: &str, headers: &axum::http::HeaderMap, bearer: Option<&str>, path_credential: Option<&str>) -> bool {
+    async fn scoped(&self, method: &axum::http::Method, path: &str, headers: &axum::http::HeaderMap, bearer: Option<&str>, path_credential: Option<&str>) -> bool {
         if path == "/agent/mcp"
             && headers
                 .get(agent::tool_credentials::HEADER)
@@ -472,11 +565,7 @@ impl Boundary {
         if plugin_route(path) && [bearer, path_credential].into_iter().flatten().any(|t| crate::handlers::ws::constant_time_eq(t, plugins)) {
             return true;
         }
-        // Nebo's own headless browser opening one app (`napp::app_view`):
-        // its pass reaches that app's page and routes, nothing else.
-        if let (Some(pass), Some(app)) = (path_credential, napp::app_view::app_of_path(path))
-            && napp::app_view::admits(pass, app)
-        {
+        if page_pass_reaches(path_credential, method, path) {
             return true;
         }
         if let (Some(token), Some(app)) = (bearer, app_of(path)) {
@@ -523,6 +612,16 @@ pub async fn local_boundary(
     }
     let presented = bearer(headers).filter(|t| !t.is_empty());
     let path_credential = request.extensions().get::<PathCredential>().map(|c| c.0.as_str());
+    // Through the tunnel, unchecked by the hub: an app page's own calls.
+    // Its Host is the browser's (`neboai.com`); only the app's pass, on
+    // that app's routes, or the public SDK script opens anything.
+    if came_through_tunnel_unverified(headers) {
+        let path = request.uri().path();
+        if path == "/sdk/nebo.global.js" || page_pass_reaches(path_credential, request.method(), path) {
+            return next.run(request).await;
+        }
+        return unproven(&request);
+    }
     let holds_key = boundary.holds_key(presented, path_credential);
     // No peer address means the server was not served with connect info:
     // treat the caller as the network, never as this machine.
@@ -552,7 +651,7 @@ pub async fn local_boundary(
     if holds_key
         || proves_itself(request.method(), path)
         || boundary.signed_in_browser(headers)
-        || boundary.scoped(path, headers, presented, path_credential).await
+        || boundary.scoped(request.method(), path, headers, presented, path_credential).await
     {
         return next.run(request).await;
     }
@@ -694,6 +793,7 @@ mod boundary_tests {
             .route("/api/v1/plugins/{slug}/proxy/{*rest}", axum::routing::get(echo))
             .route("/api/v1/plugins/{slug}/toggle", axum::routing::post(echo))
             .route("/api/v1/apps/{id}/storage", axum::routing::get(echo))
+            .route("/api/v1/apps/{id}/files/{*path}", axum::routing::get(echo))
             .route("/apps/{id}/ui/{*path}", axum::routing::get(echo))
             .route("/agent/mcp", axum::routing::post(echo))
             .route("/v1/models", axum::routing::get(echo))
@@ -958,10 +1058,49 @@ mod boundary_tests {
     /// still only on this machine's Host.
     #[tokio::test]
     async fn routes_that_prove_their_caller_themselves_pass() {
-        for path in ["/health", "/api/v1/local-session", "/v1/models", "/auth/neboai/callback", "/api/v1/files/report/chart.png"] {
+        for path in ["/health", "/api/v1/local-session", "/v1/models", "/auth/neboai/callback"] {
             assert_eq!(status(loopback_bind(), path, LOCAL, &[HOST]).await, StatusCode::OK, "{path}");
             assert_eq!(status(loopback_bind(), path, LOCAL, &[("host", "attacker.example")]).await, StatusCode::FORBIDDEN, "{path}");
         }
+    }
+
+    /// The owner's files answer only a caller that proves itself: any
+    /// process on this computer, or a page on any website, asking with
+    /// nothing gets nothing. The owner's clients, his signed-in browser on
+    /// Nebo's own page, and a document's pass for its own folder do.
+    #[tokio::test]
+    async fn the_owners_files_answer_only_a_caller_that_proves_itself() {
+        for method in ["GET", "HEAD"] {
+            for path in ["/api/v1/files/README.md", "/api/v1/files/finance/taxes.pdf", "/api/v1/files/report/chart.png"] {
+                let (code, _) = send(loopback_bind(), request(method, path, LOCAL, &[HOST])).await;
+                assert_eq!(code, StatusCode::UNAUTHORIZED, "{method} {path}");
+            }
+        }
+        // A page on another site, through the owner's own browser: no session
+        // rides a cross-site request.
+        let cookie = format!("{}={}", crate::local_access::COOKIE, crate::local_access::session_for(KEY));
+        let foreign = [HOST, ("cookie", cookie.as_str()), ("sec-fetch-site", "cross-site")];
+        assert_eq!(status(loopback_bind(), "/api/v1/files/README.md", LOCAL, &foreign).await, StatusCode::UNAUTHORIZED);
+        let own = [HOST, ("cookie", cookie.as_str()), ("sec-fetch-site", "same-origin")];
+        assert_eq!(status(loopback_bind(), "/api/v1/files/README.md", LOCAL, &own).await, StatusCode::OK);
+        assert_eq!(status(loopback_bind(), "/api/v1/files/README.md", LOCAL, &[HOST, KEYED]).await, StatusCode::OK);
+
+        // A document's pass: its folder, read only.
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::Folder("Reports/q3".into()), std::time::Duration::from_secs(60));
+        let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/files/Reports/q3/img%20one.png"), LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/files/Reports/q3/img%20one.png"));
+        for other in ["/api/v1/files/Reports/q4/a.png", "/api/v1/files/Reports/q3/..%2F..%2Ffinance%2Ftaxes.pdf", "/api/v1/agents", "/api/v1/apps/a1/storage"] {
+            let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{pass}{other}"), LOCAL, &[HOST])).await;
+            assert_eq!(code, StatusCode::UNAUTHORIZED, "{other}");
+        }
+        let (code, _) = send(loopback_bind(), request("POST", &format!("/k/{pass}/api/v1/files/upload"), LOCAL, &[HOST])).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "a document's pass writes nothing");
+        // An app's pass reads no files.
+        let app = napp::page_pass::grant(napp::page_pass::Scope::App("a1".into()), std::time::Duration::from_secs(60));
+        let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{app}/api/v1/files/README.md"), LOCAL, &[HOST])).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        napp::page_pass::revoke(&pass);
+        napp::page_pass::revoke(&app);
     }
 
     /// A CLI provider's tool calls carry their run's credential: it reaches
@@ -998,21 +1137,35 @@ mod boundary_tests {
         assert!(!plugin_route("/api/v1/phone/lines") && !plugin_route("/api/v1/plugins//proxy/x") && !plugin_route("/api/v1/plugins/x/proxyish"));
     }
 
-    /// Nebo's headless browser opening one app (`napp::app_view`): its pass
+    /// Nebo's headless browser opening one app (`napp::page_pass`): its pass
     /// reaches that app's page and routes, never another app's or anything
     /// else, and nothing once revoked.
     #[tokio::test]
     async fn an_app_view_pass_opens_its_own_app_alone() {
-        let pass = napp::app_view::grant("a1", std::time::Duration::from_secs(60));
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("a1".to_string()), std::time::Duration::from_secs(60));
         let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await;
         assert_eq!((code, path.as_str()), (StatusCode::OK, "/apps/a1/ui/index.html"));
         assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/storage"), LOCAL, &[HOST])).await.0, StatusCode::OK);
-        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/agents"] {
+        // Its own file route (`nebo.files`), which checks the app's grant.
+        let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/files/Media/a.mp4"), LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/apps/a1/files/Media/a.mp4"));
+        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/apps/a2/files/Media/a.mp4", "/api/v1/agents"] {
             let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{pass}{other}"), LOCAL, &[HOST])).await;
             assert_eq!(code, StatusCode::UNAUTHORIZED, "{other}");
         }
-        napp::app_view::revoke(&pass);
+        napp::page_pass::revoke(&pass);
         assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/files/Media/a.mp4"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn an_apps_routes_are_known_nested_or_whole() {
+        assert_eq!(app_route_rest("/apps/a1/files/Media/a.mp4"), Some("files/Media/a.mp4"));
+        assert_eq!(app_route_rest("/api/v1/apps/a1/files/Media/a.mp4"), Some("files/Media/a.mp4"));
+        assert_eq!(app_route_rest("/apps/a1/storage/files"), Some("storage/files"));
+        assert_eq!(app_route_rest("/apps//files/a"), None);
+        assert_eq!(app_route_rest("/files/a"), None);
+        assert_eq!(app_route_rest("/api/v1/agents"), None);
     }
 
     #[test]

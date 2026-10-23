@@ -73,7 +73,7 @@ pub fn english(why: &Why) -> String {
         "needs_decision" => format!("needs the owner's decision: {}", a("items")),
         "stopped_by_owner" => format!("stopped by the owner with {} open issue(s)", a("open")),
         "stalled" => format!("stopped making progress with {} open issue(s)", a("open")),
-        "no_checks" => "no tests or build could run".into(),
+        "no_checks" => "nothing proved it works: the project has no build, type check or tests to run".into(),
         "landed_unreviewed" => "landed without passing review, at the owner's choice".into(),
         "edits_in_way" => "not landed yet: the owner's edits are still in the way".into(),
         "kept_own_edits" => "not landed: the owner kept their own edits; the change waits in its copy".into(),

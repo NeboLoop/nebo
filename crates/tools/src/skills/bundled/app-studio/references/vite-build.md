@@ -1,4 +1,4 @@
-# Step 3B: Vite build
+# Step 3B. Vite build
 
 Everything lives in the app folder from Check 1. Run each command with
 `cd "<app folder>" &&` in front. These use npm because it is what the bot has.

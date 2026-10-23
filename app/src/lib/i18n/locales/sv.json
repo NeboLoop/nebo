@@ -4464,7 +4464,7 @@
 			"needs_decision": "Behöver ditt beslut: {items}",
 			"stopped_by_owner": "Stoppad av dig; öppna problem: {open, plural, other {#}}",
 			"stalled": "Slutade göra framsteg; öppna problem: {open, plural, other {#}}",
-			"no_checks": "Inga tester eller byggen kunde köras",
+			"no_checks": "Inget visade att det fungerar: projektet har inget bygge, ingen typkontroll och inga tester att köra",
 			"landed_unreviewed": "Infört utan godkänd granskning, enligt ditt val",
 			"edits_in_way": "Inte infört än: dina ändringar är fortfarande i vägen",
 			"kept_own_edits": "Inte infört: du behöll dina egna ändringar, och ändringen väntar i sin kopia",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "Svarar på: {question}",
+		"tellIt": "Säg vad den ska göra",
+		"sending": "Skickar…",
+		"sendFailed": "Ditt svar skickades inte."
+	},
+	"appPermissions": {
+		"title": "{name} vill göra mer",
+		"intro": "Säg bara ja om du litar på appen. Du kan ändra dig senare i appens inställningar.",
+		"origin": "Appen är inte gjord här. Någon utanför ditt företag har gjort den.",
+		"wantsFiles": "{name} vill se filerna i {target}",
+		"wantsWeb": "{name} vill prata med {target}",
+		"wantsWebAny": "{name} vill prata med vilken webbplats som helst",
+		"wantsHelper": "{name} vill be {target} om hjälp",
+		"wantsHelperAny": "{name} vill be någon av dina medarbetare om hjälp",
+		"wantsPlugin": "{name} vill använda {target}",
+		"canFiles": "Se filerna i {target}",
+		"canWeb": "Prata med {target}",
+		"canWebAny": "Prata med vilken webbplats som helst",
+		"canHelper": "Be {target} om hjälp",
+		"canHelperAny": "Be någon av dina medarbetare om hjälp",
+		"canPlugin": "Använda {target}",
+		"allow": "Tillåt",
+		"deny": "Tillåt inte",
+		"off": "Av",
+		"notNow": "Inte nu",
+		"sectionTitle": "Vad den här appen får göra",
+		"sectionHint": "Appen kommer från marketplace. Den får bara göra det du tillåter.",
+		"ownHint": "Du gjorde appen här, så den får göra det den ber om.",
+		"notAnswered": "Inte besvarad"
 	}
 }

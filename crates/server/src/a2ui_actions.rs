@@ -74,19 +74,36 @@ impl ActionBinding {
     }
 }
 
+/// Who sent an action: the owner's own Nebo window, or an app's page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionFrom {
+    /// The owner's own client (`/ws`).
+    Owner,
+    /// An app's page (`/ws/app/<id>`): its context is the page's to write,
+    /// so it never names a tool to run, and it acts on its own app's
+    /// surfaces alone.
+    AppPage,
+}
+
 /// Dispatch an A2UI action based on its binding type.
 ///
-/// Returns `true` if the action was handled deterministically (no LLM needed),
-/// `false` if it should fall through to the default agent/LLM path.
+/// Returns `true` if the action was handled deterministically (no LLM needed)
+/// or refused, `false` if it should fall through to the default agent/LLM
+/// path.
 pub async fn dispatch(
     state: &AppState,
     a2ui: &Arc<A2UIManager>,
-    _agent_id: &str,
+    agent_id: &str,
     surface_id: &str,
     _action_name: &str,
     _component_id: &str,
     raw_context: &serde_json::Value,
+    from: ActionFrom,
 ) -> bool {
+    if from == ActionFrom::AppPage && !crate::handlers::ws::is_app_surface(agent_id, surface_id) {
+        warn!(agent = %agent_id, surface = %surface_id, "a2ui action from an app page on a surface not its own: refused");
+        return true;
+    }
     // Resolve binding from inline context
     let binding = ActionBinding::from_context(raw_context)
         .filter(|b| b.action_type != "agent"); // Only use inline if it's deterministic
@@ -97,6 +114,12 @@ pub async fn dispatch(
     };
 
     match binding.action_type.as_str() {
+        // An app's page writes its own action's context: it never runs one
+        // of the owner's tools with it.
+        "mcp_call" if from == ActionFrom::AppPage => {
+            warn!(agent = %agent_id, "mcp_call from an app page: refused");
+            true
+        }
         "mcp_call" => {
             handle_mcp_call(state, a2ui, surface_id, &binding).await;
             true

@@ -666,7 +666,13 @@ fn write_user_agent_files(
     agent_json: &str,
     app: Option<napp::AppFields>,
     ui: Vec<(std::path::PathBuf, Vec<u8>)>,
+    // Where the employee came from (`Store::set_agent_built_here`): made
+    // here, or a copy that keeps its source's.
+    built_here: bool,
 ) {
+    if let Err(e) = store.set_agent_built_here(id, built_here) {
+        warn!(name, error = %e, "failed to record where an employee came from");
+    }
     let Some(agent_dir) = user_agent_dir(name) else {
         return;
     };
@@ -893,6 +899,8 @@ pub async fn create_agent(
         &agent_json_content,
         None,
         Vec::new(),
+        // The owner's own, unless it came with a marketplace code.
+        body.get("code").and_then(|c| c.as_str()).is_none_or(str::is_empty),
     );
 
     // Process agent.json workflow bindings if provided
@@ -3969,6 +3977,9 @@ pub async fn duplicate_agent(
         &source.frontmatter,
         source_app,
         source_ui,
+        // A copy of an installed app is still an install: it holds only what
+        // the owner allows, never what its manifest asks for.
+        source.built_here == 1,
     );
 
     // Copy agent_workflow bindings from source.
@@ -4159,6 +4170,14 @@ pub async fn chat_with_agent(
         message_id: None,
     };
 
+    // Never a turn in an app page's conversation: answered so, not
+    // "dispatched" (`chat_dispatch::owner_kept_out`, which run_chat holds).
+    if crate::chat_dispatch::owner_kept_out(&state, &config) {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(types::api::ErrorResponse { error: crate::chat_dispatch::KEPT_OUT.to_string() }),
+        ));
+    }
     crate::chat_dispatch::run_chat(&state, config).await;
 
     Ok(Json(serde_json::json!({
@@ -5114,7 +5133,7 @@ fn teammate_name(
 ) -> String {
     use types::keyparser::Conversation;
     let named = match conversation {
-        Conversation::Owner => None,
+        Conversation::Owner | Conversation::App => None,
         Conversation::Team { team_id, project_id } => {
             let team = state.store.get_team(team_id).ok().flatten().map(|t| t.name);
             match project_id.as_deref().and_then(|p| state.store.get_project(p).ok().flatten()) {
@@ -5215,6 +5234,10 @@ pub async fn activate_agent_chat(
     State(state): State<AppState>,
     Path((id, chat_id)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
+    // An app page's conversation is never opened as one of the owner's.
+    if super::apps::is_app_chat(&state.store, &chat_id) {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
     let session_key = types::keyparser::build_agent_session_key(&id, "web");
 
     let session_id = state
@@ -6689,6 +6712,7 @@ mod linked_hire_tests {
             reports_to: None,
             department_locked: 0,
             shape: None,
+            built_here: 0,
         }
     }
 

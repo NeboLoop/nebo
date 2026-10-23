@@ -4464,7 +4464,7 @@
 			"needs_decision": "Serve la tua decisione: {items}",
 			"stopped_by_owner": "Fermato da te; problemi aperti: {open, plural, other {#}}",
 			"stalled": "Non faceva più progressi; problemi aperti: {open, plural, other {#}}",
-			"no_checks": "Non è stato possibile eseguire test o build",
+			"no_checks": "Niente ha dimostrato che funziona: il progetto non ha build, controllo dei tipi né test da eseguire",
 			"landed_unreviewed": "Integrato senza superare la revisione, per tua scelta",
 			"edits_in_way": "Non ancora integrato: le tue modifiche sono ancora d'intralcio",
 			"kept_own_edits": "Non integrato: hai tenuto le tue modifiche, e la modifica attende nella sua copia",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "Risposta a: {question}",
+		"tellIt": "Digli cosa fare",
+		"sending": "Invio…",
+		"sendFailed": "La tua risposta non è stata inviata."
+	},
+	"appPermissions": {
+		"title": "{name} vuole fare di più",
+		"intro": "Di' di sì solo se ti fidi di questa app. Puoi cambiare idea nelle impostazioni dell'app.",
+		"origin": "Questa app non è stata creata qui. L'ha creata qualcuno fuori dalla tua azienda.",
+		"wantsFiles": "{name} vuole vedere i file in {target}",
+		"wantsWeb": "{name} vuole parlare con {target}",
+		"wantsWebAny": "{name} vuole parlare con qualsiasi sito web",
+		"wantsHelper": "{name} vuole chiedere aiuto a {target}",
+		"wantsHelperAny": "{name} vuole chiedere aiuto a uno qualsiasi dei tuoi dipendenti",
+		"wantsPlugin": "{name} vuole usare {target}",
+		"canFiles": "Vedere i file in {target}",
+		"canWeb": "Parlare con {target}",
+		"canWebAny": "Parlare con qualsiasi sito web",
+		"canHelper": "Chiedere aiuto a {target}",
+		"canHelperAny": "Chiedere aiuto a uno qualsiasi dei tuoi dipendenti",
+		"canPlugin": "Usare {target}",
+		"allow": "Consenti",
+		"deny": "Non consentire",
+		"off": "No",
+		"notNow": "Non ora",
+		"sectionTitle": "Cosa può fare questa app",
+		"sectionHint": "Questa app viene dal marketplace. Può fare solo ciò che consenti.",
+		"ownHint": "Hai creato questa app qui, quindi può fare ciò che chiede.",
+		"notAnswered": "Senza risposta"
 	}
 }

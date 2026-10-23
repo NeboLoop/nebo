@@ -12,10 +12,20 @@
   import { t } from 'svelte-i18n';
   import type { VerificationView } from '$lib/api/neboComponents';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
-  import { badgeWords, duration, elapsed, lineWords, phaseWords, whyWords, type Why } from '$lib/stores/verifications';
+  import { askOf, badgeWords, duration, elapsed, lineWords, phaseWords, whyWords, type VerificationAnswer, type Why } from '$lib/stores/verifications';
   import VerificationHistory from './VerificationHistory.svelte';
+  import VerificationQuestion from './VerificationQuestion.svelte';
 
-  let { verification, statusLine = false }: { verification: VerificationView; statusLine?: boolean } = $props();
+  let {
+    verification,
+    statusLine = false,
+    onanswer,
+  }: {
+    verification: VerificationView;
+    statusLine?: boolean;
+    /** Answers a question the work waits on, from the sheet. */
+    onanswer?: VerificationAnswer;
+  } = $props();
 
   let open = $state(false);
   let now = $state(Math.floor(Date.now() / 1000));
@@ -24,6 +34,12 @@
   const line = $derived(lineWords(verification, $t));
   const phase = $derived(phaseWords(verification, $t));
   const took = $derived(duration(elapsed(verification, now), $t));
+  const ask = $derived(verification.badge.state === 'waiting' && onanswer ? askOf(verification) : null);
+  async function say(value: string): Promise<boolean> {
+    const took = (await onanswer?.(verification, value)) ?? false;
+    if (took) open = false;
+    return took;
+  }
 
   type Finding = { id: string; severity: string; title: string; evidence: string };
   const stillOpen = $derived(
@@ -68,6 +84,10 @@
   onclose={() => (open = false)}
 >
   <div class="verify-sheet">
+    {#if ask}
+      <!-- What waits on him comes first: the question, and its answers. -->
+      <VerificationQuestion {ask} onpick={say} onclose={() => (open = false)} />
+    {/if}
     {#if phase}<p class="verify-sheet-phase">{phase}</p>{/if}
     <p class="verify-badge-sentence">{words.detail}</p>
     {#if verification.badge.landed}

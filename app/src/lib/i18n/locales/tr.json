@@ -4464,7 +4464,7 @@
 			"needs_decision": "Kararınız gerekiyor: {items}",
 			"stopped_by_owner": "Sizin tarafınızdan durduruldu; açık sorunlar: {open, plural, other {#}}",
 			"stalled": "İlerleme durdu; açık sorunlar: {open, plural, other {#}}",
-			"no_checks": "Hiçbir test veya derleme çalıştırılamadı",
+			"no_checks": "Çalıştığını kanıtlayan bir şey olmadı: projede çalıştırılacak derleme, tür denetimi veya test yok",
 			"landed_unreviewed": "İncelemeyi geçmeden, sizin tercihinizle aktarıldı",
 			"edits_in_way": "Henüz aktarılmadı: düzenlemeleriniz hâlâ yolda",
 			"kept_own_edits": "Aktarılmadı: kendi düzenlemelerinizi tuttunuz, değişiklik kendi kopyasında bekliyor",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} dk {s} sn"
-		}
+		},
+		"answering": "Yanıtlanıyor: {question}",
+		"tellIt": "Ne yapacağını söyle",
+		"sending": "Gönderiliyor…",
+		"sendFailed": "Yanıtın gönderilmedi."
+	},
+	"appPermissions": {
+		"title": "{name} daha fazlasını yapmak istiyor",
+		"intro": "Bu uygulamaya güveniyorsan evet de. Sonra uygulamanın ayarlarından değiştirebilirsin.",
+		"origin": "Bu uygulama burada yapılmadı. Şirketinin dışından biri yaptı.",
+		"wantsFiles": "{name}, {target} içindeki dosyaları görmek istiyor",
+		"wantsWeb": "{name}, {target} ile konuşmak istiyor",
+		"wantsWebAny": "{name} her web sitesiyle konuşmak istiyor",
+		"wantsHelper": "{name}, {target} kişisinden yardım istemek istiyor",
+		"wantsHelperAny": "{name} çalışanlarından herhangi birinden yardım istemek istiyor",
+		"wantsPlugin": "{name}, {target} kullanmak istiyor",
+		"canFiles": "{target} içindeki dosyaları görmek",
+		"canWeb": "{target} ile konuşmak",
+		"canWebAny": "Her web sitesiyle konuşmak",
+		"canHelper": "{target} kişisinden yardım istemek",
+		"canHelperAny": "Çalışanlarından herhangi birinden yardım istemek",
+		"canPlugin": "{target} kullanmak",
+		"allow": "İzin ver",
+		"deny": "İzin verme",
+		"off": "Kapalı",
+		"notNow": "Şimdi değil",
+		"sectionTitle": "Bu uygulamanın yapabildikleri",
+		"sectionHint": "Bu uygulama pazar yerinden geldi. Yalnızca izin verdiklerini yapabilir.",
+		"ownHint": "Bu uygulamayı burada sen yaptın, bu yüzden istediğini yapabilir.",
+		"notAnswered": "Yanıtlanmadı"
 	}
 }

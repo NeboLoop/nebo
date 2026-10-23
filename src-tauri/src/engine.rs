@@ -756,15 +756,19 @@ pub struct DesktopApp {
     pub offers_publish: bool,
     pub developer_script: String,
     pub ui_dir: Option<PathBuf>,
+    /// The app's pass: the one credential its window's requests carry.
+    pub pass: String,
 }
 
 /// How long one answer serves the window: every asset of an app page asks.
 const DESKTOP_APP_FOR: Duration = Duration::from_secs(5);
 
+/// The answers [`desktop_app`] keeps, by app.
+static DESKTOP_APPS: Mutex<Option<HashMap<String, (Instant, DesktopApp)>>> = Mutex::new(None);
+
 /// [`DesktopApp`] for `agent_id`, empty when the engine does not answer.
 pub fn desktop_app(agent_id: &str) -> DesktopApp {
-    static CACHE: Mutex<Option<HashMap<String, (Instant, DesktopApp)>>> = Mutex::new(None);
-    if let Some((at, app)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().get(agent_id)
+    if let Some((at, app)) = DESKTOP_APPS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().get(agent_id)
         && at.elapsed() < DESKTOP_APP_FOR
     {
         return app.clone();
@@ -775,12 +779,20 @@ pub fn desktop_app(agent_id: &str) -> DesktopApp {
         .ok()
         .and_then(json::<DesktopApp>)
         .unwrap_or_default();
-    CACHE
+    DESKTOP_APPS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_default()
         .insert(agent_id.to_string(), (Instant::now(), app.clone()));
     app
+}
+
+/// Drop the kept [`desktop_app`] answer for `agent_id`: its pass was
+/// refused (the engine restarted), so the next asks the engine again.
+pub fn forget_desktop_app(agent_id: &str) {
+    if let Some(apps) = DESKTOP_APPS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        apps.remove(agent_id);
+    }
 }
 
 /// `s` as one path segment.

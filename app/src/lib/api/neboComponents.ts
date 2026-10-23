@@ -176,6 +176,18 @@ export interface AppListing {
 	updatedAt: number
 }
 
+export interface AppPermission {
+	permission: string
+	kind: string
+	target: string
+	state: string
+}
+
+export interface AppPermissions {
+	own: boolean
+	permissions: AppPermission[]
+}
+
 export interface ApplyInstallResponse {
 	outcome: ImportOutcome
 }
@@ -645,6 +657,7 @@ export interface CronJob {
 	createdBy: string
 	createdByRun?: string
 	createdIn?: string
+	createdInChat?: string
 	reason: string
 }
 
@@ -1228,6 +1241,12 @@ export interface OnboardingStatus {
 	hired?: string
 	zone?: string
 	checklist: string[]
+}
+
+export interface Outcome {
+	ok: boolean
+	output: string
+	files: string[]
 }
 
 export interface OutcomeCount {
@@ -1895,6 +1914,8 @@ export interface Verification {
 	landedAt?: number
 	createdAt: number
 	finishedAt?: number
+	deployedApps: string[]
+	deployUnchecked: boolean
 }
 
 export interface VerificationList {
@@ -2403,6 +2424,14 @@ export interface GetChatHistoryByDayResponse {
 	messages: ChatMessage[]
 }
 
+export interface GetChatResponse {
+	sessionId: string
+	running: unknown
+	waiting: unknown
+	messages: unknown[]
+	hasMore: boolean
+}
+
 export interface GetCompanionChatResponse {
 	chat: Chat
 	messages: ChatMessage[]
@@ -2863,6 +2892,10 @@ export interface NeboAIPhoneAnswerResponse {
 	ok: boolean
 }
 
+export interface NewChatResponse {
+	sessionId: string
+}
+
 export interface OauthRelayResponse {
 	status: string
 	message: string
@@ -2911,6 +2944,11 @@ export interface PluginSetupRunResponse {
 	ok: boolean
 	output: unknown
 	outputFormat: unknown
+}
+
+export interface PostChatResponse {
+	sessionId: string
+	status: string
 }
 
 export interface ProcessAgentBindingsResponse {
@@ -2982,6 +3020,10 @@ export interface RevokeAgentApiKeyResponse {
 export interface RunAgentWorkflowResponse {
 	runId: string
 	run: WorkflowRun
+}
+
+export interface RunResponse {
+	job: string
 }
 
 export interface RunTaskResponse {
@@ -3066,6 +3108,11 @@ export interface StartWorkflowChatResponse {
 
 export interface StatusResponse {
 	setupComplete: unknown
+}
+
+export interface StopChatResponse {
+	sessionId: string
+	stopped: unknown
 }
 
 export interface StopProjectWorkResponse {
@@ -3736,8 +3783,8 @@ export type WSServerEventType =
 	| "chat_withdrawn"
 	| "session_reset"
 	| "chat_complete"
-	| "chat_stream"
 	| "chat_error"
+	| "chat_stream"
 	| "chat_user_message"
 	| "session_compact"
 
@@ -3766,14 +3813,14 @@ export interface ChatCompleteEvent {
 	skipped: boolean
 }
 
+export interface ChatErrorEvent {
+	session_id: string
+	error: unknown
+}
+
 export interface ChatStreamEvent {
 	session_id: string
 	content: unknown
-}
-
-export interface ChatErrorEvent {
-	error: string
-	session_id: string
 }
 
 export interface ChatUserMessageEvent {

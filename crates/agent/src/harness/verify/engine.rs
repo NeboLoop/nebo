@@ -2,7 +2,8 @@
 //!
 //! When the builder answers with no more calls, each project the turn
 //! changed goes through a round: the project's own build and tests run in
-//! the work's folder, then independent reviewers (one per lens, fresh, told
+//! the work's folder (an app's own check is its page's live load, on a
+//! phone and a desktop), then independent reviewers (one per lens, fresh, told
 //! to refute) review the change: the whole change in round 1, the fixes
 //! since in later rounds. Findings go back to the same builder, in the same
 //! turn, as its next step; it fixes them in its copy and answers again, and
@@ -45,6 +46,7 @@ use crate::harness::{Harness, SeatRequest};
 use crate::worktree::{self, MergeOutcome};
 
 /// How a turn that ended before its checking did leaves its verifications.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Closed {
     /// Waiting on the owner: paused, for the turn that goes on.
     Waiting,
@@ -52,6 +54,12 @@ pub enum Closed {
     Stopped,
     /// Ended otherwise: not verified, with why.
     Ended(Why),
+    /// Answered without its end check (the owner's message ended the work,
+    /// a reply with no words, a compaction): what was still being checked is
+    /// not verified, the run having ended before its checking did; a question
+    /// waiting on the owner stays for the turn that goes on. After a normal
+    /// end check nothing is still being checked, and nothing changes.
+    Unchecked,
 }
 
 /// What one turn's verify loop keeps between its rounds.
@@ -74,6 +82,9 @@ struct Shared {
     /// Verifications whose open minors the builder was asked to fix or
     /// defer with a reason.
     minors_offered: HashSet<String>,
+    /// Times this turn the owner sent each stalled verification on (his
+    /// "Keep going", or his own words): at [`STALL_GO_ONS`] it stops.
+    went_on: std::collections::HashMap<String, usize>,
 }
 
 /// Who a turn's code work is for: what every work it starts records.
@@ -120,12 +131,27 @@ pub struct Verify {
 /// the loop stops.
 const CONFLICT_TRIES: usize = 3;
 
+/// Times in one turn the owner may send a stalled verification on before
+/// the loop stops instead of asking again, as with [`CONFLICT_TRIES`].
+const STALL_GO_ONS: usize = CONFLICT_TRIES;
+
 impl Shared {
     /// Count a landing of `id` that met a conflict; whether it is stuck.
     fn stuck(&mut self, id: &str) -> bool {
         let n = self.conflicts.entry(id.to_string()).or_default();
         *n += 1;
         *n >= CONFLICT_TRIES
+    }
+
+    /// Whether the owner already sent `id` on [`STALL_GO_ONS`] times this
+    /// turn after it stalled.
+    fn gone_on_enough(&self, id: &str) -> bool {
+        self.went_on.get(id).is_some_and(|n| *n >= STALL_GO_ONS)
+    }
+
+    /// Count the owner sending `id` on after it stalled.
+    fn go_on(&mut self, id: &str) {
+        *self.went_on.entry(id.to_string()).or_default() += 1;
     }
 }
 
@@ -174,9 +200,10 @@ impl Verify {
             .await
     }
 
-    /// After a call ran (`TurnWork::after_call`).
-    pub async fn after_call(&self, store: &db::Store) -> Option<String> {
-        self.work.after_call(&self.builder.starting(store)).await
+    /// After a call ran, with what its routing watched
+    /// (`TurnWork::after_call`).
+    pub async fn after_call(&self, store: &db::Store, watched: super::work::Watched) -> Option<String> {
+        self.work.after_call(&self.builder.starting(store), watched).await
     }
 
     /// The turn ended before its checking did (the owner's Stop, the step
@@ -203,6 +230,8 @@ impl Verify {
                 }
                 Closed::Stopped => ("stopped", String::new()),
                 Closed::Ended(w) => ("not_verified", w.text()),
+                Closed::Unchecked if v.state == "paused" => continue,
+                Closed::Unchecked => ("not_verified", Why::new("turn_ended").text()),
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
@@ -254,8 +283,11 @@ pub struct VerifyCheck {
 enum Purpose {
     /// A product or business call a reviewer found.
     Decision { title: String },
-    /// The loop stopped making progress with `open` blocking issues.
-    Stalled { open: usize },
+    /// The loop stopped making progress with `open` blocking issues;
+    /// `brief` is what the builder is told if it goes on (the round's
+    /// findings), kept so his words after a restart go on top of the
+    /// same brief.
+    Stalled { open: usize, brief: String },
     /// Reviewed, but no build or test could run.
     NoChecks,
     /// The owner's own edits are in the way of landing verified work.
@@ -268,6 +300,68 @@ const STOP_HERE: &str = "Stop here";
 const KEEP_IN_COPY: &str = "Keep it in its copy";
 const LAND_AFTER_MINE: &str = "Land it after I commit mine";
 const KEEP_MINE: &str = "Keep mine, don't land it";
+/// The owner's answer to one of the loop's questions: a choice the card
+/// offered, or his own words (typed in the conversation, read by the bot as
+/// the answer: `handlers::asks::answer_in_words`).
+#[derive(Debug, Clone, PartialEq)]
+enum Reply {
+    Picked(String),
+    Words(String),
+}
+
+impl Reply {
+    fn text(&self) -> &str {
+        match self {
+            Reply::Picked(t) | Reply::Words(t) => t,
+        }
+    }
+
+    /// What `ask_owner` returned: `picked` is a choice, `own_words` (or an
+    /// open question's `response`) his own words.
+    fn read(result: &serde_json::Value) -> Option<Self> {
+        if let Some(p) = result["picked"].as_str() {
+            return Some(Reply::Picked(p.to_string()));
+        }
+        result["own_words"].as_str().or(result["response"].as_str()).map(|w| Reply::Words(w.to_string()))
+    }
+}
+
+/// The builder told what the owner said in his own words to a question of
+/// the loop's that offered choices: it does that, and the next round checks
+/// it. Nothing lands on words alone. `brief` is what the builder would be
+/// told had he sent it on without words (a stalled loop's findings): his
+/// words go on top of it, never in place of it.
+fn owner_said(words: &str, brief: &str) -> String {
+    let said = format!(
+        "The owner answered in his own words: \"{}\". Do what he says in your working copy, then end your reply; \
+         the next round checks it before anything lands.",
+        words.trim()
+    );
+    if brief.trim().is_empty() {
+        return said;
+    }
+    format!("{}\n\n{said} Where his words and what is above differ, his words win.", brief.trim_end())
+}
+
+/// His own words to a question that offered choices (keep going, land it,
+/// keep his edits) are instructions, never a choice guessed from them: the
+/// builder does what he says and the work is checked again; to a stalled
+/// loop they go on top of its brief ([`owner_said`]). A call of his
+/// (`Decision`) is carried out as he put it, words or choice.
+fn instruction(purpose: &Purpose, answer: Option<&Reply>) -> Option<String> {
+    match (purpose, answer) {
+        (Purpose::Decision { .. }, _) => None,
+        (Purpose::Stalled { brief, .. }, Some(Reply::Words(words))) => Some(owner_said(words, brief)),
+        (_, Some(Reply::Words(words))) => Some(owner_said(words, "")),
+        _ => None,
+    }
+}
+
+/// Whether the owner's answer to a stalled loop sends it on: his "Keep
+/// going", or his own words.
+fn went_on(answer: Option<&Reply>) -> bool {
+    matches!(answer, Some(Reply::Words(_))) || answer.map(Reply::text) == Some(KEEP_GOING)
+}
 
 /// Where one work's round left it.
 enum Step {
@@ -535,9 +629,13 @@ impl VerifyCheck {
 
     /// A round whose reviewers could not be given what they read ends the
     /// verification unreviewed: nothing passes on a review that didn't
-    /// happen.
-    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, error: &str) -> RoundEnd {
+    /// happen. No reviewer could read it, so each one failed, never "no
+    /// issues".
+    fn review_incomplete(&self, v: &db::Verification, row: &mut db::VerificationRound, lenses: &[Lens], error: &str) -> RoundEnd {
         tracing::warn!(verification = %v.id, error = %error, "the reviewers' copy could not be made");
+        for lens in lenses {
+            row.detail["reviewers"][lens.as_str()] = json!("failed");
+        }
         row.outcome = Why::new("review_incomplete").text();
         row.finished_at = Some(Self::now());
         let _ = self.store().put_verification_round(row);
@@ -565,7 +663,7 @@ impl VerifyCheck {
         context: &str,
         options: &[&str],
         purpose: &Purpose,
-    ) -> Option<String> {
+    ) -> Option<Reply> {
         if options.iter().all(|o| o.trim().is_empty()) {
             tracing::error!(verification = %id, question, "a question for the owner with no choices was not asked");
             return None;
@@ -596,12 +694,7 @@ impl VerifyCheck {
         if result.is_error {
             return None;
         }
-        let answer: serde_json::Value = serde_json::from_str(&result.content).unwrap_or_default();
-        answer["picked"]
-            .as_str()
-            .or(answer["own_words"].as_str())
-            .or(answer["response"].as_str())
-            .map(str::to_string)
+        Reply::read(&serde_json::from_str(&result.content).unwrap_or_default())
     }
 
     /// The builder's turn as the parent of its reviewers.
@@ -650,15 +743,16 @@ impl VerifyCheck {
         };
         if finished_state(&v.state) {
             // Finished, but its copy changed since (the builder kept working
-            // in it): checked again over the whole change, and the verdict
-            // it was reported on no longer holds.
+            // in it), or it deployed again: checked again over the whole
+            // change, and the verdict it was reported on no longer holds.
             let changed = v.landed_ref.is_empty()
                 && v.state != "stopped"
                 && work.work_dir.is_dir()
-                && match work.shadow.snapshot().await {
-                    Ok(now) => Some(&now) != work.last.as_ref(),
-                    Err(_) => false,
-                };
+                && (v.deploy_unchecked
+                    || match work.shadow.snapshot().await {
+                        Ok(now) => Some(&now) != work.last.as_ref(),
+                        Err(_) => false,
+                    });
             if !changed {
                 return Step::Finished;
             }
@@ -681,28 +775,31 @@ impl VerifyCheck {
                 })
                 .unwrap_or_default();
             let opts: Vec<&str> = options.iter().map(String::as_str).collect();
+            let (question, context) = (ask["question"].as_str().unwrap_or(""), ask["context"].as_str().unwrap_or(""));
             let purpose = serde_json::from_value::<Purpose>(ask["purpose"].clone()).ok();
-            let answer = self
-                .ask_owner(
-                    &v.id,
-                    ask["question"].as_str().unwrap_or(""),
-                    ask["context"].as_str().unwrap_or(""),
-                    &opts,
-                    purpose.as_ref().unwrap_or(&Purpose::NoChecks),
-                )
-                .await;
-            // The answer does what it did when it was first asked.
-            match &purpose {
-                Some(p) => {
-                    if let Some(step) = self.answered(&mut work, &v, p, answer.as_deref()).await {
-                        return step;
+            // The answer does what it did when it was first asked; his own
+            // words to a stalled loop go on top of the brief it was asked
+            // with.
+            if let Some(Purpose::Stalled { open, brief }) = &purpose {
+                if let Some(step) = self.stalled(&mut work, &v, question, context, *open, brief).await {
+                    return step;
+                }
+            } else {
+                let answer = self
+                    .ask_owner(&v.id, question, context, &opts, purpose.as_ref().unwrap_or(&Purpose::NoChecks))
+                    .await;
+                match &purpose {
+                    Some(p) => {
+                        if let Some(step) = self.answered(&mut work, &v, p, answer.as_ref()).await {
+                            return step;
+                        }
                     }
+                    None if answer.is_none() => {
+                        self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
+                        return Step::Finished;
+                    }
+                    None => {}
                 }
-                None if answer.is_none() => {
-                    self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
-                    return Step::Finished;
-                }
-                None => {}
             }
         }
         let head = match work.shadow.snapshot().await {
@@ -716,7 +813,9 @@ impl VerifyCheck {
         // Nothing changed since a clean review (no blocking issue, no call
         // of the owner's to carry out), under the same rules: its verdict
         // stands and it goes on to land; no reviewer reads the same bytes
-        // again.
+        // again. A deploy since is checked first, by a round of checks
+        // alone.
+        let mut unchanged_clean = false;
         if v.rounds > 0 && work.last.as_ref() == Some(&head) {
             let rules = rules_hash(&self.review_rules(&work).await);
             let clean = store
@@ -730,16 +829,17 @@ impl VerifyCheck {
                         && r.decisions.as_array().is_none_or(|d| d.is_empty())
                         && r.detail["rulesHash"].as_str() == Some(rules.as_str())
                 });
-            if clean {
+            if clean && !v.deploy_unchecked {
                 return self.land(work, notes).await;
             }
+            unchanged_clean = clean;
         }
         let whole = work
             .shadow
             .diff(&work.base, &head)
             .await
             .unwrap_or_default();
-        if whole.is_empty() && v.rounds == 0 {
+        if whole.is_empty() && v.rounds == 0 && v.deployed_apps.is_empty() {
             // Nothing changed after all: no verification to show.
             if let Some(iso) = work.iso.as_mut() {
                 worktree::put_away(iso, "No changes", false).await;
@@ -769,12 +869,17 @@ impl VerifyCheck {
                 .await
                 .unwrap_or_default()
         };
+        // A round of checks alone, with no reviewer: a deploy after a clean
+        // review, or one with no change to read and no finding for a
+        // reviewer to close. The first round that reviewed has lenses.
+        let checks_alone = unchanged_clean || (whole.is_empty() && v.open.as_array().is_none_or(|o| o.is_empty()));
         let first = store
             .verification_rounds(&v.id)
             .unwrap_or_default()
             .into_iter()
-            .find(|r| r.kind == "review");
+            .find(|r| r.kind == "review" && r.lenses.as_array().is_some_and(|l| !l.is_empty()));
         let lenses: Vec<Lens> = match &first {
+            _ if checks_alone => Vec::new(),
             None => lenses::assess(&whole).lenses,
             Some(r) => {
                 let all: Vec<Lens> = r
@@ -798,7 +903,7 @@ impl VerifyCheck {
         let nested = work.shadow.nested_repositories().await;
         match self
             .review_round(
-                &mut work, &v, round, &lenses, &whole, &reviewed, &head, notes, &nested,
+                &mut work, &v, round, &lenses, first.is_some(), &whole, &reviewed, &head, notes, &nested,
             )
             .await
         {
@@ -856,8 +961,10 @@ fn state_of<'a>(
 }
 
 impl VerifyCheck {
-    /// One round: the project's checks, then the reviewers; its record
-    /// written; what the builder, or the owner, does next.
+    /// One round: the project's checks, then the reviewers (none when
+    /// `lenses` is empty: a round of checks alone); its record written; what
+    /// the builder, or the owner, does next. `delta`: an earlier round
+    /// reviewed the change, so this one reviews what changed since.
     #[allow(clippy::too_many_arguments)]
     async fn review_round(
         &self,
@@ -865,6 +972,7 @@ impl VerifyCheck {
         v: &db::Verification,
         round: u32,
         lenses: &[Lens],
+        delta: bool,
         whole: &ChangeSet,
         reviewed: &ChangeSet,
         head: &Snapshot,
@@ -872,6 +980,14 @@ impl VerifyCheck {
         nested: &[String],
     ) -> RoundEnd {
         let store = self.store().clone();
+        // An app's pages no app is served from: it can't be checked live,
+        // and no round of checks proves otherwise.
+        let own = (work.kind == WorkKind::AppPages).then(|| store.app_served_from(&work.work_dir.to_string_lossy()).ok().flatten());
+        if own.as_ref().is_some_and(Option::is_none) {
+            self.finish(v, "not_verified", Some(Why::new("live_failed")));
+            return RoundEnd::Finished;
+        }
+        let own = own.flatten();
         let started = Self::now();
         let prefix = format!("{}r{round}-", v.reviewer_prefix);
         // Its step in the history: after every step so far (a landing's
@@ -890,23 +1006,40 @@ impl VerifyCheck {
             ..Default::default()
         };
         // The plain-code step: the project's own build and tests, within
-        // the build folders' disk cap. The round's record says, as it goes,
-        // which checks it runs and what each came to, then each reviewer's
-        // result as it arrives: the owner watches the round, not a spinner.
+        // the build folders' disk cap. An app's own check is its live load,
+        // after the checks its `checks/` folder declares; each app the work
+        // deployed into (kept on its row) has its live load among the
+        // work's checks. The round's record says, as it goes, which checks
+        // it runs and what each came to, then each reviewer's result as it
+        // arrives: the owner watches the round, not a spinner.
         super::work::cap_builds();
-        let checks = checks::detect(&work.work_dir, &whole.paths());
-        row.detail = json!({
-            "whole": whole.stat(),
-            "checksPlanned": checks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-        });
+        let holds_reload =
+            !tools::app_dev::withheld(&store, &self.agent_id).iter().any(|t| t == tools::app_dev::APP_RELOAD);
+        let checks = match &own {
+            Some(app) => app_checks(app, &work.work_dir),
+            None => checks::detect(&work.work_dir, &whole.paths()),
+        };
+        let mut lives: Vec<Live> = own.iter().map(|a| Live::new(a.clone(), true, holds_reload)).collect();
+        for id in &v.deployed_apps {
+            if own.as_ref().is_some_and(|a| &a.id == id) {
+                continue;
+            }
+            // An app removed since has nothing left to check.
+            if let Some(app) = store.get_agent(id).ok().flatten() {
+                lives.push(Live::new(app, false, holds_reload));
+            }
+        }
+        let mut planned: Vec<String> = checks.iter().map(|c| c.label.clone()).collect();
+        planned.extend(lives.iter().map(|l| l.label.clone()));
+        row.detail = json!({ "whole": whole.stat(), "checksPlanned": planned });
         self.record_round(&row);
         let mut ctx = self.tool_ctx();
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
         let build = match checks::build_cache(&work.project_root) {
             Ok(build) => build,
-            Err(e) => return self.review_incomplete(v, &mut row, &e),
+            Err(e) => return self.review_incomplete(v, &mut row, lenses, &e),
         };
-        let mut runs: Vec<CheckRun> = Vec::with_capacity(checks.len());
+        let mut runs: Vec<CheckRun> = Vec::with_capacity(planned.len());
         for check in &checks {
             runs.extend(checks::run(&self.harness.tools, &ctx, std::slice::from_ref(check), &build).await);
             row.checks = json!(runs);
@@ -915,67 +1048,97 @@ impl VerifyCheck {
                 break;
             }
         }
+        // A live check that could not run (no browser to load the app in,
+        // or a page without the check script): the work can't be verified.
+        let mut live_unavailable = None;
+        for live in &lives {
+            if self.cancel.is_cancelled() {
+                break;
+            }
+            match self.live_check(live).await {
+                Ok(run) => {
+                    runs.push(run);
+                    row.checks = json!(runs);
+                    self.record_round(&row);
+                }
+                Err(why) => {
+                    // Never shown as running: it isn't one of the checks.
+                    planned.retain(|p| p != &live.label);
+                    row.detail["checksPlanned"] = json!(planned);
+                    self.record_round(&row);
+                    live_unavailable.get_or_insert(why);
+                }
+            }
+        }
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
         }
+        // Its deploys' live loads ran: a deploy from now on is checked anew.
+        let _ = store.set_verification_deploys_checked(&v.id);
 
+        let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
+        let rules = self.review_rules(work).await;
         // The reviewers: fresh, one per lens, all at once, each reading the
         // round's copy of exactly what was snapshotted (a throwaway export
         // of `head`) and its patch, sharing the verification's one build
         // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
-        // change the builder's copy, the one that lands.
-        let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
-            Ok(scratch) => scratch,
-            Err(e) => return self.review_incomplete(v, &mut row, &e),
-        };
-        let round_dir = review::round_dir(&scratch, round);
-        let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
-        let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
-        let rules = self.review_rules(work).await;
-        let input = RoundInput {
-            verification_id: &v.id,
-            round,
-            delta: round > 1,
-            lenses,
-            spec: &v.spec,
-            change: reviewed,
-            whole_stat: &whole.stat(),
-            patch_file: &patch_file,
-            work_dir: &review_dir,
-            scratch: &scratch,
-            checks: &runs,
-            prior_open: &prior_open,
-            claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
-            check_files: &review::check_files(&reviewed.paths()),
-            rules: &rules,
-        };
-        let mut reviewers = serde_json::Map::new();
-        for lens in lenses {
-            reviewers.insert(lens.as_str().into(), json!("running"));
-        }
-        row.detail["reviewers"] = json!(reviewers);
-        self.record_round(&row);
-        let live = Mutex::new(row.clone());
-        let heard = |r: &LensReview| {
-            let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
-            let state = match &r.review {
-                Ok(review) => {
-                    append(&mut live.findings, json!(review.findings));
-                    append(&mut live.verified_ok, json!(review.verified_ok));
-                    if review.findings.is_empty() { "clean" } else { "found" }
-                }
-                Err(_) => "failed",
+        // change the builder's copy, the one that lands. A round of checks
+        // alone has none.
+        let reviews: Vec<LensReview> = if lenses.is_empty() {
+            Vec::new()
+        } else {
+            let scratch = match self.review_folder(&v.id, round, reviewed, work, head).await {
+                Ok(scratch) => scratch,
+                Err(e) => return self.review_incomplete(v, &mut row, lenses, &e),
             };
-            live.detail["reviewers"][r.lens.as_str()] = json!(state);
-            self.record_round(&live);
+            let round_dir = review::round_dir(&scratch, round);
+            let (patch_file, review_dir) = (review::patch_file(&round_dir), review::project_dir(&round_dir));
+            let input = RoundInput {
+                verification_id: &v.id,
+                round,
+                delta,
+                lenses,
+                spec: &v.spec,
+                change: reviewed,
+                whole_stat: &whole.stat(),
+                patch_file: &patch_file,
+                work_dir: &review_dir,
+                scratch: &scratch,
+                checks: &runs,
+                prior_open: &prior_open,
+                claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
+                check_files: &review::check_files(&reviewed.paths()),
+                rules: &rules,
+            };
+            let mut reviewers = serde_json::Map::new();
+            for lens in lenses {
+                reviewers.insert(lens.as_str().into(), json!("running"));
+            }
+            row.detail["reviewers"] = json!(reviewers);
+            self.record_round(&row);
+            let live = Mutex::new(row.clone());
+            let heard = |r: &LensReview| {
+                let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
+                let state = match &r.review {
+                    Ok(review) => {
+                        append(&mut live.findings, json!(review.findings));
+                        append(&mut live.verified_ok, json!(review.verified_ok));
+                        if review.findings.is_empty() { "clean" } else { "found" }
+                    }
+                    Err(_) => "failed",
+                };
+                live.detail["reviewers"][r.lens.as_str()] = json!(state);
+                self.record_round(&live);
+            };
+            let reviews: Vec<LensReview> =
+                review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
+            row = live.into_inner().unwrap_or_else(|p| p.into_inner());
+            let _ = std::fs::remove_dir_all(&round_dir);
+            if self.cancel.is_cancelled() {
+                return self.stopped(v, &mut row);
+            }
+            reviews
         };
-        let reviews: Vec<LensReview> =
-            review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
-        row = live.into_inner().unwrap_or_else(|p| p.into_inner());
-        let _ = std::fs::remove_dir_all(&round_dir);
-        if self.cancel.is_cancelled() {
-            return self.stopped(v, &mut row);
-        }
         // What was reviewed and checked must be what is in the copy now: a
         // check that rewrote a file (a lockfile, generated code) changed it.
         let drifted = match work.shadow.snapshot().await {
@@ -1028,7 +1191,7 @@ impl VerifyCheck {
             .map(|p| p.id.clone())
             .collect();
         let deferred = findings::accepted_deferrals(&prior_open, &priors);
-        let checks_failed = runs.iter().filter(|r| !r.passed).count();
+        let checks_failed: usize = runs.iter().map(CheckRun::problems).sum();
         let blocking_now = findings::blocking(&open) + checks_failed;
 
         let mut calls: Vec<Finding> = Vec::new();
@@ -1103,8 +1266,8 @@ impl VerifyCheck {
             );
             match self.ask_owner(&v.id, &d.title, &context, &options, &Purpose::Decision { title: d.title.clone() }).await {
                 Some(answer) => {
-                    decided.push(format!("The owner decided \"{}\": {answer}. Carry it out.", d.title));
-                    asked.push(json!({ "finding": d, "answer": answer }));
+                    decided.push(format!("The owner decided \"{}\": {}. Carry it out.", d.title, answer.text()));
+                    asked.push(json!({ "finding": d, "answer": answer.text() }));
                 }
                 None => unanswered.push(d.clone()),
             }
@@ -1138,6 +1301,14 @@ impl VerifyCheck {
             return RoundEnd::Finished;
         }
         if blocking_now > 0 {
+            let brief = findings_brief(
+                &work.project_root.display().to_string(),
+                round,
+                lenses,
+                &open,
+                &runs,
+                &decided,
+            );
             if findings::stalled(&counts, came_back) {
                 let question = format!(
                     "The review of {} keeps finding problems: {blocking_now} blocking issue{} still open after {round} rounds, \
@@ -1151,20 +1322,11 @@ impl VerifyCheck {
                     .map(|f| format!("- {} ({})", f.title, f.evidence))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let purpose = Purpose::Stalled { open: blocking_now };
-                let answer = self.ask_owner(&v.id, &question, &context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
-                if let Some(step) = self.answered(work, &after, &purpose, answer.as_deref()).await {
+                if let Some(step) = self.stalled(work, &after, &question, &context, blocking_now, &brief).await {
                     return step.into();
                 }
             }
-            return RoundEnd::Continue(findings_brief(
-                &work.project_root.display().to_string(),
-                round,
-                lenses,
-                &open,
-                &runs,
-                &decided,
-            ));
+            return RoundEnd::Continue(brief);
         }
         if !decided.is_empty() {
             return RoundEnd::Continue(findings_brief(
@@ -1202,6 +1364,10 @@ impl VerifyCheck {
                  end your reply; the next round reviews them."
             ));
         }
+        if let Some(why) = live_unavailable {
+            self.finish(&after, "not_verified", Some(why));
+            return RoundEnd::Finished;
+        }
         if runs.is_empty() {
             // Reviewed, but no build or test could run: not verified.
             let reason = Why::new("no_checks");
@@ -1212,7 +1378,7 @@ impl VerifyCheck {
                     work.project_root.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
-                return self.answered(work, &after, &Purpose::NoChecks, answer.as_deref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
+                return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
             }
             self.finish(&after, "not_verified", Some(reason));
             return RoundEnd::Finished;
@@ -1223,8 +1389,9 @@ impl VerifyCheck {
 
 impl VerifyCheck {
     /// A clean round: the work is verified. A copy this loop made catches up
-    /// with the owner's project and lands; an app's pages are reloaded and
-    /// checked live; a helper's copy waits for its parent to land it.
+    /// with the owner's project and lands; an app's pages are live where
+    /// they are (their live load passed in the round); a helper's copy waits
+    /// for its parent to land it.
     async fn land(&self, mut work: Work, notes: &str) -> Step {
         let store = self.store().clone();
         let Some(v) = store.get_verification(&work.id).ok().flatten() else {
@@ -1232,16 +1399,7 @@ impl VerifyCheck {
         };
         match work.kind {
             WorkKind::Isolated => {}
-            // An app's pages are live where they are: verified only when
-            // the page reloads and checks out.
-            WorkKind::AppPages => {
-                match self.live_check_app(&work, &v).await {
-                    Err(why) => self.finish(&v, "not_verified", Some(why)),
-                    Ok(()) => self.finish(&v, "verified", None),
-                }
-                return Step::Finished;
-            }
-            WorkKind::HelperCopy | WorkKind::Folder => {
+            WorkKind::AppPages | WorkKind::HelperCopy | WorkKind::Folder => {
                 self.finish(&v, "verified", None);
                 return Step::Finished;
             }
@@ -1477,9 +1635,7 @@ impl VerifyCheck {
                 said,
                 findings::ROUNDS_WITHOUT_PROGRESS
             );
-            let purpose = Purpose::Stalled { open: 1 };
-            let answer = self.ask_owner(&v.id, &question, &text, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
-            if let Some(step) = self.answered(work, v, &purpose, answer.as_deref()).await {
+            if let Some(step) = self.stalled(work, v, &question, &text, 1, &text).await {
                 return step;
             }
         }
@@ -1524,7 +1680,7 @@ impl VerifyCheck {
                     work.work_dir.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
-                self.answered(work, v, &Purpose::OwnerEdits, answer.as_deref()).await.unwrap_or(Step::Finished)
+                self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref()).await.unwrap_or(Step::Finished)
             }
             other => {
                 // Why it did not land, as a code; the raw words (a git
@@ -1536,9 +1692,31 @@ impl VerifyCheck {
         }
     }
 
+    /// The loop stopped making progress with `open` blocking issues: the
+    /// owner is asked whether it goes on, lands anyway or stops. Once he
+    /// has sent it on [`STALL_GO_ONS`] times this turn and it stalls again,
+    /// it stops as stalled instead of asking again. `brief`: what the
+    /// builder is told if it goes on. `None`: the round goes on.
+    async fn stalled(&self, work: &mut Work, v: &db::Verification, question: &str, context: &str, open: usize, brief: &str) -> Option<Step> {
+        if self.verify.shared().gone_on_enough(&v.id) {
+            self.finish(v, "not_verified", Some(Why::new("stalled").with("open", open)));
+            return Some(Step::Finished);
+        }
+        let purpose = Purpose::Stalled { open, brief: brief.to_string() };
+        let answer = self.ask_owner(&v.id, question, context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+        if went_on(answer.as_ref()) {
+            self.verify.shared().go_on(&v.id);
+        }
+        self.answered(work, v, &purpose, answer.as_ref()).await
+    }
+
     /// What the owner's answer to one of the loop's questions does, the same
     /// whenever it comes. `None`: the round goes on.
-    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&str>) -> Option<Step> {
+    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>) -> Option<Step> {
+        if let Some(told) = instruction(purpose, answer) {
+            return Some(Step::Continue(told));
+        }
+        let answer = answer.map(Reply::text);
         match purpose {
             Purpose::Decision { title } => Some(match answer {
                 Some(a) => Step::Continue(format!("The owner decided \"{title}\": {a}. Carry it out.")),
@@ -1547,7 +1725,7 @@ impl VerifyCheck {
                     Step::Finished
                 }
             }),
-            Purpose::Stalled { open } => match answer {
+            Purpose::Stalled { open, .. } => match answer {
                 Some(KEEP_GOING) => None,
                 Some(LAND_ANYWAY) => {
                     Some(self.land_unverified(work, v, Why::new("landed_unreviewed")).await.map_or(Step::Finished, Step::Continue))
@@ -1613,66 +1791,86 @@ impl VerifyCheck {
         None
     }
 
-    /// An app's pages after a clean round: reloaded where they are open and
-    /// checked live in a view of their own. It checks out only when the app
-    /// exists, its page loads (its folder, its entry page, every file it
-    /// loads) and that load had zero errors. No view that can be opened is
-    /// a failure, never a pass; no browser to open one in is said as such
-    /// (`live_unavailable`). `Err` is why it did not check out.
-    async fn live_check_app(&self, work: &Work, v: &db::Verification) -> Result<(), Why> {
-        let store = self.store();
-        let app = store
-            .list_agents(1_000, 0)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|a| {
-                tools::app_dev::served_dir(a)
-                    .is_some_and(|d| std::path::Path::new(d) == work.work_dir)
-            });
-        let ctx = self.tool_ctx();
-        let Some(app) = app else {
-            self.record_live(v, Why::new("live_failed"), json!({ "problem": "no app is served from these pages" }));
-            return Err(Why::new("live_failed"));
-        };
-        // The owner's open views load the new build too.
-        let reload = self
+    /// An app's live check, run every round like any other check: its page
+    /// loaded fresh on a phone and a desktop, in a view of its own, through
+    /// `app_reload(app, check: true)`, the one live check
+    /// ([`tools::app_publish::live_load`]). It passes only when every view
+    /// loaded with zero errors of the app's own and drew something; what
+    /// failed is its output, which the builder fixes, each error one open
+    /// problem. `Err`: it could not run at all (no browser to load it in, or
+    /// a page without the check script).
+    async fn live_check(&self, live: &Live) -> Result<CheckRun, Why> {
+        let started = std::time::Instant::now();
+        let mut ctx = self.tool_ctx();
+        // Nobody answers a question in the middle of a check.
+        ctx.cannot_wait = true;
+        let result = self
             .harness
             .tools
-            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.name }))
+            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": live.app.id, "check": true }))
             .await;
-        use tools::app_publish::LiveLoadError;
-        let loaded = tools::app_publish::live_load(self.harness.tools.browser().as_ref(), &app).await;
-        let (problem, why, seen) = match &loaded {
-            Err(LiveLoadError::NoBrowser(e)) => (Some("the bot has no browser to open the app in"), "live_unavailable", json!(e)),
-            Err(LiveLoadError::NotOpened(e)) => {
-                (tools::app_dev::live_problem(&work.work_dir, 0).or(Some("no view of the app could be opened")), "live_failed", json!(e))
-            }
-            Err(LiveLoadError::NoScript(e)) => (Some(tools::app_publish::NO_SCRIPT), "live_no_script", json!(e)),
-            Ok(failed) => (tools::app_dev::live_problem(&work.work_dir, failed.len()), "live_failed", json!(failed)),
-        };
-        let why = Why::new(if problem.is_none() { "live_ok" } else { why });
-        self.record_live(v, why.clone(), json!({ "problem": problem, "errors": seen, "reload": reload.content }));
-        if problem.is_none() { Ok(()) } else { Err(why) }
-    }
-
-    fn record_live(&self, v: &db::Verification, outcome: Why, detail: serde_json::Value) {
-        let store = self.store();
-        let round = next_step(store, &v.id);
-        let _ = store.put_verification_round(&db::VerificationRound {
-            verification_id: v.id.clone(),
-            round,
-            kind: "live".into(),
-            outcome: outcome.text(),
-            detail,
-            started_at: Self::now(),
-            finished_at: Some(Self::now()),
-            ..Default::default()
-        });
+        let checked = result.payload.as_ref().filter(|p| p["kind"] == tools::app_dev::LIVE_CHECK);
+        match checked.and_then(|p| p["couldNotRun"].as_str()) {
+            Some(tools::app_dev::LIVE_NO_BROWSER) => return Err(Why::new("live_unavailable")),
+            Some(_) => return Err(Why::new("live_no_script")),
+            None => {}
+        }
+        let passed = !result.is_error && checked.is_some_and(|p| p["passed"] == true);
+        let errors = checked
+            .and_then(|p| p["errors"].as_array())
+            .map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        Ok(CheckRun {
+            label: live.label.clone(),
+            command: live.command.clone(),
+            passed,
+            tail: checks::tail(&result.content),
+            duration_ms: started.elapsed().as_millis() as u64,
+            errors,
+        })
     }
 }
 
-/// The rules a review read, as a hash kept on its step: a review is skipped
-/// on unchanged work only under the same rules.
+/// One app's live check in a round: of the app whose pages are the work,
+/// or of one the work deployed into.
+struct Live {
+    app: db::models::Agent,
+    /// Its row among the round's checks.
+    label: String,
+    /// How the builder runs it: the call when it holds `app_reload`.
+    command: String,
+}
+
+impl Live {
+    /// `app`'s live check: the work's own app (`own`), or one it deployed
+    /// into, named. `holds_reload`: the builder can run it itself.
+    fn new(app: db::models::Agent, own: bool, holds_reload: bool) -> Self {
+        Live {
+            label: if own {
+                "Live load on a phone and a desktop".into()
+            } else {
+                format!("Live load of {} on a phone and a desktop", app.name)
+            },
+            command: if holds_reload {
+                super::work::live_check_call(&app.id)
+            } else {
+                "run by Nebo when you finish".into()
+            },
+            app,
+        }
+    }
+}
+
+/// The checks an app declares beside its live load: the project in its
+/// app folder's `checks/` (its tests, run by the same rules as any
+/// project's, [`checks::detect`]), never inside the served `pages`.
+fn app_checks(app: &db::models::Agent, pages: &std::path::Path) -> Vec<checks::Check> {
+    match tools::app_history::app_folder(app).map(|f| f.join("checks")) {
+        Some(dir) if dir.is_dir() && !dir.starts_with(pages) => checks::detect(&dir, &[]),
+        _ => Vec::new(),
+    }
+}
+
 /// `items` (a JSON array) added to the end of the array `into`.
 fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     let mut all = into.as_array().cloned().unwrap_or_default();
@@ -1680,6 +1878,8 @@ fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     *into = serde_json::Value::Array(all);
 }
 
+/// The rules a review read, as a hash kept on its step: a review is skipped
+/// on unchanged work only under the same rules.
 fn rules_hash(rules: &str) -> String {
     format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }
@@ -1712,5 +1912,63 @@ fn landing_message(spec: &str) -> String {
     match chars.next() {
         Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
         None => "Code changes made by an employee".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The card's choice is a choice; his typed words are his own words.
+    #[test]
+    fn an_answer_is_a_choice_or_his_own_words() {
+        assert_eq!(Reply::read(&json!({"picked": "Keep going"})), Some(Reply::Picked("Keep going".into())));
+        assert_eq!(Reply::read(&json!({"own_words": "add a test first"})), Some(Reply::Words("add a test first".into())));
+        assert_eq!(Reply::read(&json!({"response": "yes"})), Some(Reply::Words("yes".into())));
+        assert_eq!(Reply::read(&json!({})), None);
+    }
+
+    /// Review of #998: "keep going" typed to a stalled loop stopped it, and
+    /// anything but the exact choice did the wrong thing on the others.
+    /// Typed words are instructions on every question but a call of his.
+    #[test]
+    fn typed_words_are_instructions_never_a_guessed_choice() {
+        let words = Reply::Words("keep going, but add a test for the total".into());
+        for purpose in [Purpose::Stalled { open: 2, brief: String::new() }, Purpose::NoChecks, Purpose::OwnerEdits] {
+            let told = instruction(&purpose, Some(&words)).expect("words are an instruction");
+            assert!(told.contains("add a test for the total") && told.contains("next round checks it"), "{purpose:?}");
+            assert_eq!(instruction(&purpose, Some(&Reply::Picked(LAND_ANYWAY.into()))), None, "a choice does what it says");
+            assert_eq!(instruction(&purpose, None), None);
+        }
+        assert_eq!(instruction(&Purpose::Decision { title: "Pins".into() }, Some(&words)), None, "a call is carried out as he put it");
+    }
+
+    /// Review of #998: his words to a stalled loop replaced its findings,
+    /// so the builder never heard what was still open. They go on top of
+    /// the findings, which stay whole.
+    #[test]
+    fn his_words_to_a_stalled_loop_go_on_top_of_its_findings() {
+        let brief = "Independent reviewers checked your change.\n- f1 [blocker] total() drops cents: total.py:1";
+        let told = instruction(&Purpose::Stalled { open: 1, brief: brief.into() }, Some(&Reply::Words("use Decimal".into()))).unwrap();
+        assert!(told.starts_with(brief), "the findings stay whole and first: {told}");
+        assert!(told.contains("\"use Decimal\"") && told.contains("his words win"), "{told}");
+    }
+
+    /// Review of #998: a stalled loop the owner kept sending on asked him
+    /// again every round without end. He sends it on at most
+    /// [`STALL_GO_ONS`] times a turn, by choice or in words; a Land or Stop
+    /// is no go-on.
+    #[test]
+    fn a_stalled_loop_is_sent_on_a_bounded_number_of_times() {
+        assert!(went_on(Some(&Reply::Picked(KEEP_GOING.into()))));
+        assert!(went_on(Some(&Reply::Words("try a Decimal".into()))));
+        assert!(!went_on(Some(&Reply::Picked(LAND_ANYWAY.into()))) && !went_on(Some(&Reply::Picked(STOP_HERE.into()))) && !went_on(None));
+        let mut shared = Shared::default();
+        for _ in 0..STALL_GO_ONS {
+            assert!(!shared.gone_on_enough("v1"));
+            shared.go_on("v1");
+        }
+        assert!(shared.gone_on_enough("v1"));
+        assert!(!shared.gone_on_enough("v2"), "counted per verification");
     }
 }

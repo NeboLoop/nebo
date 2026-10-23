@@ -69,6 +69,10 @@ pub struct Outlets {
     /// Told the id of a verification whenever its record changes, so the
     /// app's badge and run history follow it live.
     pub verification_changed: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// Told when a turn's run on a session ends (its key, and how it ended:
+    /// `TurnExit::label`), whichever door started it, once its last row is
+    /// written and its slot is free.
+    pub turn_ended: Option<Arc<dyn Fn(&str, &str) + Send + Sync>>,
 }
 
 /// Reads an employee's background note (see [`Outlets::background_note`]).
@@ -237,6 +241,12 @@ impl Harness {
         self.outlets.get().and_then(|o| o.helpers.clone())
     }
 
+    pub(crate) fn turn_ended(&self, session_key: &str, exit: &str) {
+        if let Some(tell) = self.outlets.get().and_then(|o| o.turn_ended.clone()) {
+            tell(session_key, exit);
+        }
+    }
+
     pub(crate) fn verification_changed(&self, id: &str) {
         if let Some(tell) = self.outlets.get().and_then(|o| o.verification_changed.clone()) {
             tell(id);
@@ -291,7 +301,8 @@ impl Harness {
                 unit: crate::phone_location::DistanceUnit::for_language(&language),
             }
         });
-        self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp(), office)
+        let zone = tools::owner_clock::OwnerZone::of(&self.store);
+        self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp(), office, zone)
     }
 
     /// What a voice call is told about where it runs, from the same sources

@@ -61,6 +61,12 @@ pub struct Verification {
     pub landed_at: Option<i64>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
+    /// The apps (ids) the work deployed into: each one's live load is one
+    /// of its checks.
+    pub deployed_apps: Vec<String>,
+    /// A deploy came after the work's last round: its verdict waits on a
+    /// new one.
+    pub deploy_unchecked: bool,
 }
 
 /// A verification as it starts.
@@ -145,7 +151,7 @@ pub struct VerificationQuery<'a> {
 const COLUMNS: &str = "id, agent_id, session_key, chat_id, message_id, workflow_run_id, activity_id, handoff_id, \
      project_id, spec, project_root, work_dir, isolation, work_kind, isolation_json, branch, base_ref, state, reason, rounds, open_blockers, \
      open_majors, open_minors, open_json, deferred_json, summary, reviewer_prefix, pending_ask_json, landed_ref, \
-     landed_at, created_at, finished_at";
+     landed_at, created_at, finished_at, deployed_apps_json, deploy_unchecked";
 
 const ROUND_COLUMNS: &str = "verification_id, round, kind, lenses_json, base_ref, head_ref, diff_stat, findings_json, \
      verified_ok_json, prior_json, checks_json, fixed_json, decisions_json, detail_json, outcome, reviewer_prefix, \
@@ -189,6 +195,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Verification> {
         landed_at: r.get(29)?,
         created_at: r.get(30)?,
         finished_at: r.get(31)?,
+        deployed_apps: serde_json::from_str(&r.get::<_, String>(32)?).unwrap_or_default(),
+        deploy_unchecked: r.get::<_, i64>(33)? != 0,
     })
 }
 
@@ -416,6 +424,31 @@ impl Store {
                 params![id, landed_ref, now],
             )
             .db_err("set_verification_landed")?;
+        Ok(())
+    }
+
+    /// The work deployed into the app `app_id`: its live load is one of the
+    /// work's checks from now on, and the work's verdict waits on a round
+    /// that runs it.
+    pub fn add_verification_deploy(&self, id: &str, app_id: &str) -> Result<(), NeboError> {
+        self.conn()?
+            .execute(
+                "UPDATE verifications SET deploy_unchecked = 1,
+                   deployed_apps_json = CASE
+                     WHEN EXISTS (SELECT 1 FROM json_each(deployed_apps_json) WHERE value = ?2) THEN deployed_apps_json
+                     ELSE json_insert(deployed_apps_json, '$[#]', ?2) END
+                 WHERE id = ?1",
+                params![id, app_id],
+            )
+            .db_err("add_verification_deploy")?;
+        Ok(())
+    }
+
+    /// A round ran the live loads of the work's deploys.
+    pub fn set_verification_deploys_checked(&self, id: &str) -> Result<(), NeboError> {
+        self.conn()?
+            .execute("UPDATE verifications SET deploy_unchecked = 0 WHERE id = ?1", params![id])
+            .db_err("set_verification_deploys_checked")?;
         Ok(())
     }
 
@@ -879,6 +912,22 @@ mod tests {
             s.get_verification("v-1").unwrap().unwrap().pending_ask,
             None
         );
+    }
+
+    #[test]
+    fn a_deploy_is_kept_on_its_verification_until_a_round_checks_it() {
+        let s = store();
+        s.create_verification(&new("v-1", "agent:a:web", "/site"), 10).unwrap();
+        let row = s.get_verification("v-1").unwrap().unwrap();
+        assert_eq!((row.deployed_apps.len(), row.deploy_unchecked), (0, false));
+        s.add_verification_deploy("v-1", "scoreboard").unwrap();
+        s.add_verification_deploy("v-1", "scoreboard").unwrap();
+        s.add_verification_deploy("v-1", "ledger").unwrap();
+        let row = s.get_verification("v-1").unwrap().unwrap();
+        assert_eq!((row.deployed_apps, row.deploy_unchecked), (vec!["scoreboard".to_string(), "ledger".to_string()], true));
+        s.set_verification_deploys_checked("v-1").unwrap();
+        let row = s.get_verification("v-1").unwrap().unwrap();
+        assert_eq!((row.deployed_apps.len(), row.deploy_unchecked), (2, false), "the apps stay its checks");
     }
 
     #[test]

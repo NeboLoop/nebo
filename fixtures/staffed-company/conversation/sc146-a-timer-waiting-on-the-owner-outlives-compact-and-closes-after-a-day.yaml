@@ -1,0 +1,7 @@
+id: sc146-a-timer-waiting-on-the-owner-outlives-compact-and-closes-after-a-day
+name: "SC146 — A timer waiting on the owner outlives compact and closes after a day"
+description: |
+  A one-shot whose turn ended waiting on the owner (an approval, a question) keeps its follow-up waiting, and his /compact leaves it as it is. A wait past a day is closed unanswered when the next turn ends, so that turn's reply, about something else, is never pointed at as the timer's answer.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_timer_waiting_on_the_owner_outlives_compact_and_closes_after_a_day
+conversation: []

@@ -7,7 +7,7 @@
 // setOptions), which meant the inbox and marketplace inherited chat's options by
 // accident. Owning it in one module makes that explicit.
 import { marked, Marked, Renderer } from 'marked';
-import type { MarkedExtension, TokenizerAndRendererExtension, Tokens } from 'marked';
+import type { MarkedExtension, Token, TokenizerAndRendererExtension, Tokens } from 'marked';
 import katex from 'katex';
 import { bareFileMention, bareFileMentionStart, fileMention } from '$lib/chat/fileMentions';
 
@@ -198,4 +198,37 @@ const withFilePaths = new Marked(...shared, {
 export function parseMarkdown(src: string, { filePaths = false }: { filePaths?: boolean } = {}): string {
 	if (!src) return '';
 	return (filePaths ? withFilePaths : marked).parse(src, { async: false }) as string;
+}
+
+/** Tokens whose children are blocks of their own (said apart), not words
+ *  in a line (said together). */
+const BLOCK_CONTAINERS = new Set(['blockquote', 'list_item']);
+
+/** Markdown as the plain words it reads as, on one line: no asterisks,
+ *  hashes, backticks or link syntax. For a preview (an Inbox row) where the
+ *  rendered markdown would be too much and the raw markup unreadable.
+ *  `first` keeps only its first line: a one-line receipt or a list row. */
+export function plainText(src: string, { first = false }: { first?: boolean } = {}): string {
+	if (!src) return '';
+	// Blocks, list items and table rows are lines of their own; with `first`
+	// only the first is kept, else they run on, a space apart.
+	const between = first ? '\n' : ' ';
+	const words = (tokens: Token[], sep: string): string =>
+		tokens
+			.map((t): string => {
+				if (t.type === 'list') return (t as Tokens.List).items.map((i) => words(i.tokens, between)).join(between);
+				if (t.type === 'table') {
+					const table = t as Tokens.Table;
+					return [table.header, ...table.rows].map((row) => row.map((c) => words(c.tokens, '')).join(' ')).join(between);
+				}
+				if (t.type === 'space' || t.type === 'hr' || t.type === 'html') return between;
+				if (t.type === 'br') return '\n';
+				if (BLOCK_CONTAINERS.has(t.type) && 'tokens' in t && t.tokens) return words(t.tokens, between);
+				if ('tokens' in t && t.tokens?.length) return words(t.tokens, '');
+				return 'text' in t && typeof t.text === 'string' ? t.text : '';
+			})
+			.join(sep);
+	const said = words(marked.lexer(src), between);
+	const line = (s: string) => s.replace(/\s+/g, ' ').trim();
+	return first ? (said.split('\n').map(line).find(Boolean) ?? '') : line(said);
 }

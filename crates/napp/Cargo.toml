@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# A real sidecar process for supervision tests (`napp::test_sidecar`).
-test-sidecar = []
+# A real sidecar process for supervision tests (`napp::test_sidecar`), with
+# the stand-in sidecar server it relays to.
+test-sidecar = ["proto/server", "dep:windows-sys"]
 # Sealed .napp fixtures signed by a throwaway key (`napp::test_signing`).
 # Enable from dev-dependencies only — never in a shipped build.
 test-signing = []
@@ -42,6 +43,18 @@ regex = { workspace = true }
 tempfile = "3"
 notify = "7"
 futures = { workspace = true }
+proto = { workspace = true }
+tonic = "0.12"
+hmac = "0.12"
+
+# The test sidecar's kill and liveness check on Windows (`napp::test_sidecar`):
+# only with the test-sidecar feature, and in napp's own tests.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"], optional = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+proto = { workspace = true, features = ["server"] }
 

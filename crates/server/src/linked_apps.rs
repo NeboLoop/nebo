@@ -129,19 +129,50 @@ async fn find(state: &AppState) -> Found {
     let self_id = config::read_bot_id().unwrap_or_default();
     let sources: Vec<comm::api_types::ManagedBot> =
         bots.into_iter().filter(|b| crate::handlers::agents::hire_source(b, &self_id)).collect();
-    let rosters = futures::future::join_all(sources.iter().map(|bot| api.linked_bot_roster(&bot.id))).await;
-    let links = sources
+    let api = &api;
+    let links = with_rosters(sources, |id| async move { api.linked_bot_roster(&id).await }).await;
+    Found { links: Some(links), installed }
+}
+
+/// Each linked bot with its roster. Only a bot the hub calls online is
+/// asked: one that is offline has no tunnel, so asking it is a refusal on
+/// every look from every Nebo of the owner's. It has no roster until it
+/// comes online, and the first look after that asks it (looks run every
+/// [`EVERY`], on each connect and behind every listing). A bot that does not
+/// answer has no roster either.
+async fn with_rosters<F, Fut>(
+    sources: Vec<comm::api_types::ManagedBot>,
+    ask: F,
+) -> Vec<(comm::api_types::ManagedBot, comm::api_types::LinkedRoster)>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<comm::api_types::LinkedRoster, comm::CommError>>,
+{
+    let rosters = futures::future::join_all(sources.iter().map(|bot| {
+        let asked = bot.online.then(|| ask(bot.id.clone()));
+        async move {
+            match asked {
+                Some(roster) => Some(roster.await),
+                None => None,
+            }
+        }
+    }))
+    .await;
+    sources
         .into_iter()
         .zip(rosters)
         .map(|(bot, roster)| {
-            let roster = roster.unwrap_or_else(|e| {
-                info!(bot_id = %bot.id, error = %e, "linked bot's roster did not answer");
-                comm::api_types::LinkedRoster::default()
-            });
+            let roster = match roster {
+                Some(Ok(roster)) => roster,
+                Some(Err(e)) => {
+                    info!(bot_id = %bot.id, error = %e, "linked bot's roster did not answer");
+                    comm::api_types::LinkedRoster::default()
+                }
+                None => comm::api_types::LinkedRoster::default(),
+            };
             (bot, roster)
         })
-        .collect();
-    Found { links: Some(links), installed }
+        .collect()
 }
 
 /// Hosts, on this computer, every employee whose coding agent works here
@@ -291,5 +322,26 @@ mod tests {
         assert_eq!(named("claude-coder"), None);
         assert_eq!(named("hermes"), None);
         assert_eq!(named("assistant"), None);
+    }
+
+    /// Only a linked bot the hub calls online is asked for its roster: an
+    /// offline one is listed with none and never asked.
+    #[tokio::test]
+    async fn an_offline_linked_bot_is_not_asked_for_its_roster() {
+        let bot = |id: &str, online: bool| comm::api_types::ManagedBot { id: id.into(), online, ..Default::default() };
+        let asked = std::sync::Mutex::new(Vec::new());
+        let links = with_rosters(vec![bot("up", true), bot("away", false)], |id| {
+            asked.lock().unwrap().push(id.clone());
+            async move {
+                Ok(comm::api_types::LinkedRoster {
+                    agents: vec![comm::api_types::LinkedAgent { id: format!("{id}-agent"), ..Default::default() }],
+                    runtimes: Vec::new(),
+                })
+            }
+        })
+        .await;
+        assert_eq!(*asked.lock().unwrap(), ["up"]);
+        let agents: Vec<(&str, usize)> = links.iter().map(|(b, r)| (b.id.as_str(), r.agents.len())).collect();
+        assert_eq!(agents, [("up", 1), ("away", 0)]);
     }
 }
