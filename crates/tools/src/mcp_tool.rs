@@ -469,6 +469,12 @@ async fn token_for_call(store: &db::Store, bridge: &mcp::Bridge, integration_id:
 /// if the model supplied a string that parses to that type, replace it with the
 /// parsed value. Values that already match the declared type are left untouched,
 /// so a legitimately string-typed field is never mangled.
+///
+/// Numbers and booleans arrive as strings the same way (`"days": "2"`,
+/// `"history": "true"`): a property the schema declares `integer`, `number`
+/// or `boolean`, and not also `string`, takes the string's value when it is
+/// one. The hourly calendar check failed every hour on 2026-10-22 because
+/// `os calendar` got `days: "2"`.
 pub(crate) fn coerce_schema_types(input: &mut serde_json::Value, schema: &serde_json::Value) {
     let (Some(obj), Some(props)) = (
         input.as_object_mut(),
@@ -488,6 +494,12 @@ pub(crate) fn coerce_schema_types(input: &mut serde_json::Value, schema: &serde_
             serde_json::Value::Array(many) => many.iter().any(|v| v.as_str() == Some(t)),
             _ => false,
         };
+        if !accepts("string")
+            && let Some(scalar) = scalar_from_string(s, &accepts)
+        {
+            *val = scalar;
+            continue;
+        }
         let wants_object = accepts("object");
         let wants_array = accepts("array");
         if !wants_object && !wants_array {
@@ -509,6 +521,31 @@ pub(crate) fn coerce_schema_types(input: &mut serde_json::Value, schema: &serde_
             }
         }
     }
+}
+
+/// The integer, number or boolean a string spells, for the first of those
+/// types the schema accepts (`accepts`), or `None`.
+fn scalar_from_string(s: &str, accepts: &dyn Fn(&str) -> bool) -> Option<serde_json::Value> {
+    let s = s.trim();
+    if accepts("integer")
+        && let Ok(n) = s.parse::<i64>()
+    {
+        return Some(n.into());
+    }
+    if accepts("number")
+        && let Ok(n) = s.parse::<f64>()
+        && let Some(n) = serde_json::Number::from_f64(n)
+    {
+        return Some(serde_json::Value::Number(n));
+    }
+    if accepts("boolean") {
+        return match s.to_ascii_lowercase().as_str() {
+            "true" => Some(true.into()),
+            "false" => Some(false.into()),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// Escape raw control characters that appear INSIDE string literals of an
@@ -796,6 +833,30 @@ mod coerce_tests {
         assert!(input["tags"].is_array());
         // string-typed field is never mangled, even though it looks like JSON
         assert_eq!(input["key"], "{\"not\":\"parsed\"}");
+    }
+
+    /// Numbers and booleans sent as strings take their value where the
+    /// schema declares that type; a string that isn't one, and a property
+    /// that also takes a string, are left as sent.
+    #[test]
+    fn parses_stringified_numbers_and_booleans() {
+        let schema = json!({
+            "properties": {
+                "days":    {"type": "integer"},
+                "ratio":   {"type": "number"},
+                "history": {"type": "boolean"},
+                "either":  {"type": ["integer", "string"]},
+                "maybe":   {"type": ["null", "integer"]},
+            }
+        });
+        let mut input = json!({"days": " 2 ", "ratio": "0.5", "history": "True", "either": "7", "maybe": "3"});
+        coerce_schema_types(&mut input, &schema);
+        assert_eq!(input, json!({"days": 2, "ratio": 0.5, "history": true, "either": "7", "maybe": 3}));
+
+        let mut wrong = json!({"days": "many", "ratio": "NaN", "history": "yes"});
+        let before = wrong.clone();
+        coerce_schema_types(&mut wrong, &schema);
+        assert_eq!(wrong, before, "a string that is not the declared type stays for the validator to name");
     }
 
     #[test]

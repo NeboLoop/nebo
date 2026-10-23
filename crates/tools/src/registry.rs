@@ -2618,6 +2618,16 @@ pub(crate) mod tests {
         assert!(out.content.contains("A minimal valid call: {\"text\": <string>}"), "{}", out.content);
     }
 
+    /// A number sent as a string runs as the number, in the one place every
+    /// call is settled.
+    #[tokio::test]
+    async fn a_number_sent_as_a_string_runs() {
+        let r = echo_registry().await;
+        let out = r.execute(&ToolContext::default(), "echo_text", serde_json::json!({"text": "hi", "times": "3"})).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "hihihi");
+    }
+
     /// Invalid input is never concurrency-safe: a call that won't run as
     /// written doesn't join a parallel batch.
     #[tokio::test]
