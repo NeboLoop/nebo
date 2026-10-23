@@ -79,8 +79,16 @@ fn body_read_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         format!("stalled: nothing arrived for {}s", DOWNLOAD_IDLE_TIMEOUT.as_secs())
     } else {
-        e.to_string()
+        types::redact::redact(&e.to_string())
     }
+}
+
+/// A request that got no answer, in words a log may keep: reqwest's text
+/// names the URL, and an upload's URL carries its token (live 2026-10-23:
+/// `…/api/v1/uploads/eyJ…` in the owner's log), so it goes through
+/// `types::redact`.
+fn transport(e: &reqwest::Error) -> CommError {
+    CommError::Transport(types::redact::redact(&e.to_string()))
 }
 
 /// How long an upload of `len` bytes may take: the files door's window, and
@@ -266,7 +274,7 @@ impl NeboAIApi {
                 }
             })
             .await
-            .map_err(|e| CommError::Transport(e.to_string()))?
+            .map_err(|e| transport(&e))?
         {
             Ok(resp) => resp,
             Err((status, body)) => return Err(CommError::Http { status: status.as_u16(), body }),
@@ -365,7 +373,7 @@ impl NeboAIApi {
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await
-            .map_err(|e| CommError::Transport(e.to_string()))?;
+            .map_err(|e| transport(&e))?;
         let status = resp.status().as_u16();
         let content_type = resp
             .headers()
@@ -1800,9 +1808,9 @@ impl NeboAIApi {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CommError::Transport(e.to_string()))?;
+            .map_err(|e| transport(&e))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| CommError::Transport(e.to_string()))?;
+        let text = resp.text().await.map_err(|e| transport(&e))?;
         if !status.is_success() {
             return Err(CommError::Http { status: status.as_u16(), body: text });
         }
@@ -1850,7 +1858,7 @@ impl NeboAIApi {
             .multipart(form)
             .send()
             .await
-            .map_err(|e| CommError::Transport(e.to_string()))?;
+            .map_err(|e| transport(&e))?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
@@ -2024,7 +2032,7 @@ impl NeboAIApi {
                 }
             })
             .await
-            .map_err(|e| CommError::Transport(e.to_string()))?;
+            .map_err(|e| transport(&e))?;
         match resp {
             Ok(resp) => resp.text().await.map_err(|e| CommError::Transport(body_read_error(&e))),
             Err((status, body)) => Err(CommError::Http { status: status.as_u16(), body }),
@@ -2307,6 +2315,19 @@ pub(crate) fn mcp_tool_output(body: &str) -> Result<serde_json::Value, CommError
 
 #[cfg(test)]
 mod tests {
+    /// A request that got no answer never carries its URL's token into
+    /// the error a log line prints.
+    #[tokio::test]
+    async fn a_transport_error_keeps_no_token() {
+        let token = "eyJhbGciOiJIUzI1NiJ9.eyJ1cGxvYWQiOiIxIn0.c2lnbmF0dXJl";
+        // Nothing listens on port 9: the request gets no answer.
+        let e = reqwest::Client::new().get(format!("http://127.0.0.1:9/api/v1/uploads/{token}")).send().await.unwrap_err();
+        assert!(e.to_string().contains(token), "the raw error names the URL: {e}");
+        let said = transport(&e).to_string();
+        assert!(said.starts_with("no answer from NeboAI") && !said.contains(token), "{said}");
+        assert!(!body_read_error(&e).contains(token));
+    }
+
     use super::*;
 
     /// The hub's MCP answers as an event stream or plain JSON: the tool's
