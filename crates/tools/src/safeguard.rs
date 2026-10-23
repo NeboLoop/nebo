@@ -394,6 +394,11 @@ fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
                 .to_string(),
         );
     }
+    // The git commands that throw away the owner's work, however they are
+    // wrapped, typed into a shell or tucked into a script.
+    if crate::policy::is_destructive_git(text) {
+        return Some(crate::policy::DESTRUCTIVE_GIT_REFUSAL.to_string());
+    }
     if let Some(reason) = check_destructive_command(text, &lower) {
         return Some(format!(
             "BLOCKED: {}. \
@@ -903,6 +908,23 @@ mod tests {
         assert!(check_shell_safeguard(&safe, &bare()).is_none());
     }
 
+    /// Destructive git is refused however it is wrapped, and inside a
+    /// script the command runs.
+    #[test]
+    fn destructive_git_is_refused_in_a_command_and_in_a_script_it_runs() {
+        let run = |command: &str| check_shell_safeguard(&serde_json::json!({ "command": command }), &bare());
+        for cmd in ["bash -c 'git reset --hard'", "env git push -f", "timeout 5 git clean -fd", "git push origin +main"] {
+            assert_eq!(run(cmd).as_deref(), Some(crate::policy::DESTRUCTIVE_GIT_REFUSAL), "{cmd}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tidy.sh");
+        std::fs::write(&script, "#!/bin/sh\nset -e\ngit stash\n").unwrap();
+        let refused = run(&format!("bash {}", script.display())).expect("the script's git stash is refused");
+        assert!(refused.contains("found inside the script"), "{refused}");
+        std::fs::write(&script, "#!/bin/sh\ngit status\n").unwrap();
+        assert!(run(&format!("bash {}", script.display())).is_none());
+    }
+
     #[test]
     fn safeguards_follow_the_rule_key() {
         // The registry passes the call's rule key, so every tool shape that
@@ -935,6 +957,8 @@ mod tests {
         assert!(check_safeguard("send_input", &typed("sudo rm -rf /tmp\n")).is_some());
         assert!(check_safeguard("send_input", &typed("rm -rf /\n")).is_some());
         assert!(check_safeguard("send_input", &typed("yes\n")).is_none());
+        assert!(check_safeguard("send_input", &typed("git reset --hard\n")).is_some(), "destructive git typed into a shell");
+        assert!(check_safeguard("send_input", &typed("git status\n")).is_none());
         assert!(check_safeguard("send_input", &serde_json::json!({ "task_id": "bg-1", "keys": ["Enter"] })).is_none());
     }
 
