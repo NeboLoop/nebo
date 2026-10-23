@@ -115,7 +115,13 @@ rfd = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
 
-# The power-throttling opt-out (`process::hold_full_speed`) and the awake
-# clock the stall watchdog counts in (`liveness`).
+# The power-throttling opt-out (`process::hold_full_speed`), the awake
+# clock the stall watchdog counts in (`liveness`), and the suspend and
+# resume notices (`power`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_System_Power", "Win32_UI_WindowsAndMessaging"] }
+
+# logind's sleep notices and inhibitor (`power`). The same zbus the desktop
+# app's notifications already build, on its own executor.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.14", default-features = false, features = ["async-io"] }

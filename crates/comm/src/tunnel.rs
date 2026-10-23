@@ -86,11 +86,15 @@ pub const REVOKED_CLOSE_REASON: &str = "revoked";
 /// `run` dials it within half a second, at most
 /// [`crate::cell::MAX_REDIRECTS`] times in a row; past that, or for an
 /// address outside NeboAI, it fails like a refused dial.
+///
+/// `sleep` resolves when the computer is about to sleep: the session is
+/// closed with 1001 "sleep" ([`Disconnect::Sleep`]) and `run` returns it.
 pub async fn run(
     hub_url: &str,
     token: &str,
     local_addr: &str,
     online: &std::sync::atomic::AtomicBool,
+    sleep: impl Future<Output = ()>,
 ) -> Result<Disconnect, TunnelError> {
     // `online` is true exactly while the hub holds this session — the
     // switchboard can reach us — and false the moment it does not.
@@ -106,9 +110,10 @@ pub async fn run(
     // quietly, a bounded number of times (crate::cell).
     let mut redirects = crate::cell::Redirects::new();
     let mut url = hub_url.to_string();
+    let mut sleep = std::pin::pin!(sleep);
     loop {
         let started = std::time::Instant::now();
-        let redirect = match session(&url, token, local_addr, online).await? {
+        let redirect = match session(&url, token, local_addr, online, sleep.as_mut()).await? {
             Ended::Closed(how) => return Ok(how),
             Ended::Redirected(redirect) => redirect,
         };
@@ -141,6 +146,7 @@ async fn session(
     token: &str,
     local_addr: &str,
     online: &std::sync::atomic::AtomicBool,
+    mut sleep: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<Ended, TunnelError> {
     let mut request = hub_url
         .into_client_request()
@@ -184,6 +190,17 @@ async fn session(
                 info!("tunnel: hub is draining this connection; finishing its requests while the next one opens");
                 finish_drained(conn, local_addr.to_string());
                 return Ok(Ended::Closed(Disconnect::Drain));
+            }
+            () = sleep.as_mut() => {
+                // The computer is about to sleep: close the session (the
+                // carrier says 1001 "sleep", `WsIo::poll_close`) so the hub
+                // drops it now, not a keepalive window from now.
+                info!("tunnel: the computer is going to sleep; closing until it wakes");
+                let close = futures::future::poll_fn(|cx| conn.poll_close(cx));
+                if tokio::time::timeout(crate::reconnect::SLEEP_CLOSE_LIMIT, close).await.is_err() {
+                    debug!("tunnel: the sleep close did not finish in time");
+                }
+                return Ok(Ended::Closed(Disconnect::Sleep));
             }
         };
         if let Some(Ok(stream)) = ended {
@@ -647,7 +664,7 @@ mod tests {
                 let _ = ws.close(None).await;
             });
             let online = std::sync::atomic::AtomicBool::new(false);
-            run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online).await
+            run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online, std::future::pending()).await
         }
         assert!(matches!(
             closed_with(CloseCode::Policy, REVOKED_CLOSE_REASON).await,
@@ -682,7 +699,7 @@ mod tests {
                 sock.write_all(reply.as_bytes()).await.unwrap();
             });
             let online = std::sync::atomic::AtomicBool::new(false);
-            run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online).await
+            run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online, std::future::pending()).await
         }
         assert!(matches!(
             refused_with("401 Unauthorized", r#"{"error":"bot has been revoked"}"#).await,
@@ -766,7 +783,7 @@ mod tests {
 
     async fn run_from(url: &str) -> Result<Disconnect, TunnelError> {
         let online = std::sync::atomic::AtomicBool::new(false);
-        tokio::time::timeout(Duration::from_secs(10), run(url, "t", "127.0.0.1:9", &online))
+        tokio::time::timeout(Duration::from_secs(10), run(url, "t", "127.0.0.1:9", &online, std::future::pending()))
             .await
             .expect("run ends")
     }
@@ -841,7 +858,7 @@ mod tests {
         });
         let online = std::sync::atomic::AtomicBool::new(false);
         let started = std::time::Instant::now();
-        let ended = run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online).await;
+        let ended = run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online, std::future::pending()).await;
         assert!(matches!(ended, Err(TunnelError::Dial(_))), "{ended:?}");
         let took = started.elapsed();
         assert!(took >= crate::reconnect::DIAL_TIMEOUT && took < crate::reconnect::DIAL_TIMEOUT * 2, "{took:?}");
@@ -905,11 +922,11 @@ mod tests {
         let online = std::sync::atomic::AtomicBool::new(false);
         let mut backoff = crate::reconnect::Backoff::new();
         let started = std::time::Instant::now();
-        let how = run(&url, "t", "127.0.0.1:9", &online).await.expect("the session came up");
+        let how = run(&url, "t", "127.0.0.1:9", &online, std::future::pending()).await.expect("the session came up");
         let ended = std::time::Instant::now();
         tokio::time::sleep(backoff.wait(how, started.elapsed())).await;
         let online2 = std::sync::atomic::AtomicBool::new(false);
-        let _ = tokio::time::timeout(Duration::from_millis(300), run(&url, "t", "127.0.0.1:9", &online2)).await;
+        let _ = tokio::time::timeout(Duration::from_millis(300), run(&url, "t", "127.0.0.1:9", &online2, std::future::pending())).await;
         let dials = dials.lock().unwrap().clone();
         assert_eq!(dials.len(), 2, "one redial");
         (how, dials[1].saturating_duration_since(ended))
@@ -929,6 +946,46 @@ mod tests {
         let (how, gap) = redial_after(HubEnd::HardCut).await;
         assert_eq!(how, Disconnect::Cut);
         assert!(gap < Duration::from_secs(5) + Duration::from_millis(250), "{gap:?}");
+    }
+
+    /// The computer going to sleep ends an established session with 1001
+    /// "sleep" on the carrier, promptly, and `run` says so; the bot is no
+    /// longer online.
+    #[tokio::test]
+    async fn going_to_sleep_closes_the_tunnel_with_1001() {
+        use futures::StreamExt;
+
+        let (listener, url) = bind_cell().await;
+        let (seen_tx, seen) = tokio::sync::oneshot::channel::<Option<(u16, String)>>();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            while let Some(Ok(msg)) = ws.next().await {
+                if let WsMessage::Close(frame) = msg {
+                    let _ = seen_tx.send(frame.map(|f| (u16::from(f.code), f.reason.to_string())));
+                    return;
+                }
+            }
+        });
+        let online = std::sync::atomic::AtomicBool::new(false);
+        let (asleep_tx, asleep) = tokio::sync::oneshot::channel::<()>();
+        let session = run(&url, "t", "127.0.0.1:9", &online, async {
+            let _ = asleep.await;
+        });
+        let watch = async {
+            // The session comes up, then the computer is about to sleep.
+            while !online.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            asleep_tx.send(()).unwrap();
+        };
+        let (how, ()) = tokio::time::timeout(Duration::from_secs(5), futures::future::join(session, watch))
+            .await
+            .expect("the sleep close is prompt");
+        assert_eq!(how.expect("the session came up"), Disconnect::Sleep);
+        assert!(!online.load(std::sync::atomic::Ordering::Relaxed));
+        let close = tokio::time::timeout(Duration::from_secs(1), seen).await.expect("the hub got a close").unwrap();
+        assert_eq!(close, Some((1001, "sleep".to_string())));
     }
 
     /// The hub's end of a carrier in these tests: yamux over binary frames,
@@ -1047,7 +1104,7 @@ mod tests {
         });
 
         let online = std::sync::atomic::AtomicBool::new(false);
-        let how = tokio::time::timeout(Duration::from_secs(5), run(&url, "t", &local_addr, &online))
+        let how = tokio::time::timeout(Duration::from_secs(5), run(&url, "t", &local_addr, &online, std::future::pending()))
             .await
             .expect("run returned on the notice")
             .expect("the session came up");
@@ -1110,6 +1167,9 @@ mod tests {
 /// (1008 [`REVOKED_CLOSE_REASON`]) and a drain (1012) from a routine close,
 /// and its drain notice ([`DRAIN_NOTICE`], a text frame) is raised on
 /// `drain`.
+///
+/// The bot closes the carrier itself only when the computer is about to
+/// sleep, so its close frame is always 1001 "sleep" ([`Disconnect::Sleep`]).
 struct WsIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     buf: tokio_tungstenite::tungstenite::Bytes,
@@ -1117,6 +1177,8 @@ struct WsIo {
     deadline: Pin<Box<tokio::time::Sleep>>,
     closed: HubClose,
     drain: DrainNotice,
+    /// The bot's close frame has been queued.
+    farewell_sent: bool,
 }
 
 impl WsIo {
@@ -1133,6 +1195,7 @@ impl WsIo {
             deadline: Box::pin(tokio::time::sleep(hub_silence)),
             closed,
             drain,
+            farewell_sent: false,
         }
     }
 }
@@ -1215,6 +1278,17 @@ impl AsyncWrite for WsIo {
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !self.farewell_sent {
+            futures::ready!(Pin::new(&mut self.ws).poll_ready(cx)).map_err(io::Error::other)?;
+            let frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: crate::reconnect::SLEEP_CLOSE_CODE.into(),
+                reason: crate::reconnect::SLEEP_CLOSE_REASON.into(),
+            };
+            Pin::new(&mut self.ws)
+                .start_send(WsMessage::Close(Some(frame)))
+                .map_err(io::Error::other)?;
+            self.farewell_sent = true;
+        }
         Pin::new(&mut self.ws).poll_close(cx).map_err(io::Error::other)
     }
 }
