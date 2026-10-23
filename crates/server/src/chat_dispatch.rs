@@ -49,6 +49,10 @@ pub(crate) async fn announce_ask(
         warn!(session_key, "ask request on a session with no registered run: the card will not survive a reload");
     }
     state.hub.broadcast("ask_request", ask.event_payload(session_key));
+    // That the turn waits on the owner, and nothing of what about: what an
+    // app page hears of a question (as of an approval), the same as its
+    // history says (`apps::waits_on_owner`).
+    state.hub.broadcast("chat_waiting", serde_json::json!({ "session_id": session_key }));
     crate::handlers::asks::question_raised(state, session_key, &ask).await;
     ask
 }
@@ -734,7 +738,24 @@ fn remember_input(state: &AppState, config: &ChatConfig) {
     crate::reply_route::set_seat(state, &config.session_key, &config.user_id, &seat);
 }
 
+/// Whether `config` is the owner's turn in an app page's conversation
+/// (`handlers::apps::kept_from_owner`): refused at every turn's start, the
+/// one place every owner door passes (his composer, the REST chat, a
+/// compact). His turns there would be read by the page, and the page's
+/// words would be history his turns act on.
+pub(crate) fn owner_kept_out(state: &AppState, config: &ChatConfig) -> bool {
+    config.origin == Origin::User && crate::handlers::apps::kept_from_owner(&state.store, &config.session_key)
+}
+
+/// What the owner is told when [`owner_kept_out`] refuses his turn.
+pub(crate) const KEPT_OUT: &str = "This conversation belongs to an app. Write to the employee in its own chat.";
+
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
+    if owner_kept_out(state, &config) {
+        warn!(session = %config.session_key, "an owner's turn in an app page's conversation: refused");
+        state.hub.broadcast("chat_error", serde_json::json!({ "session_id": &config.session_key, "error": KEPT_OUT }));
+        return;
+    }
     // The owner's message may answer the question waiting in this
     // conversation, since typing a reply is the natural way to answer: when
     // the one decision reads it as the answer, the parked call gets it and
@@ -1954,6 +1975,9 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         platform: None,
         message_id: None,
     };
+    if owner_kept_out(state, &config) {
+        return Err(KEPT_OUT.to_string());
+    }
     let (_, run_handle) = register_run(state, &config).await;
     let mut req = turn_request(state, &config, &run_handle);
     req.input = agent::harness::TurnInput::Compact { instructions: instructions.to_string() };
@@ -1973,6 +1997,9 @@ pub async fn run_chat_events(
     state: &AppState,
     config: ChatConfig,
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
+    if owner_kept_out(state, &config) {
+        return Err(types::NeboError::Validation(KEPT_OUT.to_string()));
+    }
     let harness = state.harness.clone();
     let end_state = state.clone();
 

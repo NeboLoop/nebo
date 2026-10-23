@@ -279,6 +279,27 @@ async fn an_app_page_talks_to_its_own_employee_alone() {
         }
     }
     assert_eq!(refused, 2, "both of the owner's doors into the page's conversation are refused");
+    // His REST chat, naming the page's conversation or its chat, is refused
+    // too, and says so.
+    for key in [format!("agent:{APP}:page"), format!("agent:{APP}:thread:{page_chat}")] {
+        let r = server.post_json(&format!("/agents/{APP}/chat"), &json!({ "prompt": "MARK-INTRUDE", "sessionKey": key })).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT, "{key}");
+    }
+    // And so is a compact of it from his socket: nothing of his runs there.
+    owner_ws
+        .send(Message::Text(json!({"type": "session_compact", "data": {"session_id": format!("agent:{APP}:page"), "instructions": "MARK-INTRUDE"}}).to_string().into()))
+        .await
+        .unwrap();
+    let mut compact_refused = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !compact_refused {
+        let Ok(Some(Ok(Message::Text(text)))) = tokio::time::timeout_at(deadline, owner_ws.next()).await else { break };
+        let ev: Value = serde_json::from_str(&text).unwrap_or_default();
+        compact_refused = ev["type"] == "session_compact"
+            && ev["data"]["success"] == false
+            && ev["data"]["error"].as_str().is_some_and(|e| e.contains("belongs to an app"));
+    }
+    assert!(compact_refused, "a compact of the page's conversation is refused");
     assert!(!calls.lock().unwrap().iter().any(|(_, b)| b.to_string().contains("MARK-INTRUDE")), "nothing of his ran there");
     assert_eq!(server.post_json(&format!("/agents/{APP}/chats/{page_chat}/activate"), &json!({})).await.status(), 404);
     let listed = server.get(&format!("/agents/{APP}/chats")).await.text().await.unwrap();

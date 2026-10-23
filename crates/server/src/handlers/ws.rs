@@ -1674,13 +1674,15 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         chat_ack(&serde_json::json!(&session_id), message_id.as_deref(), "accepted"),
     );
 
-    // An app page's conversation is the app's: the owner's composer never
-    // writes into it (`apps::kept_from_owner`).
+    // An app page's conversation is the app's: nothing the composer does
+    // before a turn (an install code, a slash command, /goal) writes into
+    // it either. The turn itself is refused at its start
+    // (`chat_dispatch::owner_kept_out`).
     if super::apps::kept_from_owner(&state.store, &turn_session_key(&session_id, &agent_id, &channel)) {
         warn!(session_id = %session_id, "chat: an app page's conversation is not one the owner writes in");
         state.hub.broadcast(
             "chat_error",
-            serde_json::json!({ "session_id": session_id, "error": "This conversation belongs to an app. Write to the employee in its own chat." }),
+            serde_json::json!({ "session_id": session_id, "error": crate::chat_dispatch::KEPT_OUT }),
         );
         return;
     }

@@ -1784,7 +1784,7 @@ pub async fn get_chat(
         .collect();
     axum::Json(serde_json::json!({
         "sessionId": key,
-        "running": state.harness.is_session_busy(&key),
+        "running": chat_busy(&state, &key).await,
         "waiting": waits_on_owner(&state, &key).await,
         "messages": messages,
         "hasMore": has_more,
@@ -1799,6 +1799,18 @@ async fn waits_on_owner(state: &AppState, key: &str) -> bool {
     crate::chat_dispatch::open_approval_cards(&state.approval_channels).await.iter().any(|(_, card)| card.session_key == key)
         || state.run_registry.pending_asks().await.iter().any(|(session, _)| session == key)
 }
+
+/// Whether a turn runs in the page's conversation `key`: registered (from
+/// the moment `run_chat` takes a message) or running in the harness.
+async fn chat_busy(state: &AppState, key: &str) -> bool {
+    state.run_registry.is_session_active(key).await || state.harness.is_session_busy(key)
+}
+
+/// Held while a page's message is checked and handed to its turn, and while
+/// a page starts its conversation over: one at a time, so two messages sent
+/// together never both find the conversation free. `run_chat` registers the
+/// run before it returns, so the next one finds it busy.
+static PAGE_SEND: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The refusal when a turn runs in the page's conversation: one message at
 /// a time, so the context and scope a message carries are always the ones
@@ -1862,7 +1874,8 @@ pub async fn post_chat(
         return (StatusCode::CONFLICT, format!("{name} is turned off. The owner turns it on in Nebo.")).into_response();
     }
     let key = types::keyparser::app_page_key(&agent_id, thread);
-    if state.harness.is_session_busy(&key) {
+    let _sending = PAGE_SEND.lock().await;
+    if chat_busy(&state, &key).await {
         return busy(&name);
     }
     let context = body.context.filter(|v| !v.is_null()).map(|v| match v.as_str() {
@@ -1914,7 +1927,8 @@ pub async fn new_chat(
         Err(r) => return r,
     };
     let key = types::keyparser::app_page_key(&agent_id, thread);
-    if state.harness.is_session_busy(&key) {
+    let _sending = PAGE_SEND.lock().await;
+    if chat_busy(&state, &key).await {
         return busy(&app_employee_name(&state, &agent_id));
     }
     if let Ok(Some(session)) = state.store.get_session_by_name(&key)

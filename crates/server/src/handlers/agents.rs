@@ -4170,6 +4170,14 @@ pub async fn chat_with_agent(
         message_id: None,
     };
 
+    // Never a turn in an app page's conversation: answered so, not
+    // "dispatched" (`chat_dispatch::owner_kept_out`, which run_chat holds).
+    if crate::chat_dispatch::owner_kept_out(&state, &config) {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(types::api::ErrorResponse { error: crate::chat_dispatch::KEPT_OUT.to_string() }),
+        ));
+    }
     crate::chat_dispatch::run_chat(&state, config).await;
 
     Ok(Json(serde_json::json!({
