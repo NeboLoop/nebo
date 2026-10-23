@@ -31,7 +31,8 @@ theme's names (`bg-primary`, `font-display`, `rounded-theme`).
    - `agent_md`: what the app is for, in the owner's words, and: "Your page
      is built in <your name>. When the owner asks to change how the page
      looks or works, tell him to ask there."
-   Write down the new app's name and id. Every app tool from here on takes
+   Write down the new app's name and id. You build it here under App
+   Developer mode (Who Does What): every app tool from here on takes
    `app: "<new app name>"`; never change your own page.
 2. **Record the link** in your own store, so your canvas can show the app:
    `app_data set` with key `app:<design id>` and value `{ name, id }`.

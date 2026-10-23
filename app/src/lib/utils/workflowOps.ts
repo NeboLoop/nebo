@@ -5,6 +5,8 @@
 // (the builder applies a batch as ONE undo snapshot; Save persists).
 
 import type { WorkflowActivity, WorkflowConfig, WorkflowTrigger } from '$lib/types/agentPage';
+import { generateLinearConnections } from '$lib/utils/workflowLayout';
+import { isBranchingType } from '$lib/utils/workflowTypes';
 
 export type WorkflowOp =
 	| { op: 'create_workflow'; name: string; workflow?: Partial<WorkflowConfig> }
@@ -130,6 +132,13 @@ function applyOne(workflows: Record<string, WorkflowConfig>, op: WorkflowOp): st
 			activities.splice(insertIdx, 0, activity);
 			wf.activities = activities;
 
+			// A branch needs its edges drawn: a draft still in array order
+			// gets its chain as connections first, as the builder does.
+			if (!wf.connections && isBranchingType(activity.type)) {
+				const chain = op.after == null ? activities : activities.filter((a) => a !== activity);
+				wf.connections = generateLinearConnections(chain, wf.emit);
+			}
+
 			// Wire connections when the workflow uses an explicit graph.
 			if (wf.connections && op.after != null) {
 				const wanted = op.branchLabel ?? undefined;
@@ -175,6 +184,9 @@ function applyOne(workflows: Record<string, WorkflowConfig>, op: WorkflowOp): st
 				}
 			}
 			Object.assign(activity, op.set);
+			if (!wf.connections && isBranchingType(activity.type)) {
+				wf.connections = generateLinearConnections(wf.activities ?? [], wf.emit);
+			}
 			return null;
 		}
 		case 'remove_activity': {

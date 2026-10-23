@@ -14,8 +14,8 @@ pub struct WorkflowDef {
     #[serde(default)]
     pub inputs: HashMap<String, InputParam>,
     pub activities: Vec<Activity>,
-    /// Edges between activities (from the visual builder). Empty = execute
-    /// `activities` in array order (legacy sequential path).
+    /// Edges between activities (from the visual builder). Empty = a chain:
+    /// `activities` in array order ([`WorkflowDef::as_graph`]).
     #[serde(default)]
     pub connections: Vec<Connection>,
     #[serde(default)]
@@ -200,6 +200,27 @@ pub struct Budget {
     pub total_per_run: u32,
     #[serde(default)]
     pub cost_estimate: String,
+}
+
+impl WorkflowDef {
+    /// The graph the walker runs: the definition itself when it has
+    /// connections; otherwise its chain, `activities` in array order from
+    /// `__trigger__`, each activity's one parent the one before it, and the
+    /// last one's result what the run emits.
+    pub(crate) fn as_graph(&self) -> std::borrow::Cow<'_, WorkflowDef> {
+        if !self.connections.is_empty() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let ids = std::iter::once(TRIGGER_NODE)
+            .chain(self.activities.iter().map(|a| a.id.as_str()))
+            .chain(std::iter::once(EMIT_NODE))
+            .collect::<Vec<_>>();
+        let connections = ids
+            .windows(2)
+            .map(|w| Connection { from: w[0].to_string(), to: w[1].to_string(), label: None })
+            .collect();
+        std::borrow::Cow::Owned(WorkflowDef { connections, ..self.clone() })
+    }
 }
 
 /// Parse a workflow definition from JSON.
@@ -466,9 +487,10 @@ pub fn validate_workflow(def: &WorkflowDef) -> Result<(), WorkflowError> {
     }
 
     validate_activities(def)?;
-    if !def.connections.is_empty() {
-        validate_connections(def)?;
-    }
+    // The graph the walker runs: a definition without connections is held
+    // to the same rules as its chain (a condition or loop in one has no
+    // labeled branch to take).
+    validate_connections(&def.as_graph())?;
 
     // Wiring: conditions that cannot parse, `${nodes...}` placeholders, data
     // read from steps that are not upstream, unreachable steps. Errors only:
@@ -562,13 +584,6 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
             // Done by another agent; the engine waits durably for its reply.
             "expert" => {
                 crate::expert::validate(activity).map_err(WorkflowError::Validation)?;
-                // Only the graph executor waits durably on a reply.
-                if def.connections.is_empty() {
-                    return Err(WorkflowError::Validation(format!(
-                        "expert activity '{}' needs a connected workflow (connections from __trigger__)",
-                        activity.id
-                    )));
-                }
             }
             "wait" => {
                 if !param_str(activity, "waitUntil").trim().is_empty() {
@@ -714,7 +729,7 @@ fn validate_connections(def: &WorkflowDef) -> Result<(), WorkflowError> {
                 if let Some(source) = source {
                     if is_branching_type(&source.activity_type) {
                         return Err(WorkflowError::Validation(format!(
-                            "edges leaving '{}' ({}) must carry a branch label",
+                            "edges leaving '{}' ({}) must carry a branch label: draw its branches as labeled connections",
                             source.id, source.activity_type
                         )));
                     }
@@ -1100,6 +1115,53 @@ mod tests {
             r#"{{"version":"1.0","id":"t","name":"T","activities":{},"connections":{}}}"#,
             activities, connections
         ))
+    }
+
+    /// A definition with no connections is a chain: the trigger, each
+    /// activity in array order, then the emit. One with connections is its
+    /// own graph.
+    #[test]
+    fn a_definition_without_connections_is_its_chain() {
+        let def = wf(r#"[{"id":"a","intent":"a"},{"id":"b","intent":"b"},{"id":"c","intent":"c"}]"#, "[]").unwrap();
+        let graph = def.as_graph();
+        let edges: Vec<(&str, &str, Option<&str>)> =
+            graph.connections.iter().map(|c| (c.from.as_str(), c.to.as_str(), c.label.as_deref())).collect();
+        assert_eq!(
+            edges,
+            [("__trigger__", "a", None), ("a", "b", None), ("b", "c", None), ("c", "__emit__", None)]
+        );
+        validate_workflow(&graph).expect("the chain is a valid graph");
+        let wired = wf(r#"[{"id":"a","intent":"a"}]"#, r#"[{"from":"__trigger__","to":"a"}]"#).unwrap();
+        assert!(matches!(wired.as_graph(), std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// A chain's edges carry no branch, so a condition or a loop needs its
+    /// connections drawn.
+    #[test]
+    fn a_branch_needs_its_connections() {
+        for typed in [
+            r#"{"id":"x","type":"condition","params":{"expression":"true"}}"#,
+            r#"{"id":"x","type":"loop","params":{"source":"inputs.items"}}"#,
+        ] {
+            let err = wf(&format!("[{typed}]"), "[]").unwrap_err().to_string();
+            assert!(err.contains("edges leaving 'x'") && err.contains("must carry a branch label"), "{err}");
+        }
+    }
+
+    /// A loop's body is every node its "Each item" edges reach, up to the
+    /// loop itself: a two-node body, nothing after "Done".
+    #[test]
+    fn a_loop_body_is_what_each_item_reaches() {
+        let def = wf(
+            r#"[{"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"b1","intent":"b1"},{"id":"b2","intent":"b2"},{"id":"after","intent":"after"}]"#,
+            r#"[{"from":"__trigger__","to":"l"},{"from":"l","to":"b1","label":"Each item"},
+                {"from":"b1","to":"b2"},{"from":"b2","to":"l"},{"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]"#,
+        )
+        .unwrap();
+        let body = loop_body_set(&def, "l");
+        assert_eq!(body, ["b1".to_string(), "b2".to_string()].into_iter().collect());
     }
 
     #[test]

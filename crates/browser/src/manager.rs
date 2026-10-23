@@ -27,6 +27,9 @@ pub struct Manager {
     /// launched lazily on first use: always a stock Chromium. None when this
     /// machine has none.
     own_pages: Option<Arc<CdpBridge>>,
+    /// The sessions whose tab is one of this computer's own pages
+    /// (`ActionExecutor::open_own_page`).
+    own_page_tabs: crate::executor::OwnPageTabs,
 }
 
 /// Status info for a browser profile.
@@ -106,6 +109,7 @@ impl Manager {
             bridge: Arc::new(ExtensionBridge::new(Some(tabs_file))),
             cdp,
             own_pages,
+            own_page_tabs: Default::default(),
         }
     }
 
@@ -122,7 +126,12 @@ impl Manager {
     /// never disagree. Do not re-expose those checks on `Manager` — a second facade over
     /// the same `bridge`/`cdp` state is what lets the two drift and hide bugs.
     pub fn executor(&self) -> Option<ActionExecutor> {
-        Some(ActionExecutor::new(self.bridge.clone(), self.cdp.clone(), self.own_pages.clone()))
+        Some(ActionExecutor::new(
+            self.bridge.clone(),
+            self.cdp.clone(),
+            self.own_pages.clone(),
+            self.own_page_tabs.clone(),
+        ))
     }
 
     /// Launch a managed Chrome instance for a profile.

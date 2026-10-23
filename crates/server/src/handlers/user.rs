@@ -226,19 +226,28 @@ pub const ROSTER_ORDER_EVENT: &str = "roster_order_updated";
 
 /// PUT /api/v1/user/me/preferences
 ///
-/// `rosterOrder` replaces the owner's roster order whole: what is pinned
-/// (employees and teams, in order), the order of the teams and the order of
-/// the employees.
+/// `rosterOrder` replaces each list of the owner's roster order it names:
+/// `pinned` (employees and teams, in order), `teams`, `employees`. A list
+/// it leaves out is kept, so a pin never freezes the other lists; an empty
+/// `teams` or `employees` puts that list back to A to Z.
 pub async fn update_preferences(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     let roster_order = match body.get("rosterOrder") {
-        Some(v) => Some(
-            serde_json::from_value::<db::models::RosterOrder>(v.clone())
-                .map_err(|e| to_error_response(types::NeboError::Validation(format!("invalid rosterOrder: {e}"))))?
-                .normalized(),
-        ),
+        Some(change) => {
+            let stored = state
+                .store
+                .get_user_preferences()
+                .map_err(to_error_response)?
+                .map(|p| p.roster_order)
+                .unwrap_or_default();
+            Some(
+                stored
+                    .changed(change)
+                    .map_err(|e| to_error_response(types::NeboError::Validation(format!("invalid rosterOrder: {e}"))))?,
+            )
+        }
         None => None,
     };
     state
