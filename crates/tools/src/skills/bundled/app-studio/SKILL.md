@@ -38,8 +38,9 @@ the check passes. When looks matter, Design Depth adds the studio method.
 | Mobile app and web (the hub's tunnel) | `https://neboai.com/t/<bot>/k/<pass>/apps/<id>/ui/index.html` |
 | A browser here, `app_screenshot`, the Verified check | `http://127.0.0.1:27895/k/<pass>/apps/<id>/ui/index.html` |
 
-- **The page is confined to its own app**: sandboxed, an origin of its own,
-  never the owner's sign-in. `/k/<pass>/` is its pass; it opens this app alone.
+- **The page is confined to its own app**, never the owner's sign-in. Over
+  HTTP (browser, mobile app, checks) it runs sandboxed under its pass
+  `/k/<pass>/`; the desktop window is its own origin and reaches this app alone.
 - **Files are relative** (`./app.js`): nothing the page loads starts with `/`.
 - **The SDK makes every call to Nebo** and finds the prefix itself.
   Never write an `/api/v1/...` or `api/v1/...` address yourself: it works in
@@ -49,11 +50,12 @@ the check passes. When looks matter, Design Depth adds the studio method.
 
 ## Who Does What
 
-- The app's own employee owns its code and its app tools (`app_status`,
-  `app_reload`, `app_console`, `app_screenshot`, `app_record`, `app_data`).
-  `app_data` only ever reaches the caller's own app.
-- Another employee building an app (the main assistant, say) makes it in
-  Step 1, then hands every app step to the app's employee with
+- The app's employee always works on its own app with the app tools
+  (`app_status`, `app_reload`, `app_console`, `app_screenshot`,
+  `app_record`); `app_data` only ever reaches the caller's own app.
+- Another employee works on one of the owner's apps only while App
+  Developer mode is on (this skill turns it on), passing `app: "<app name>"`
+  to every app tool. With it off, hand the step to the app's employee:
   `assign_task(to: "<app name>", subject: ..., done_means: ...)`.
 - Nobody asks the owner for the install key or any other key, and nobody
   calls Nebo's API from the shell.
@@ -265,8 +267,9 @@ Then tell the owner in product words: "Your Orbit app is ready. Open it from
 your workforce."
 
 **The Verified badge.** Each round of app work loads the page fresh, phone
-and desktop size, in a view of its own: Verified only with zero console
-errors and failed loads of its own (another site's are notes). Your own
+and desktop size, in a view of its own: Verified only when every file the
+page loads is there, it draws something, and it has zero console errors and
+failed loads of its own (another site's are notes). Your own
 checks go in `checks/` beside `ui/`, never in it.
 
 ## Your App's Data

@@ -44,8 +44,10 @@ starts a run with the files in `_watch_payload.files`):
 
 ## What Nebo does with it
 
-- **Finds it** in the app folder: the one file in `bin/`, else the
-  executable in `sidecar/target/release/`. A native binary only: no script,
+- **Finds it** in the app folder, first match wins: a file named `binary`
+  or `app`, any file in `tmp/`, the one file in `bin/`, the executable in
+  `sidecar/target/release/`. Keep `tmp/` empty: a stray file there counts
+  as the program and the launch fails. A native binary only: no script,
   no symlink, executable, under 500 MB.
 - **Runs it** at boot and on the first request; restarts it when it crashes
   and when the file changes (a rebuild is a restart).
@@ -63,8 +65,12 @@ starts a run with the files in `_watch_payload.files`):
   port the system picks and tells Nebo where; Nebo calls the `UIService` in
   `proto/apps/v0/ui.proto`, one `HandleRequest` per request, and proves it is
   the program it started (the SDK answers a health check). Use the SDK: a
-  program that skips it is stopped. Nothing of the owner's (his sign-in, the
-  page's pass) ever reaches it.
+  program that skips it is stopped. His sign-in and the page's pass never
+  reach it. Two things of his do, by what `agent.json` declares:
+  `requires.neboai: true` sends his NeboAI token in
+  `x-nebo-connected-neboai`, and each plugin in `requires.plugins` sends
+  the account it connected in `x-nebo-connected-profiles`. Treat both as
+  secrets: never log them or hand them to the page.
 
 ## How `nebo.fetch` reaches it
 
