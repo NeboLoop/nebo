@@ -47,10 +47,9 @@ async fn say(server: &TestServer, agent_id: &str, prompt: &str) {
 }
 
 /// Wait until no turn runs in the employee's app conversation: the owner
-/// speaks again after the reply. A message typed into a running turn is
-/// answered in that turn with its tools off when no decision on it can be
-/// had, as on this server (`owner_intent`: it fails toward stopping), so it
-/// would never start the work it asks for. On a slow computer the previous
+/// speaks again after the reply. A message typed into a running turn joins
+/// that turn's work instead of starting a turn of its own. On a slow
+/// computer the previous
 /// turn, or the turn that tells the conversation a workflow's outcome, is
 /// still running when the next line is said.
 async fn replied(server: &TestServer, agent_id: &str) {

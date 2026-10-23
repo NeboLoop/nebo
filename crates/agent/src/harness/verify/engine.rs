@@ -48,14 +48,13 @@ use crate::worktree::{self, MergeOutcome};
 /// How a turn that ended before its checking did leaves its verifications.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Closed {
-    /// Waiting on the owner: paused, for the turn that goes on.
+    /// Waiting on the owner (an approval, a question, his Stop): paused,
+    /// for the turn that goes on. A stop never closes a code check.
     Waiting,
-    /// The owner's Stop.
-    Stopped,
     /// Ended otherwise: not verified, with why.
     Ended(Why),
-    /// Answered without its end check (the owner's message ended the work,
-    /// a reply with no words, a compaction): what was still being checked is
+    /// Answered without its end check (a reply with no words, a
+    /// compaction): what was still being checked is
     /// not verified, the run having ended before its checking did; a question
     /// waiting on the owner stays for the turn that goes on. After a normal
     /// end check nothing is still being checked, and nothing changes.
@@ -206,11 +205,11 @@ impl Verify {
         self.work.after_call(&self.builder.starting(store), watched).await
     }
 
-    /// The turn ended before its checking did (the owner's Stop, the step
-    /// limit, a provider failure, a run left idle): every verification of it
-    /// still running or waiting on the owner ends honestly, as stopped (`why`
-    /// `None`, the owner's Stop) or not verified with why. Returns the ids
-    /// it ended.
+    /// The turn ended before its checking did (the step limit, a provider
+    /// failure, a run left idle): every verification of it still running
+    /// or waiting on the owner ends honestly, not verified with why; one
+    /// waiting on the owner (his Stop included) is paused for the turn that
+    /// goes on. Returns the ids it settled.
     pub async fn close(&self, store: &db::Store, why: Closed) -> Vec<String> {
         let mut ended = Vec::new();
         for work in self.work.snapshot().await {
@@ -228,7 +227,6 @@ impl Verify {
                     }
                     continue;
                 }
-                Closed::Stopped => ("stopped", String::new()),
                 Closed::Ended(w) => ("not_verified", w.text()),
                 Closed::Unchecked if v.state == "paused" => continue,
                 Closed::Unchecked => ("not_verified", Why::new("turn_ended").text()),
@@ -725,11 +723,11 @@ impl VerifyCheck {
             return Step::Gone;
         };
         if finished_state(&v.state) {
-            // Finished, but its copy changed since (the builder kept working
-            // in it), or it deployed again: checked again over the whole
-            // change, and the verdict it was reported on no longer holds.
+            // Finished or stopped, but its copy changed since (the builder
+            // kept working in it), or it deployed again: checked again over
+            // the whole change, and the verdict it was reported on no longer
+            // holds. A stop never ends code work for good (owner, 10-23).
             let changed = v.landed_ref.is_empty()
-                && v.state != "stopped"
                 && work.work_dir.is_dir()
                 && (v.deploy_unchecked
                     || match work.shadow.snapshot().await {

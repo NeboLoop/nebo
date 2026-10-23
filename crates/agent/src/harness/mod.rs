@@ -16,7 +16,6 @@ pub mod model_call;
 pub mod named_pictures;
 pub mod opening;
 pub mod owner_command;
-pub mod owner_intent;
 pub mod permissions;
 pub mod prompt;
 pub mod reminders;

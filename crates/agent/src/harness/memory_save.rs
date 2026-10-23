@@ -12,8 +12,8 @@
 //!   call (`opening`), with any other question about that message, from
 //!   Prepare while the steps run, and read when it is needed, so it costs
 //!   the turn no wait;
-//! - a message typed into the running work: asked in the same call that
-//!   decides its intent (`owner_intent::decide`), never a second call.
+//! - a message typed into the running work: asked through the same
+//!   decision (`opening::decide`), by the step that hears it.
 //!
 //! The decision also names the memory the owner asked for: private (for the
 //! employee itself, or unsaid) or local (for everyone on this Nebo). Writing
@@ -40,9 +40,7 @@
 //! not asking, and the turn ends as it would have. A wrong correction costs
 //! a model step and can put into memory, where local memory is read by every
 //! employee on this Nebo, something the owner never asked to keep; a missed
-//! one leaves the claim to the prompt, as before this check. Unlike a stop
-//! (`owner_intent` fails toward stopping), staying quiet never does work the
-//! owner forbade.
+//! one leaves the claim to the prompt, as before this check.
 //!
 //! The same decision is the one sign that the owner asked to share: a
 //! Confidential conversation's `remember` reaches local memory only when the

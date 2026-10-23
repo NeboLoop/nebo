@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use db::models::ChatMessage;
 
-use super::owner_intent::{self, OwnerIntent};
 use super::reminders::{Attachment, attachment_fields};
 use super::tool_surface::{ListingDelta as ToolsDelta, render_listing};
 
@@ -105,15 +104,11 @@ pub enum TurnEvent {
     /// there, and the call did not run (`reminders::NoteFence`).
     TextCall(String),
     /// The owner's message reached the running work and this step hears
-    /// it. A message that joins the work is answered with tools on, and the
-    /// work goes on; a stop is answered in words and the work ends there.
-    /// The note says which, as the harness decided it (`owner_intent`); it
-    /// stores the intent.
-    MidTurnMessage { via: String, intent: OwnerIntent },
-    /// The last reply answered the owner's mid-turn message, and the work
-    /// goes on: as it was (an aside) or as the message changed it (a
-    /// redirect). A stop never reaches here: the turn ended on the answer.
-    MidTurnAnswered(OwnerIntent),
+    /// it, with its tools: the employee answers it and does what it asks.
+    MidTurnMessage { via: String },
+    /// The last reply answered the owner's mid-turn message in words only:
+    /// the employee goes on as the message asks.
+    MidTurnAnswered,
     /// The unmet workflow contract term (workflow mode only).
     WorkflowContract(String),
     /// A helper whose answer is read as data answered in the wrong shape:
@@ -487,41 +482,17 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                  A tool runs only when you call it as a tool, never from text. If the work still needs it, call it now."
             ),
         ),
-        TurnEvent::MidTurnMessage { via, intent } => {
-            let next = match intent {
-                OwnerIntent::Stop => {
-                    "They asked you to stop: answer them in your next reply, and the work ends with it. Tell them \
-                     what you have so far."
-                }
-                OwnerIntent::Redirect => {
-                    "It joins the work: answer it in your next reply and carry on the way it now asks, calling \
-                     tools as the work needs them."
-                }
-                OwnerIntent::Aside => {
-                    "It joins the work: answer it in your next reply and carry on where you left off, calling tools \
-                     as the work needs them. Don't ask whether to continue."
-                }
-                OwnerIntent::Undecided => {
-                    "Answer it in your next reply. The work pauses after it until they write again: if it isn't \
-                     finished, say where it stands."
-                }
-            };
-            let mut data = serde_json::Map::new();
-            data.insert(owner_intent::NOTE_FIELD.into(), intent.as_str().into());
-            return Some(Attachment {
-                kind: "mid_turn_message",
-                text: format!("The owner's latest message reached you while you were working (via {via}). {next}"),
-                data,
-            });
-        }
-        TurnEvent::MidTurnAnswered(intent) => (
+        TurnEvent::MidTurnMessage { via } => (
+            "mid_turn_message",
+            format!(
+                "The owner's latest message reached you while you were working (via {via}). Answer it in your next \
+                 reply and do what it asks: carry on where you left off, change course, or stop and say where the work \
+                 stands, calling tools as that needs. Don't ask whether to continue."
+            ),
+        ),
+        TurnEvent::MidTurnAnswered => (
             "mid_turn_answered",
-            match intent {
-                OwnerIntent::Redirect => "You answered the owner's message. Carry on with the work, the way their message now asks.",
-                OwnerIntent::Aside => "You answered the owner's message. Carry on with the work where you left off.",
-                OwnerIntent::Stop | OwnerIntent::Undecided => return None,
-            }
-            .to_string(),
+            "You answered the owner's message. Go on as it asks: carry on with the work, or stop and say where it stands.".to_string(),
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
         TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
@@ -1360,8 +1331,8 @@ mod tests {
             TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
             TurnEvent::TextCall("read_file".into()),
-            TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Stop },
-            TurnEvent::MidTurnAnswered(OwnerIntent::Aside),
+            TurnEvent::MidTurnMessage { via: "web".into() },
+            TurnEvent::MidTurnAnswered,
             TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap()),
             TurnEvent::RunBriefing("team: Ann".into()),
             TurnEvent::RestrictedRun("outside origin".into()),

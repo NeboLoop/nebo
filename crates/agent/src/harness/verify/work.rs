@@ -305,14 +305,13 @@ impl TurnWork {
             .unwrap_or_default();
         for row in rows {
             // Work still in hand: being checked, waiting on the owner, or
-            // finished in a copy (this loop's, or a helper's own) that
-            // hasn't landed: a change to it is checked again over the whole
-            // change, never landed or reported on the old verdict.
+            // ended in a copy (this loop's, or a helper's own) that hasn't
+            // landed, a stop included: a change to it is checked again over
+            // the whole change, never landed or reported on the old verdict.
             let open = matches!(row.state.as_str(), "running" | "paused")
                 || (row.landed_ref.is_empty()
                     && (row.isolation != "none" || row.work_kind == WorkKind::HelperCopy.as_str())
-                    && Path::new(&row.work_dir).is_dir()
-                    && row.state != "stopped");
+                    && Path::new(&row.work_dir).is_dir());
             if !open
                 || turn
                     .works
@@ -1243,6 +1242,14 @@ mod tests {
                 assert_eq!(resumed.len(), 1);
                 assert_eq!((resumed[0].id.as_str(), resumed[0].work_dir.as_path()), (works[0].id.as_str(), copy.as_path()));
                 assert!(matches!(resumed[0].iso, Some(worktree::Isolation::Copy(_))));
+
+                // Stopped, with its change not landed (owner, 10-23: a
+                // stopped check of 0 rounds was never picked up again): the
+                // next turn resumes it, to be checked over the whole change.
+                store.set_verification_state(&works[0].id, &db::VerificationState { state: "stopped", ..Default::default() }, 2).unwrap();
+                let resumed = TurnWork::load(&who, None, false).await.snapshot().await;
+                assert_eq!(resumed.len(), 1, "a stopped check with unlanded work is resumed");
+                assert_eq!(resumed[0].id, works[0].id);
             })
         })
     }
