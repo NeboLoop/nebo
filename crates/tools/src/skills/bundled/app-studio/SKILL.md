@@ -333,7 +333,8 @@ restore is a version too, so it can be undone).
 
 When looks matter (a game, a showcase, anything shown to other people), read
 `references/design-depth.md` before the brief and follow it: brief, boards,
-assets, build, motion, gate.
+assets, build, motion, gate. Make the app first (Step 1): the brief goes in
+the folder its result names, never one made by hand.
 
 ## Iterate
 

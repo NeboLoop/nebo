@@ -1,9 +1,12 @@
 # The Brief (Phase 1)
 
 `brief.md` lives in the app folder, beside `ui/` and `src/`. About 40 lines.
-Every section is required. Write it before any board, asset or code. The
-gate reads it, and the next app on this bot reads its front-matter to stay
-different.
+Every section is required. The app folder is made by Step 1 (the create, with
+its starter page), and its path is in the create's result: write the brief
+there right after it, before any board, asset or more code. Never make the
+folder yourself first: a folder already there makes the create pick another
+name. The gate reads it, and the next app on this bot reads its front-matter
+to stay different.
 
 ## Template
 

@@ -443,24 +443,74 @@ pub async fn create(workspace: &Path, task_id: &str) -> Result<Isolation, String
 /// Create a worktree on a fresh branch from the repo's current HEAD. A task
 /// whose work was put away on its branch (`nebo/<task_id>`) gets that
 /// branch back, its work on it, never a second branch or copy.
+///
+/// A project on a branch with no commit yet (`git init` and nothing after)
+/// is copied from git's empty tree: the copy is a worktree on a branch
+/// with no commit either (`git worktree add --orphan`), its base the empty
+/// tree, and its reviewed commit lands as the project's first by the same
+/// fast-forward as any other. Nothing is committed in the owner's project
+/// to make the copy, and what the owner's folder holds uncommitted is not
+/// in it.
 pub async fn create_worktree(root: &Path, task_id: &str) -> Result<Worktree, String> {
     validate_task_id(task_id)?;
     let dir = worktrees_dir(root);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(task_id);
     let branch = format!("nebo/{task_id}");
-    let head = git(root, &["rev-parse", "HEAD"]).await.map_err(|e| format!("the project has no commit to copy: {e}"))?;
     let start_branch = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await.unwrap_or_default();
+    let (head, unborn) = match git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).await {
+        Ok(head) => (head, false),
+        Err(_) if !start_branch.is_empty() => (empty_tree(root).await?, true),
+        Err(e) => return Err(format!("the project has no commit to copy: {e}")),
+    };
     if git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok() {
-        // The task's work sits on the owner's commit it shares with them.
-        let base = git(root, &["merge-base", &branch, &head]).await.map_err(|e| format!("where {branch} left the project: {e}"))?;
+        // The task's work sits on the owner's commit it shares with them,
+        // or on the empty tree when it was made before the project's first
+        // commit (it then shares no history with the project).
+        let base = match git(root, &["merge-base", &branch, &head]).await {
+            Ok(base) => base,
+            Err(_) => empty_tree(root).await?,
+        };
         let wt = Worktree { task_id: task_id.to_string(), root: root.to_path_buf(), path, branch, start_branch, base, onto: None, conflicted: Vec::new() };
         return reattach_worktree(wt).await;
     }
-    git(root, &["worktree", "add", "-b", &branch, path.to_str().unwrap_or_default(), &head])
-        .await
-        .map_err(|e| format!("git worktree add: {e}"))?;
+    let at = path.to_str().unwrap_or_default();
+    if unborn {
+        git(root, &["worktree", "add", "--orphan", "-b", &branch, at])
+            .await
+            .map_err(|e| format!("git worktree add --orphan (a project with no commit yet is copied by git 2.42 or newer): {e}"))?;
+    } else {
+        git(root, &["worktree", "add", "-b", &branch, at, &head]).await.map_err(|e| format!("git worktree add: {e}"))?;
+    }
     Ok(Worktree { task_id: task_id.to_string(), root: root.to_path_buf(), path, branch, start_branch, base: head, onto: None, conflicted: Vec::new() })
+}
+
+/// Git's empty tree, as the repository at `dir` names it: the base of a
+/// copy of a project that had no commit when it was made.
+async fn empty_tree(dir: &Path) -> Result<String, String> {
+    git_io(dir, &["hash-object", "-t", "tree", "--stdin"], Some(&[]))
+        .await
+        .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+        .map_err(|e| format!("git's empty tree: {e}"))
+}
+
+/// The tip of the owner's branch a copy lands on: its commit, or the empty
+/// tree while the branch still has no commit and the copy was made then.
+async fn owner_tip(wt: &Worktree) -> Result<String, String> {
+    match git(&wt.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", wt.start_branch)]).await {
+        Ok(commit) => Ok(commit),
+        Err(_) if wt.base == empty_tree(&wt.root).await? => Ok(wt.base.clone()),
+        Err(_) => Err(format!("the project's branch {} has no commit", wt.start_branch)),
+    }
+}
+
+/// Whether `commit` is one commit on `base`: its parent is `base`, or it
+/// has no parent and `base` is the empty tree (the project had no commit).
+async fn sits_on(dir: &Path, commit: &str, base: &str) -> bool {
+    match git(dir, &["rev-parse", "--verify", "--quiet", &format!("{commit}^")]).await {
+        Ok(parent) => parent == base,
+        Err(_) => empty_tree(dir).await.is_ok_and(|t| t == base),
+    }
 }
 
 /// A worktree's copy on disk again: as it is when it is still there, or
@@ -939,7 +989,6 @@ async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Re
     if let Some(why) = owner_busy(wt).await {
         return Err(MergeOutcome::OwnerBusy { why, kept_at: wt.path.clone(), branch: wt.branch.clone() });
     }
-    let owner_ref = format!("refs/heads/{}", wt.start_branch);
     if rebasing(wt).await {
         // Resolved only as the builder staged it, and with no markers left.
         let left = unmerged(wt).await;
@@ -959,7 +1008,7 @@ async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Re
         }
         wt.conflicted.clear();
     }
-    let owner = git(&wt.root, &["rev-parse", &owner_ref]).await.map_err(|e| failed(wt, format!("the project's branch: {e}")))?;
+    let owner = owner_tip(wt).await.map_err(|e| failed(wt, e))?;
     let base = wt.base.clone();
     // Nothing outside what was reviewed is ever staged: a file the review
     // never saw (too big to snapshot, a repository of its own, made after
@@ -976,22 +1025,30 @@ async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Re
     if tree == base_tree {
         return Ok(CatchUp { no_changes: true, onto: owner, ..Default::default() });
     }
-    let head = git(&wt.path, &["rev-parse", "HEAD"]).await.map_err(|e| failed(wt, format!("HEAD: {e}")))?;
+    // `None`: nothing committed yet in a copy of a project that had no
+    // commit, whose branch has none either.
+    let head = git(&wt.path, &["rev-parse", "--verify", "--quiet", "HEAD"]).await.ok();
     // Already the one commit, with this message: nothing to fold.
-    let folded = head != base
-        && git(&wt.path, &["rev-parse", "HEAD^"]).await.is_ok_and(|p| p == base)
+    let folded = head.is_some()
+        && sits_on(&wt.path, "HEAD", &base).await
         && git(&wt.path, &["rev-parse", "HEAD^{tree}"]).await.is_ok_and(|t| t == tree)
         && git(&wt.path, &["log", "-1", "--format=%B"]).await.is_ok_and(|m| m.trim() == message.trim());
     if !folded {
-        // The task branch goes back to the base, the work staged as it is,
-        // and one commit is made through the project's own hooks.
-        git(&wt.path, &["update-ref", &format!("refs/heads/{}", wt.branch), &base, &head])
-            .await
-            .map_err(|e| failed(wt, format!("git update-ref: {e}")))?;
+        // The task branch goes back to the base (to no commit at all when
+        // the base is the empty tree), the work staged as it is, and one
+        // commit is made through the project's own hooks.
+        let branch_ref = format!("refs/heads/{}", wt.branch);
+        let unborn = base == empty_tree(&wt.path).await.map_err(|e| failed(wt, e))?;
+        if let Some(head) = &head {
+            let back = if unborn { git(&wt.path, &["update-ref", "-d", &branch_ref, head]).await } else { git(&wt.path, &["update-ref", &branch_ref, &base, head]).await };
+            back.map_err(|e| failed(wt, format!("git update-ref: {e}")))?;
+        }
         git(&wt.path, &["add", "-A"]).await.map_err(|e| failed(wt, format!("git add in the copy: {e}")))?;
         if let Err(output) = git_as_nebo(&wt.path, &["commit", "-q", "-m", message]).await {
             // Put the task's own history back, so nothing it did is lost.
-            let _ = git(&wt.path, &["update-ref", &format!("refs/heads/{}", wt.branch), &head]).await;
+            if let Some(head) = &head {
+                let _ = git(&wt.path, &["update-ref", &branch_ref, head]).await;
+            }
             return Err(MergeOutcome::HookFailed { output, kept_at: wt.path.clone(), branch: wt.branch.clone() });
         }
         // A hook may have rewritten or staged files of its own: what is
@@ -1340,8 +1397,9 @@ async fn land_git(wt: &Worktree, landing: &Landing) -> MergeOutcome {
         return MergeOutcome::OwnerBusy { why, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     }
     let owner_ref = format!("refs/heads/{}", wt.start_branch);
-    let Ok(owner) = git(&wt.root, &["rev-parse", &owner_ref]).await else {
-        return failed("the project's branch has no commit".into());
+    let owner = match owner_tip(wt).await {
+        Ok(owner) => owner,
+        Err(e) => return failed(e),
     };
     let Ok(head) = git(&wt.path, &["rev-parse", "HEAD"]).await else {
         return failed("the copy has no HEAD".into());
@@ -1353,7 +1411,7 @@ async fn land_git(wt: &Worktree, landing: &Landing) -> MergeOutcome {
     if head == owner {
         return finish_no_changes(&Isolation::Git(wt.clone())).await;
     }
-    if git(&wt.path, &["rev-parse", "HEAD^"]).await.ok().as_deref() != Some(owner.as_str()) {
+    if !sits_on(&wt.path, "HEAD", &owner).await {
         return failed("the project moved on since the copy caught up; catch up again".into());
     }
     let paths = touched_paths(&wt.path, &owner, "HEAD").await;
@@ -2497,6 +2555,99 @@ mod tests {
         std::fs::write(dir.path().join("src/a.txt"), "a0\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "b0\n").unwrap();
         dir
+    }
+
+    /// A brand-new repository: `git init` and no commit, as an employee
+    /// starting a project leaves it.
+    async fn unborn() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+            git(dir.path(), &args).await.unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_repository_with_no_commit_gets_a_copy_whose_reviewed_commit_becomes_its_first() {
+        with_home(|_| rt().block_on(async {
+            let r = unborn().await;
+            let wt = create_worktree(r.path(), "sa-u1").await.unwrap();
+            assert_eq!(wt.start_branch, "main");
+            assert!(git(r.path(), &["rev-parse", "--verify", "--quiet", "HEAD"]).await.is_err(), "nothing committed in the owner's project");
+            // The builder writes the project's first files, commits one of
+            // them itself, and the review sees both.
+            std::fs::write(wt.path.join(".gitignore"), "target/\n").unwrap();
+            git(&wt.path, &["add", "-A"]).await.unwrap();
+            git(&wt.path, &["commit", "-q", "-m", "wip"]).await.unwrap();
+            std::fs::create_dir_all(wt.path.join("src")).unwrap();
+            std::fs::write(wt.path.join("src/main.rs"), "fn main() {}\n").unwrap();
+            let landing = reviewed(&wt.path, &[".gitignore", "src/main.rs"]).await;
+            let path = wt.path.clone();
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Start the project", None, &landing).await;
+            assert_eq!(landed_files(&out[0].1), vec![".gitignore".to_string(), "src/main.rs".to_string()]);
+            assert_eq!(log(r.path()).await, ["Start the project|"], "exactly the reviewed commit, with no parent");
+            let MergeOutcome::Merged { commit, .. } = &out[0].1 else { unreachable!() };
+            assert_eq!(&git(r.path(), &["rev-parse", "refs/heads/main"]).await.unwrap(), commit);
+            assert_eq!(std::fs::read_to_string(r.path().join("src/main.rs")).unwrap(), "fn main() {}\n");
+            assert!(git(r.path(), &["status", "--porcelain"]).await.unwrap().is_empty(), "the owner's folder is that commit");
+            assert!(!path.exists(), "the copy is removed after it landed");
+        }))
+    }
+
+    #[test]
+    fn a_first_commit_the_owner_makes_while_the_copy_is_open_is_caught_up_to() {
+        with_home(|_| rt().block_on(async {
+            let r = unborn().await;
+            let wt = create_worktree(r.path(), "sa-u2").await.unwrap();
+            std::fs::write(wt.path.join("app.js"), "start()\n").unwrap();
+            // The owner makes the project's first commit meanwhile.
+            std::fs::write(r.path().join("README.md"), "mine\n").unwrap();
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            git(r.path(), &["commit", "-q", "-m", "owner's first"]).await.unwrap();
+            let owner = git(r.path(), &["rev-parse", "HEAD"]).await.unwrap();
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add the app", None, &Landing::default()).await;
+            let MergeOutcome::Merged { files, caught_up_to, .. } = &out[0].1 else { panic!("{:?}", out[0].1) };
+            assert_eq!(files, &vec!["app.js".to_string()]);
+            assert_eq!(caught_up_to, &owner);
+            assert_eq!(git(r.path(), &["log", "--format=%s"]).await.unwrap(), "Add the app\nowner's first");
+            assert_eq!(git(r.path(), &["rev-parse", "HEAD^"]).await.unwrap(), owner, "on the owner's first commit");
+            assert_eq!(std::fs::read_to_string(r.path().join("README.md")).unwrap(), "mine\n");
+        }))
+    }
+
+    #[test]
+    fn a_file_the_owner_left_uncommitted_in_a_new_repository_is_never_overwritten() {
+        with_home(|_| rt().block_on(async {
+            let r = unborn().await;
+            let wt = create_worktree(r.path(), "sa-u3").await.unwrap();
+            assert!(!wt.path.join("notes.txt").exists(), "what the owner hasn't committed is not in the copy");
+            std::fs::write(wt.path.join("notes.txt"), "the copy's\n").unwrap();
+            std::fs::write(r.path().join("notes.txt"), "the owner's\n").unwrap();
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add notes", None, &Landing::default()).await;
+            assert!(!out[0].1.landed(), "{:?}", out[0].1);
+            assert_eq!(std::fs::read_to_string(r.path().join("notes.txt")).unwrap(), "the owner's\n");
+            assert!(git(r.path(), &["rev-parse", "--verify", "--quiet", "HEAD"]).await.is_err(), "still no commit");
+        }))
+    }
+
+    #[test]
+    fn a_copy_of_a_new_repository_put_away_comes_back_on_its_own_branch() {
+        with_home(|_| rt().block_on(async {
+            let r = unborn().await;
+            let mut iso = Isolation::Git(create_worktree(r.path(), "sa-u4").await.unwrap());
+            std::fs::write(iso.path().join("a.txt"), "kept\n").unwrap();
+            assert!(put_away(&mut iso, "Kept").await.is_some());
+            assert!(!iso.path().exists());
+            let wt = create_worktree(r.path(), "sa-u4").await.unwrap();
+            assert_eq!(std::fs::read_to_string(wt.path.join("a.txt")).unwrap(), "kept\n");
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add a", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), vec!["a.txt".to_string()]);
+            assert_eq!(log(r.path()).await, ["Add a|"]);
+        }))
     }
 
     #[test]
