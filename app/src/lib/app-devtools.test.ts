@@ -34,7 +34,7 @@ class FakeWorker {
 /** A page at /apps/app-1/ui/ opened as view `live-1`; `sent` are the
  *  devlog bodies that reached the bot, `land` lets the pending ones land. */
 function page(where: Where = BOT) {
-  const sent: { entries: { level: string; message: string; view: string }[] }[] = [];
+  const sent: { entries: { level: string; message: string; view: string; source: string; file?: string }[] }[] = [];
   const pending: (() => void)[] = [];
   const windowListeners: Record<string, Listener[]> = {};
   const win: Record<string, unknown> = {
@@ -134,8 +134,7 @@ describe("the developer script", () => {
     const flushed = (p.win.__neboDevtoolsFlush as () => Promise<unknown>)();
     p.land();
     await flushed;
-    const entries = p.sent.flatMap((b) => b.entries) as { source: string; file?: string }[];
-    return entries.find((e) => e.source === "resource")?.file;
+    return p.sent.flatMap((b) => b.entries).find((e) => e.source === "resource")?.file;
   }
 
   it("names a failed load's file against ui/, never one of Nebo's own routes, on the bot and in the desktop window", async () => {
