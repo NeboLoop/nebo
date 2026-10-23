@@ -691,36 +691,28 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
 /// parallel edits, so none of these is ever the right tool. The shell refuses
 /// them outright, like privilege escalation — an approval card would only
 /// teach the model to ask for the wrong thing.
+///
+/// Every command the script runs is read by [`subcommands`]: one after
+/// `&&`, `;` or `|`, in `$(…)`, inside `bash -c '…'` or `eval`, and past the
+/// wrappers that only run it (`env`, `timeout 5`, `nohup`, `nice`). Only a
+/// command that IS git counts: `echo git stash` and `grep "git stash"
+/// notes.md` are not git.
 pub fn is_destructive_git(cmd: &str) -> bool {
-    // Every command segment: `a && git stash`, `x; git reset --hard`, `$(git ...)`.
-    // Only a segment that STARTS with git counts — `echo git stash` and
-    // `grep "git stash" notes.md` are not git.
-    let segments = cmd
-        .replace("$(", " ")
-        .replace('`', " ")
-        .replace('\n', ";")
-        .replace("||", ";")
-        .replace("&&", ";")
-        .replace('|', ";")
-        .replace(')', " ");
-    for seg in segments.split(';') {
-        let toks: Vec<&str> = seg
-            .split_whitespace()
-            .skip_while(|t| t.contains('=') && !t.starts_with('-')) // FOO=bar git ...
-            .collect();
-        let Some(first) = toks.first() else { continue };
+    subcommands(cmd).iter().any(|sub| {
+        let words: Vec<&str> = sub.words.iter().map(|w| w.as_deref().unwrap_or("")).collect();
+        let Some(first) = words.first() else { return false };
         if *first != "git" && !first.ends_with("/git") {
-            continue;
+            return false;
         }
         // Skip `-C dir` / `-c k=v` style globals before the subcommand.
         let mut j = 1;
-        while j < toks.len() && toks[j].starts_with('-') {
-            j += if matches!(toks[j], "-C" | "-c" | "--git-dir" | "--work-tree") { 2 } else { 1 };
+        while j < words.len() && words[j].starts_with('-') {
+            j += if matches!(words[j], "-C" | "-c" | "--git-dir" | "--work-tree") { 2 } else { 1 };
         }
-        let Some(sub) = toks.get(j) else { continue };
-        let args: Vec<&str> = toks[j + 1..].to_vec();
+        let Some(verb) = words.get(j) else { return false };
+        let args = &words[j + 1..];
         let has = |flag: &str| args.iter().any(|a| *a == flag);
-        let destructive = match *sub {
+        match *verb {
             "stash" => !args.first().is_some_and(|a| matches!(*a, "list" | "show")),
             "reset" => has("--hard") || has("--merge") || has("--keep"),
             "checkout" => args.iter().any(|a| *a == "." || *a == "--" || a.starts_with("--source")) && !has("-b"),
@@ -733,16 +725,28 @@ pub fn is_destructive_git(cmd: &str) -> bool {
                 !args.iter().any(|a| *a == "--dry-run" || (a.starts_with('-') && !a.starts_with("--") && a.contains('n')))
                     && args.iter().any(|a| a.starts_with('-') && (a.contains('f') || a.contains('x')))
             }
-            "push" => has("--force") || has("-f") || args.iter().any(|a| a.starts_with("--force-with-lease")),
+            // A `+` refspec (`git push origin +main`) forces that one ref.
+            "push" => {
+                has("--force")
+                    || has("-f")
+                    || args.iter().any(|a| a.starts_with("--force-with-lease") || (a.starts_with('+') && a.len() > 1))
+            }
             "branch" => has("-D") || (has("--delete") && has("--force")),
             _ => false,
-        };
-        if destructive {
-            return true;
         }
-    }
-    false
+    })
 }
+
+/// What a destructive git command ([`is_destructive_git`]) is answered
+/// with, wherever it is met: a command, text typed into a running shell, or
+/// a script a command runs.
+pub const DESTRUCTIVE_GIT_REFUSAL: &str = "This git command discards work (stash, reset --hard, checkout/restore of \
+     tracked files, clean -f, force push, branch -D) and is not available. \
+     To be able to undo a change, take a checkpoint first with \
+     checkpoint_files(paths: [...]) and put it back with restore_checkpoint. \
+     For parallel edits give each helper its own copy \
+     (delegate with isolation: \"worktree\"). If the owner truly wants history rewritten, \
+     tell them the exact command and let them run it.";
 
 /// Files a shell command writes outside the supervised edit path: `sed -i`
 /// targets, `tee` targets, and `>`/`>>` redirections. `sed -i` is refused
@@ -1146,6 +1150,18 @@ mod tests {
             "git restore f.txt",
             "git restore --staged --worktree f.txt",
             "git restore -S -W f.txt",
+            // Wrapped: another shell, a wrapper that only runs it, a forced ref.
+            "bash -c 'git reset --hard'",
+            "sh -c \"cd repo && git clean -fdx\"",
+            "eval git stash",
+            "env git push -f",
+            "env GIT_DIR=.git git reset --hard",
+            "timeout 5 git clean -fd",
+            "nohup git stash &",
+            "nice -n 5 git branch -D old",
+            "git push origin +main",
+            "git push origin +HEAD:main",
+            "x=$(bash -c 'git checkout .')",
         ] {
             assert!(is_destructive_git(cmd), "{cmd} should be refused");
         }
@@ -1167,6 +1183,10 @@ mod tests {
             "git branch -d merged",
             "echo git stash",
             "grep \"git reset --hard\" notes.md",
+            "bash -c 'git status'",
+            "timeout 5 git fetch",
+            "env git push origin main",
+            "echo 'git push origin +main'",
         ] {
             assert!(!is_destructive_git(cmd), "{cmd} is fine");
         }

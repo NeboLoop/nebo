@@ -258,16 +258,7 @@ impl ShellTool {
         // House git rules: the commands that throw away the owner's work are
         // refused outright, and the refusal names what to use instead.
         if crate::policy::is_destructive_git(&input.command) {
-            return ToolResult::error(
-                "This git command discards work (stash, reset --hard, checkout/restore of \
-                 tracked files, clean -f, force push, branch -D) and is not available. \
-                 To be able to undo a change, take a checkpoint first with \
-                 checkpoint_files(paths: [...]) and put it back with restore_checkpoint. \
-                 For parallel edits give each helper its own copy \
-                 (delegate with isolation: \"worktree\"). If the owner truly wants history rewritten, \
-                 tell them the exact command and let them run it."
-                    .to_string(),
-            );
+            return ToolResult::error(crate::policy::DESTRUCTIVE_GIT_REFUSAL);
         }
 
         // `sed -i` rewrites a file behind the read ledger and the edit

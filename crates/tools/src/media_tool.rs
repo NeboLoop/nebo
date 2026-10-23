@@ -1240,6 +1240,33 @@ async fn scrub(path: &Path) -> String {
     }
 }
 
+/// A relative `into` that starts with an app employee's folder (`Football
+/// League/ui/assets/hero.png`, as its files are named by that folder) is
+/// that app's file: the call becomes one for that app (`app`), with `into`
+/// inside the folder the app is served from. The employee is found by the
+/// one resolver (`team::resolve_agent`), by its name or its folder's name.
+/// Live 2026-10-23: such an `into` was taken as a folder of the workspace,
+/// and the art landed in ~/NeboAI instead of the app. Any other `into`, or
+/// one with `app` already named, is left as it is.
+fn into_an_apps_folder(store: &db::Store, input: &mut Value) {
+    if input.get("app").is_some_and(|a| !a.is_null()) {
+        return;
+    }
+    let Some(into) = str_of(input, "into").map(str::trim) else { return };
+    if types::pathres::expand(into).is_absolute() {
+        return;
+    }
+    let Some((head, rest)) = into.split_once('/') else { return };
+    let Some(app) = crate::team::resolve_agent(store, head) else { return };
+    let Some(served) = crate::app_dev::served_dir(&app).map(PathBuf::from) else { return };
+    let Some(package) = app.napp_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from) else {
+        return;
+    };
+    let Ok(in_served) = package.join(rest).strip_prefix(&served).map(Path::to_path_buf) else { return };
+    input["app"] = Value::String(app.id.clone());
+    input["into"] = Value::String(in_served.to_string_lossy().into_owned());
+}
+
 /// Where a call's files go: the app's served folder, with the label the
 /// result names it by.
 struct Target {
@@ -2404,9 +2431,10 @@ impl DynTool for GenerateMediaTool {
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
-        input: Value,
+        mut input: Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            into_an_apps_folder(&self.store, &mut input);
             let target = match self.target(ctx, &input) {
                 Ok(t) => t,
                 Err(e) => return ToolResult::error(e),
@@ -2570,6 +2598,37 @@ mod tests {
         let mine = tool.target(&me, &serde_json::json!({})).unwrap();
         assert_ne!(mine.base, PathBuf::from("/tmp/app-bought/ui"), "its own call goes to the workspace");
         assert_eq!(mine.label, "the workspace");
+    }
+
+    /// An `into` that starts with an app's folder, by the folder's own name
+    /// (taken when the app was made: "Football League 2") or the app's,
+    /// writes into that app's served folder, never the workspace.
+    #[test]
+    fn an_into_naming_an_apps_folder_is_that_apps_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let package = tmp.path().join("agents/Football League 2");
+        store.create_agent("app-fl", Some("agent"), "Football League", "", "", "{}", None, None).unwrap();
+        store.set_agent_app_fields("app-fl", true, Some(&package.join("ui").to_string_lossy()), None, None).unwrap();
+        store.set_agent_napp_path("app-fl", &package.to_string_lossy()).unwrap();
+        store.set_agent_built_here("app-fl", true).unwrap();
+        let routed = |into: &str| {
+            let mut input = json!({"kind": "image", "prompt": "a pitch", "into": into});
+            into_an_apps_folder(&store, &mut input);
+            (input["app"].as_str().map(str::to_string), input["into"].as_str().unwrap().to_string())
+        };
+        for named in ["Football League 2/ui/assets/pitch.png", "Football League/ui/assets/pitch.png"] {
+            assert_eq!(routed(named), (Some("app-fl".to_string()), "assets/pitch.png".to_string()), "{named}");
+        }
+        // Not an app's folder, outside what it serves, or already absolute: as written.
+        assert_eq!(routed("Media/pitch.png"), (None, "Media/pitch.png".to_string()));
+        assert_eq!(routed("Football League 2/brief-art.png"), (None, "Football League 2/brief-art.png".to_string()));
+        assert_eq!(routed("/tmp/pitch.png"), (None, "/tmp/pitch.png".to_string()));
+        let tool = GenerateMediaTool::new(Media::new(String::new(), String::new(), None), store.clone());
+        let mut input = json!({"kind": "image", "into": "Football League 2/ui/assets/pitch.png"});
+        into_an_apps_folder(&store, &mut input);
+        let target = tool.target(&ToolContext::default(), &input).unwrap();
+        assert_eq!(target.base, package.join("ui"));
     }
 
     #[test]
