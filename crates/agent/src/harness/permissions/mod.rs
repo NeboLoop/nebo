@@ -355,7 +355,7 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     // 2. The run's own fence (an isolated helper's copy) and the ceiling it
     //    runs under (its parent's grant): it can only narrow.
     if let Some(fence) = &cx.grant.fence
-        && let Some(reason) = rules::outside(fence, t, cx.input)
+        && let Some(reason) = rules::outside(fence, t, cx.input, cx.ctx.cwd.as_deref())
     {
         return Ok(Decision::Deny { reason, why: Why::Ceiling });
     }
@@ -486,7 +486,7 @@ fn beyond(ceiling: &Grant, cx: &CheckCx<'_>, t: &Target) -> Option<String> {
         ))
     };
     if let Some(fence) = &ceiling.fence
-        && rules::outside(fence, t, cx.input).is_some()
+        && rules::outside(fence, t, cx.input, cx.ctx.cwd.as_deref()).is_some()
     {
         return refusal();
     }

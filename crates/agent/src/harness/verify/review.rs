@@ -521,7 +521,7 @@ mod tests {
                 ];
                 for (key, input) in &reads {
                     assert_eq!(tools::safeguard::check_safeguard(key, input, &ctx), None, "{lens:?} {key} {input}");
-                    assert_eq!(tools::safeguard::check_path_scope(key, input, &folders), None, "{lens:?} {key} {input}: inside its fence");
+                    assert_eq!(tools::safeguard::check_path_scope(key, input, &folders, None), None, "{lens:?} {key} {input}: inside its fence");
                 }
                 // What the operating system closes to its commands holds
                 // nothing of its copy, its patch or its build folder.

@@ -189,7 +189,7 @@ impl RuleSet {
     /// are fenced; reads are not.
     pub fn outside_folders(&self, t: &Target, input: &serde_json::Value) -> Option<String> {
         let folders = self.folders();
-        outside(&folders, t, input)
+        outside(&folders, t, input, None)
     }
 
     /// Every rule, employee scope first.
@@ -204,13 +204,14 @@ fn owners_own(source: &RuleSource) -> bool {
     matches!(source, RuleSource::Owner | RuleSource::AllowAlways { .. } | RuleSource::Learned { .. })
 }
 
-/// Why `t` falls outside `folders` (empty: no fence).
-pub fn outside(folders: &[PathBuf], t: &Target, input: &serde_json::Value) -> Option<String> {
+/// Why `t`, run from `cwd` (the run's folder, when known), falls outside
+/// `folders` (empty: no fence).
+pub fn outside(folders: &[PathBuf], t: &Target, input: &serde_json::Value, cwd: Option<&str>) -> Option<String> {
     if folders.is_empty() {
         return None;
     }
     let strings: Vec<String> = folders.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    tools::safeguard::check_path_scope(&t.key, input, &strings)
+    tools::safeguard::check_path_scope(&t.key, input, &strings, cwd)
 }
 
 /// What rules judge `t` by: each command a shell call runs, or the whole call

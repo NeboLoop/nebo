@@ -1127,3 +1127,59 @@ async fn routine_work_never_asks() {
         }
     }
 }
+
+/// A reviewer's fence (the copy it reviews and its build folder) holds
+/// every folder a command may stand in, its own `cd`s included: live
+/// 10-21, a reviewer ran `cd ~/NeboAI && git apply x.patch` and changed the
+/// owner's real project. Its own build in its copy still runs.
+#[test]
+fn a_fenced_reviewer_cannot_cd_out_of_its_copy() {
+    let (_d, store) = store();
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("verify/v-1/round-1/project");
+    let build = dir.path().join("build/v-1");
+    let owners = dir.path().join("NeboAI/site");
+    for d in [&copy, &build, &owners] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mut grant = Grant::new("reviewer", Mode::FullAccess);
+    grant.fence = Some(vec![copy.clone(), build.clone()]);
+    let ctx = ToolContext {
+        session_key: "subagent:agent:dev:web:review-1".into(),
+        cwd: Some(copy.to_string_lossy().into_owned()),
+        grant: Some(Arc::new(grant.clone())),
+        ..Default::default()
+    };
+    let decide_on = |command: &str| {
+        let input = json!({ "command": command });
+        let t = Target {
+            tool: "run_command".into(),
+            key: "run_command".into(),
+            operation: None,
+            capability: Some("shell".into()),
+            field: Some(RuleField::CommandPrefix(command.into())),
+            subject: None,
+            read_only: false,
+            effects: tools::policy::shell_effects(command, ctx.cwd.as_deref()).anchored(&copy),
+        };
+        decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+    };
+    let fenced = |d: &Decision| matches!(d, Decision::Deny { why: Why::Ceiling, .. });
+    for out in [
+        format!("cd {} && git apply x.patch", owners.display()),
+        format!("cd {} ; git apply x.patch", owners.display()),
+        "cd .. && touch planted".to_string(),
+        format!("pushd {} && git apply x.patch", owners.display()),
+        "cd \"$PROJECT\" && git apply x.patch".to_string(),
+    ] {
+        assert!(fenced(&decide_on(&out)), "{out}: refused outside the fence: {:?}", decide_on(&out));
+    }
+    for own in [
+        "cargo build".to_string(),
+        format!("cd {} && cargo test", copy.display()),
+        format!("cd {} && cargo build --target-dir {}", copy.join("crates").display(), build.display()),
+        format!("cd {} && ls", build.display()),
+    ] {
+        assert!(!fenced(&decide_on(&own)), "{own}: its own build runs: {:?}", decide_on(&own));
+    }
+}

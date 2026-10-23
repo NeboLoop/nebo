@@ -108,18 +108,21 @@ pub fn nebo_file_refusal(path: &str, fence: &NeboFiles) -> String {
 /// Check if a tool call respects the allowed_paths restriction.
 /// If allowed_paths is empty, all paths are allowed (unrestricted).
 /// File reads are always allowed. Only writes/edits/deletes are restricted.
-/// Shell commands are restricted to running within allowed directories.
+/// Shell commands are restricted to running within allowed directories:
+/// every folder they may stand in, taken from the call's `cwd`, else `cwd`
+/// (the run's folder) when known.
 pub fn check_path_scope(
     rule_key: &str,
     input: &serde_json::Value,
     allowed_paths: &[String],
+    cwd: Option<&str>,
 ) -> Option<String> {
     if allowed_paths.is_empty() {
         return None;
     }
 
     match rule_key {
-        "run_command" => check_shell_path_scope(input, allowed_paths),
+        "run_command" => check_shell_path_scope(input, allowed_paths, cwd),
         // A notebook edit writes its .ipynb: fenced like a file write.
         "edit_notebook" => {
             let path = input.get("notebook_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -205,7 +208,7 @@ fn check_file_path_scope(
     ))
 }
 
-fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
+fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String], run_cwd: Option<&str>) -> Option<String> {
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let cwd = input.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -224,6 +227,29 @@ fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -
                 "BLOCKED: cannot execute shell command in {:?} — this agent is restricted to: {}. \
                  Run it inside one of those directories or ask the owner to widen them in the Configure tab.",
                 cwd,
+                allowed_paths.join(", ")
+            ));
+        }
+    }
+
+    // Every folder the command may stand in after its own moves (`cd`,
+    // `pushd`, a subshell's), not only where it starts: a reviewer's
+    // `cd ~/NeboAI && git apply x.patch` once ran in the owner's project.
+    // A folder known only from the run's relative start is not judged here.
+    let start = if cwd.is_empty() { run_cwd } else { Some(cwd) };
+    for placed in crate::policy::located(command, start) {
+        if placed.lost {
+            return Some(format!(
+                "BLOCKED: this command moves to a folder only running it can tell, and this agent is restricted to: \
+                 {}. Name the folder by its absolute path, inside one of those.",
+                allowed_paths.join(", ")
+            ));
+        }
+        if let Some(outside) = placed.reach.iter().filter(|f| f.is_absolute()).find(|f| !is_within_allowed(&f.to_string_lossy(), allowed_paths)) {
+            return Some(format!(
+                "BLOCKED: this command moves to {:?}, and this agent is restricted to: {}. \
+                 Run it inside one of those directories.",
+                outside.display().to_string(),
                 allowed_paths.join(", ")
             ));
         }
@@ -734,14 +760,14 @@ mod tests {
         let allowed = vec!["/proj".to_string()];
         // checkpoint names its files in `paths[]`, not `path`.
         let inside = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/proj/a.rs", "/proj/src/b.rs"]});
-        assert!(check_path_scope("checkpoint_files", &inside, &allowed).is_none());
+        assert!(check_path_scope("checkpoint_files", &inside, &allowed, None).is_none());
         let outside = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/proj/a.rs", "/etc/hosts"]});
-        let msg = check_path_scope("checkpoint_files", &outside, &allowed).expect("blocked");
+        let msg = check_path_scope("checkpoint_files", &outside, &allowed, None).expect("blocked");
         assert!(msg.contains("BLOCKED") && msg.contains("/etc/hosts"), "{msg}");
         // restore with an explicit subset is fenced the same way; the
         // manifest-path case (no `paths`) is the file tool's job.
         let restore = serde_json::json!({"resource": "file", "action": "restore", "checkpoint": "cp-1", "paths": ["/tmp/x"]});
-        assert!(check_path_scope("restore_checkpoint", &restore, &allowed).is_some());
+        assert!(check_path_scope("restore_checkpoint", &restore, &allowed, None).is_some());
         // The manifest helper: first offender named, no fence = nothing blocked.
         assert!(outside_allowed("restore", &["/tmp/x".into()], &[]).is_none());
         let msg = outside_allowed("restore", &["/proj/ok".into(), "/tmp/x".into()], &allowed).expect("blocked");
@@ -860,7 +886,7 @@ mod tests {
         assert_eq!(media_write(&serde_json::json!({ "into": "~/NeboAI/vo.mp3" })).unwrap()["path"], crate::file_tool::expand_path("~/NeboAI/vo.mp3"));
 
         let allowed = vec![dir.path().join("work").to_string_lossy().into_owned()];
-        let scope = |into: &str| check_path_scope("generate_media", &serde_json::json!({ "into": into }), &allowed);
+        let scope = |into: &str| check_path_scope("generate_media", &serde_json::json!({ "into": into }), &allowed, None);
         assert!(scope(&dir.path().join("work/vo.mp3").to_string_lossy()).is_none());
         assert!(scope(&dir.path().join("elsewhere/vo.mp3").to_string_lossy()).is_some_and(|m| m.contains("restricted to")));
         assert!(scope("assets/vo.mp3").is_none());
@@ -1163,7 +1189,7 @@ mod tests {
         let input = serde_json::json!({
             "action": "exec", "command": "ls", "cwd": "/private/etc"
         });
-        assert!(check_path_scope("run_command", &input, &allowed).is_some());
+        assert!(check_path_scope("run_command", &input, &allowed, None).is_some());
     }
 
     #[test]
@@ -1174,21 +1200,21 @@ mod tests {
         let outside = serde_json::json!({
             "resource": "file", "action": "write", "path": "/etc/passwd"
         });
-        assert!(check_path_scope("write_file", &outside, &allowed).is_some());
+        assert!(check_path_scope("write_file", &outside, &allowed, None).is_some());
 
         // os file write INSIDE the allowed dir is permitted.
         let inside = serde_json::json!({
             "resource": "file", "action": "write", "path": "/Users/me/workspace/report.md"
         });
-        assert!(check_path_scope("write_file", &inside, &allowed).is_none());
+        assert!(check_path_scope("write_file", &inside, &allowed, None).is_none());
 
         // Reads are never path-scoped.
         let read = serde_json::json!({
             "resource": "file", "action": "read", "path": "/etc/hosts"
         });
-        assert!(check_path_scope("read_file", &read, &allowed).is_none());
+        assert!(check_path_scope("read_file", &read, &allowed, None).is_none());
 
         // Empty allowed_paths = no scoping (must not block).
-        assert!(check_path_scope("write_file", &outside, &[]).is_none());
+        assert!(check_path_scope("write_file", &outside, &[], None).is_none());
     }
 }

@@ -378,8 +378,10 @@ pub fn permits(mode: &TurnMode, target: &types::permissions::Target) -> Result<(
         );
     }
     let delegating = target.key == HELPER_TOOL;
-    // A reviewer runs the project's build and tests; its fence keeps every
-    // command inside the copy it reviews and its build folder.
+    // A reviewer runs the project's build and tests: its commands are
+    // exempt from "only looks" because its fence (the copy it reviews and
+    // its build folder) holds every folder a command may stand in, `cd`
+    // included (`safeguard::check_path_scope`); outside it they are refused.
     let reviewer_command = *kind == HelperKind::Review && target.key == super::owner_command::RUN_COMMAND;
     if kind.read_only() && (delegating || !target.read_only) && !reviewer_command {
         return Err(format!(
