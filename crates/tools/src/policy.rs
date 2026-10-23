@@ -12,6 +12,9 @@ pub struct Subcommand {
     words: Vec<Option<String>>,
     /// An output redirect sends to a file.
     writes: bool,
+    /// Each word as a filename pattern, beside `words`
+    /// (`syntax::ShellCommand::globs`).
+    globs: Vec<Option<String>>,
 }
 
 /// Shells whose `-c` argument is itself a script.
@@ -46,7 +49,7 @@ fn looks_like_subcommand(word: &str) -> bool {
 impl Subcommand {
     /// A command that can't be read: it may be anything.
     fn unknown() -> Self {
-        Subcommand { assigns: false, words: vec![None], writes: false }
+        Subcommand { assigns: false, words: vec![None], writes: false, globs: vec![None] }
     }
 
     /// The command's words, the program first: quoting removed,
@@ -112,7 +115,7 @@ pub fn subcommands(cmd: &str) -> Vec<Subcommand> {
     let mut out = Vec::new();
     collect_subcommands(cmd, 0, &mut out);
     if out.is_empty() {
-        out.push(Subcommand { assigns: false, words: Vec::new(), writes: false });
+        out.push(Subcommand { assigns: false, words: Vec::new(), writes: false, globs: Vec::new() });
     }
     out
 }
@@ -124,7 +127,7 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
         return;
     };
     for command in commands {
-        let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes };
+        let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes, globs: command.globs };
         unwrap_wrappers(&mut sub);
         match inline_script(&sub.words) {
             Some(Some(inner)) => collect_subcommands(&inner, depth + 1, out),
@@ -142,7 +145,7 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
 /// anything but a simple command.
 pub fn exit_command(cmd: &str) -> Option<(Subcommand, Option<String>)> {
     let (command, operator) = syntax::shell_exit_command(cmd)?;
-    let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes };
+    let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes, globs: command.globs };
     unwrap_wrappers(&mut sub);
     Some((sub, operator))
 }
@@ -202,6 +205,7 @@ fn unwrap_wrappers(sub: &mut Subcommand) {
             return;
         }
         sub.words = args[i..].to_vec();
+        sub.globs = sub.globs[i + 1..].to_vec();
     }
 }
 
@@ -267,8 +271,15 @@ pub fn is_read_only(cmd: &str) -> bool {
 /// from `cwd` when the call names one; a path still relative is anchored on
 /// the run's folder by the registry (`CallEffects::anchored`). What a
 /// command only knows when it runs (`rm -rf "$DIR"`) is named by the
-/// command itself. Removing scratch under the system temp folder is not
-/// removing anyone's work, and is not reported.
+/// command itself. A program is known by its name wherever it is run from
+/// (`/bin/rm` is `rm`).
+///
+/// A folder or a tree of files it removes is in `removes_trees`: `rm -r`
+/// (`-R`, `--recursive`) and `rm -d`, `rmdir`, `find … -delete` and `find …
+/// -exec rm` (each folder it starts from), `xargs rm` (what it removes
+/// comes from its input, so it is named by its command), and `rsync
+/// --delete` (what is in its destination). A pattern (`*`, `dir/*.o`) is
+/// named by the folder it empties: `dir/*`.
 pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEffects {
     use std::path::{Path, PathBuf};
 
@@ -285,13 +296,23 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         let words: Vec<&str> = sub.words.iter().map(|w| w.as_deref().unwrap_or("…")).collect();
         format!("command:{}", words.join(" "))
     };
-    let scratch = |named: &str| {
-        named.strip_prefix("file:").is_some_and(|p| {
-            let p = Path::new(p);
-            [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
-                .iter()
-                .any(|t| p.starts_with(t) && p != t)
-        })
+    // A tree a command removes: `word` itself, or what is in it when
+    // `contents`, or what is in the folder a pattern names.
+    let tree = |here: &Option<PathBuf>, sub: &Subcommand, word: &Option<String>, contents: bool| -> String {
+        let Some(word) = word else { return unread(sub) };
+        let (folder, contents) = match word.find(['*', '?', '[', '{']) {
+            Some(at) => match word[..at].rfind('/') {
+                Some(0) => ("/", true),
+                Some(slash) => (&word[..slash], true),
+                None => (".", true),
+            },
+            None => (word.as_str(), contents),
+        };
+        match file(here, folder) {
+            Some(named) if contents => format!("{}", Path::new(&named).join("*").display()),
+            Some(named) => named,
+            None => unread(sub),
+        }
     };
     // The operands of a command: its words after the options (`--` ends them).
     let operands = |args: &[Option<String>], valued: &[&str]| -> Vec<Option<String>> {
@@ -315,8 +336,12 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
 
     for sub in subcommands(cmd) {
         let Some(Some(program)) = sub.words.first() else { continue };
+        let program = Path::new(program).file_name().map_or(program.as_str(), |n| n.to_str().unwrap_or_default());
         let args = &sub.words[1..];
-        match program.as_str() {
+        // The words with each pattern as written, for what a removal names.
+        let patterned: Vec<Option<String>> = args.iter().zip(&sub.globs[1..]).map(|(w, g)| w.clone().or_else(|| g.clone())).collect();
+        let is_rm = |a: &Option<String>| a.as_deref().is_some_and(|a| Path::new(a).file_name().is_some_and(|n| n == "rm"));
+        match program {
             "cd" | "pushd" => {
                 here = match args.first() {
                     None => Some(types::pathres::expand("~")),
@@ -327,10 +352,52 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
             "rm" | "rmdir" | "unlink" => {
                 for operand in operands(args, &[]) {
                     match operand.and_then(|p| file(&here, &p)) {
-                        Some(named) if scratch(&named) => {}
                         Some(named) => fx.deletes.push(named),
                         None => fx.deletes.push(unread(&sub)),
                     }
+                }
+                let folders = program == "rmdir"
+                    || (program == "rm"
+                        && args.iter().flatten().take_while(|a| *a != "--").any(|a| {
+                            matches!(a.as_str(), "--recursive" | "--dir")
+                                || (a.starts_with('-') && !a.starts_with("--") && a.contains(['r', 'R', 'd']))
+                        }));
+                if folders {
+                    for target in operands(&patterned, &[]) {
+                        fx.removes_trees.push(tree(&here, &sub, &target, false));
+                    }
+                }
+            }
+            "find"
+                if args.iter().any(|a| a.as_deref() == Some("-delete"))
+                    || args.windows(2).any(|w| matches!(w[0].as_deref(), Some("-exec" | "-execdir" | "-ok" | "-okdir")) && is_rm(&w[1])) =>
+            {
+                let starts: Vec<Option<String>> = patterned
+                    .iter()
+                    .skip_while(|a| a.as_deref().is_some_and(|a| matches!(a, "-H" | "-L" | "-P") || a.starts_with("-O")))
+                    .take_while(|a| a.as_deref().is_none_or(|a| !a.starts_with('-') && a != "(" && a != "!"))
+                    .cloned()
+                    .collect();
+                let starts = if starts.is_empty() { vec![Some(".".to_string())] } else { starts };
+                for start in starts {
+                    fx.removes_trees.push(tree(&here, &sub, &start, false));
+                }
+            }
+            "xargs" if args.iter().any(is_rm) => fx.removes_trees.push(unread(&sub)),
+            "rsync" if args.iter().flatten().any(|a| a.starts_with("--delete")) => {
+                let valued = [
+                    "-e", "--rsh", "--exclude", "--include", "--filter", "-f", "--exclude-from", "--include-from",
+                    "--files-from", "--log-file", "--partial-dir", "--temp-dir", "-T", "--backup-dir", "--compare-dest",
+                    "--copy-dest", "--link-dest", "--chmod", "--chown", "--rsync-path", "--port", "--password-file",
+                    "--timeout", "--bwlimit", "--max-size", "--min-size", "--max-delete", "--suffix", "--out-format",
+                    "-M", "--remote-option",
+                ];
+                // The destination is the last operand; one on another
+                // computer (`host:dir`) is not this one's.
+                let dest = operands(&patterned, &valued).pop().flatten();
+                let remote = dest.as_deref().is_some_and(|d| d.split('/').next().is_some_and(|first| first.contains(':')));
+                if !remote {
+                    fx.removes_trees.push(tree(&here, &sub, &dest, true));
                 }
             }
             "mkdir" => {
@@ -388,6 +455,51 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         }
     }
     fx
+}
+
+/// The first folder `cmd` removes that no command ever removes, in any
+/// mode, asked or not (owner, 10-23: "can never ever be allowed"): the
+/// root, every folder right under it (`/System`, `/usr`, `/bin`, `/etc`,
+/// `/Library`, `/Applications`, `/Users`, …), a drive and every folder right
+/// under one (`C:\Windows`, `C:\Program Files`), the home folder itself, or
+/// everything in one of them (`/*`, `~/*`). `cwd` is where its relative
+/// paths start.
+pub fn never_removed(cmd: &str, cwd: Option<&std::path::Path>) -> Option<String> {
+    let fx = shell_effects(cmd, None).anchored(cwd.unwrap_or(std::path::Path::new("")));
+    // Through a link (`link/`, `link/*`), where it points is what goes.
+    let through = |p: &str| {
+        let (folder, contents) = match p.strip_suffix("/*") {
+            Some(folder) => (folder, true),
+            None => (p, false),
+        };
+        (contents || p.ends_with('/'))
+            && std::fs::canonicalize(folder)
+                .is_ok_and(|real| is_never_removed(&format!("{}{}", real.display(), if contents { "/*" } else { "" })))
+    };
+    fx.removes_trees.into_iter().filter_map(|t| t.strip_prefix("file:").map(str::to_string)).find(|p| is_never_removed(p) || through(p))
+}
+
+/// Whether `path` (as written, links not followed) is one no command
+/// removes ([`never_removed`]).
+fn is_never_removed(path: &str) -> bool {
+    let mut slashed = String::new();
+    for c in path.chars() {
+        let c = if c == '\\' { '/' } else { c };
+        if !(c == '/' && slashed.ends_with('/')) {
+            slashed.push(c);
+        }
+    }
+    // What is in a folder goes as the folder does.
+    let folder = slashed.strip_suffix("/*").map(|f| if f.is_empty() { "/" } else { f }).unwrap_or(&slashed);
+    let folder = if folder.len() > 1 { folder.trim_end_matches('/') } else { folder };
+    let b = folder.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    let under = |root: &str| folder.strip_prefix(root).is_some_and(|rest| !rest.is_empty() && !rest.contains('/'));
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string());
+    folder == "/"
+        || under("/")
+        || (drive && (folder.len() == 2 || under(&format!("{}/", &folder[..2]))))
+        || home.is_some_and(|h| folder.eq_ignore_ascii_case(&h))
 }
 
 /// House git rules, enforced: the commands that throw away the owner's work.
@@ -793,7 +905,7 @@ mod tests {
 
     #[test]
     fn an_allow_is_strict_and_a_deny_reads_the_unknown_as_unread() {
-        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws, writes: false };
+        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, globs: vec![None; ws.len()], words: ws, writes: false };
         let git_push = sub(lit(&["git", "push", "origin"]), false);
         assert_eq!(git_push.covered_by("git", true), Cover::Yes);
         assert_eq!(git_push.covered_by("git push", true), Cover::Yes);
@@ -991,6 +1103,63 @@ mod tests {
         }
     }
 
+    /// A folder or tree a command removes is named where it removes it,
+    /// however the program is spelled; a pattern by the folder it empties;
+    /// one only running it knows by its command.
+    #[test]
+    fn tree_removals_are_named() {
+        let trees = |cmd: &str| shell_effects(cmd, Some("/w")).anchored(std::path::Path::new("/")).removes_trees;
+        assert_eq!(trees("rm -rf build dist"), vec!["file:/w/build", "file:/w/dist"]);
+        assert_eq!(trees("/bin/rm -R /tmp/x"), vec!["file:/tmp/x"]);
+        assert_eq!(trees("rm -d empty"), vec!["file:/w/empty"]);
+        assert_eq!(trees("rmdir empty"), vec!["file:/w/empty"]);
+        assert_eq!(trees("cd a && rm -r ../b"), vec!["file:/w/b"]);
+        assert_eq!(trees("rm -rf *"), vec!["file:/w/*"]);
+        assert_eq!(trees("rm -rf out/*.o"), vec!["file:/w/out/*"]);
+        assert_eq!(trees("rm -rf /*"), vec!["file:/*"]);
+        assert_eq!(trees("find out -name '*.o' -delete"), vec!["file:/w/out"]);
+        assert_eq!(trees("find -delete"), vec!["file:/w"]);
+        assert_eq!(trees("find . -exec /bin/rm -rf {} +"), vec!["file:/w"]);
+        assert_eq!(trees("ls | xargs rm"), vec!["command:xargs rm"]);
+        assert_eq!(trees("ls | xargs -0 /bin/rm -f"), vec!["command:xargs -0 /bin/rm -f"]);
+        assert_eq!(trees("rsync -a --delete src/ site/"), vec!["file:/w/site/*"]);
+        assert_eq!(trees("rsync -a --delete-after -e ssh src/ host:site/"), Vec::<String>::new());
+        assert_eq!(trees("rm -rf \"$DIR\""), vec!["command:rm -rf …"]);
+        assert!(trees("rm -f a.txt").is_empty() && trees("rm --force a").is_empty() && trees("find . -name x").is_empty());
+    }
+
+    /// The root, what is right under it, a drive and what is right under
+    /// one, and the home folder are never removed, nor everything in one.
+    #[test]
+    fn some_folders_are_never_removed() {
+        let home = dirs::home_dir().unwrap().display().to_string();
+        for cmd in [
+            "rm -rf /", "rm -rf /*", "rm -rf //", "/bin/rm -fr /usr", "rm -r /System", "rm -rf /Applications/",
+            "rm -rf /Library", "rm -rf /etc", "rm -rf /Users", "rm -rf ~", "rm -rf ~/", "rm -rf ~/*",
+            "cd / && rm -rf usr", "cd ~/x && rm -rf ..", "find / -delete", "rmdir /tmp", "rsync -a --delete e/ ~/",
+        ] {
+            assert!(never_removed(cmd, Some(std::path::Path::new("/w"))).is_some(), "{cmd}");
+        }
+        assert_eq!(never_removed("rm -rf ..", Some(std::path::Path::new(&format!("{home}/x")))), Some(home.clone()));
+        #[cfg(unix)]
+        {
+            // Through a link, where it points is what goes.
+            let d = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink("/usr", d.path().join("u")).unwrap();
+            let at = Some(d.path());
+            assert!(never_removed("rm -rf u/", at).is_some() && never_removed("rm -rf u/*", at).is_some());
+            assert_eq!(never_removed("rm -rf u", at), None, "the link itself");
+        }
+        for cmd in ["rm -rf /usr/local/x", "rm -rf ~/x", "rm -rf ~/x/*", "rm -rf build", "rm -f /etc", "rm -rf \"$D\""] {
+            assert_eq!(never_removed(cmd, Some(std::path::Path::new("/w"))), None, "{cmd}");
+        }
+        // A Windows drive, as its paths are written there.
+        for path in ["C:", "C:/", "c:\\", "C:\\Windows", "C:/Program Files", "D:/Data/*"] {
+            assert!(is_never_removed(path), "{path}");
+        }
+        assert!(!is_never_removed("C:/Users/me/x") && !is_never_removed("C:/Program Files/App"));
+    }
+
     /// The 2026-09-29 incident, word for word: a scheduled run removed the
     /// owner's folder of repos. The shell now says what it removes, where.
     #[test]
@@ -1011,9 +1180,8 @@ mod tests {
         assert_eq!(shell_effects("rm -rf \"$DIR\"", None).deletes, vec!["command:rm -rf …"]);
         assert_eq!(shell_effects("cd \"$X\" && rm y", None).deletes, vec!["command:rm y"]);
 
-        // Scratch under the temp folder is nobody's work.
-        assert!(shell_effects("rm -rf /tmp/build-1 /private/tmp/x", None).deletes.is_empty());
-        assert_eq!(shell_effects("rm -rf /tmp", None).deletes, vec!["file:/tmp"]);
+        // The temp folder is a folder like any other.
+        assert_eq!(shell_effects("rm -rf /tmp/build-1 /private/tmp/x", None).deletes, vec!["file:/tmp/build-1", "file:/private/tmp/x"]);
 
         // Git: a working tree replaced, in the folder it runs in or `-C`.
         assert_eq!(shell_effects("cd /r && git checkout main && git rebase origin/main", None).overwrites, vec!["file:/r/.", "file:/r/."]);

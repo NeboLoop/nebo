@@ -366,24 +366,20 @@ async fn full_access_never_asks() {
     assert!(matches!(decision(&store, "dev", "desktop"), Decision::Deny { .. }));
 }
 
-/// `full-access-unattended-never-removes-others-work` (the 2026-09-29
-/// incident): in Full Access, a scheduled run of a coding employee removed
-/// the owner's folder of repos with `rm -rf` and re-cloned into it. Full
-/// Access still never asks, but a run the owner didn't start never removes
-/// or replaces a folder the employee didn't make; the owner's own chat
-/// request still does, and the employee's own clone and the temp folder
-/// stay its to clean.
+/// `one-delete-rule` (the 2026-09-29 incident, and every `rm -rf` since
+/// 10-21 that ran without anyone asked): in Full Access, a scheduled run of
+/// a coding employee removed the owner's folder of repos with `rm -rf` and
+/// re-cloned into it. Removing a folder outside the run's own work asks, in
+/// every mode and from every door, the owner's own chat included; nobody
+/// attending, its card goes to his Inbox and the step is refused
+/// (`Check::check`). Inside the work (a folder the employee made, the job's
+/// folders) it goes ahead; the temp folder is a folder like any other.
 #[tokio::test]
-async fn full_access_unattended_never_removes_others_work() {
-    use types::permissions::{Door, Mode, Why};
+async fn a_folder_outside_the_work_is_never_removed_unasked() {
+    use types::permissions::{Door, Mode};
     let (_d, store) = store();
-    store.set_permission_mode(&Scope::Employee("dev".into()), Mode::FullAccess).unwrap();
-    // The owner's folders, outside the temp folder (removing scratch there
-    // is nobody's work). A delete is judged by name; a working tree rewritten
-    // must be a folder, so the git case runs in this crate's own.
     let home = std::path::Path::new("/Users/owner");
     let workspaces = home.join("workspaces");
-    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let run = |command: &str, origin: Origin, door: Door, owner_request: bool| -> Decision {
         let grant = resolve_grant(&store, "dev", None);
         let ctx = ToolContext {
@@ -407,34 +403,39 @@ async fn full_access_unattended_never_removes_others_work() {
         };
         decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
     };
-    let refused = |d: &Decision| matches!(d, Decision::Deny { why: Why::HardLimit { limit }, .. } if limit == "not_its_own");
+    let asked = |d: &Decision| matches!(d, Decision::Ask { case: AskCase::RemovesFolders { whole_work: false, .. } });
+    let allowed = |d: &Decision| matches!(d, Decision::Allow { .. });
 
     let wiped = format!("cd {} && rm -rf nebo && git clone git@github.com:acme/nebo.git", workspaces.display());
-    let checkout = format!("cd {} && git checkout fix/x && git rebase origin/main", repo.display());
-    let unattended = [
-        (Origin::Workflow, Door::Workflow),
-        (Origin::System, Door::Schedule),
-        (Origin::System, Door::Heartbeat),
-        (Origin::User, Door::Helper),
-        (Origin::User, Door::Coworker { from: "lead".into() }),
+    let doors = [
+        (Origin::Workflow, Door::Workflow, false),
+        (Origin::System, Door::Schedule, false),
+        (Origin::User, Door::Helper, false),
+        (Origin::User, Door::Coworker { from: "lead".into() }, false),
+        (Origin::User, Door::Chat, true),
     ];
-    for (origin, door) in unattended {
-        for command in [&wiped, &checkout] {
-            let d = run(command, origin, door.clone(), false);
-            assert!(refused(&d), "{door:?}: {command}: {d:?}");
+    for mode in [Mode::FullAccess, Mode::Automatic, Mode::Ask] {
+        store.set_permission_mode(&Scope::Employee("dev".into()), mode).unwrap();
+        for (origin, door, owner_request) in doors.clone() {
+            for command in [wiped.as_str(), "rm -rf /tmp/dev-build", "find /Users/owner/Music -delete", "ls | xargs rm"] {
+                let d = run(command, origin, door.clone(), owner_request);
+                assert!(asked(&d), "{mode:?} {door:?}: {command}: {d:?}");
+            }
         }
     }
-    // The owner asked for it in his own chat: Full Access runs it.
-    assert!(matches!(run(&wiped, Origin::User, Door::Chat, true), Decision::Allow { .. }));
+    store.set_permission_mode(&Scope::Employee("dev".into()), Mode::FullAccess).unwrap();
 
-    // Its own clone, anything in it, and the temp folder stay its own work.
+    // Its own clone, whole or in part, is its own work.
     let clone = format!("cd {} && git clone https://github.com/acme/tool.git", workspaces.display());
     let created = tools::policy::shell_effects(&clone, None).anchored(home).creates;
     assert_eq!(created, vec![format!("file:{}", workspaces.join("tool").display())]);
     store.add_employee_created("dev", &created[0]).unwrap();
-    let own = format!("rm -rf {} && rm -rf /tmp/dev-build", workspaces.join("tool/target").display());
-    assert!(matches!(run(&own, Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
-    // The folder the owner gave the job is its own to clean too.
+    for own in ["tool/target", "tool", "tool/*"] {
+        let command = format!("rm -rf {}", workspaces.join(own).display());
+        assert!(allowed(&run(&command, Origin::Workflow, Door::Workflow, false)), "{command}");
+    }
+    // What is in the folder the owner gave the job is its own to clean; the
+    // folder itself is not.
     let job = types::permissions::Rule {
         id: uuid::Uuid::new_v4().to_string(),
         scope: Scope::Employee("dev".into()),
@@ -447,25 +448,28 @@ async fn full_access_unattended_never_removes_others_work() {
         created_at: 0,
     };
     store.write_permission_rule(&job, &types::permissions::Writer::Owner).unwrap();
-    let in_job = format!("rm -rf {}", workspaces.join("site/old-build").display());
-    assert!(matches!(run(&in_job, Origin::System, Door::Schedule, false), Decision::Allow { .. }));
-    assert!(refused(&run(&wiped, Origin::System, Door::Schedule, false)), "outside the job's folder it still may not");
-    // Work that removes nothing is untouched by the limit.
-    assert!(matches!(run("cargo build --release", Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
+    for inside in ["rm -rf site/old-build", "rm -rf site/*", "rsync -a --delete out/ site/"] {
+        let command = format!("cd {} && {inside}", workspaces.display());
+        assert!(allowed(&run(&command, Origin::System, Door::Schedule, false)), "{command}");
+    }
+    assert!(asked(&run(&format!("rm -rf {}", workspaces.join("site").display()), Origin::System, Door::Schedule, false)));
+    // Plan mode refuses it as a change, and work that removes no folder is
+    // untouched by the rule.
+    assert!(allowed(&run("cargo build --release && rm -f /Users/owner/notes.txt", Origin::Workflow, Door::Workflow, false)));
+    store.set_permission_mode(&Scope::Employee("dev".into()), Mode::Plan).unwrap();
+    assert!(matches!(run(&wiped, Origin::User, Door::Chat, true), Decision::Deny { .. }));
 }
 
-/// `full-access-own-work-across-runs` (Vivid, 2026-10-01 on): a workflow's
-/// command step begins `rm -f ${NEBO_DATA_DIR}/last_run_log.jsonl`, the log
-/// the same employee's skill script wrote on its last run, and was refused
-/// every day as not its own: a script's writes name no file, so nothing was
-/// in the created ledger. What an employee made is its own in every later
-/// run, and the data folder of a skill it runs (recorded when the skill is
-/// expanded for it, `skills::Loader::expand_template`) holds its own work. The
-/// owner's files, another employee's, and another skill's folder are still
-/// refused.
+/// `own-work-across-runs` (Vivid, 2026-10-01 on): a workflow's command step
+/// cleans the data folder of the skill it runs, which the same employee's
+/// skill script filled on its last run; a script's writes name no file, so
+/// nothing was in the created ledger. The data folder of a skill it runs
+/// (recorded when the skill is expanded for it,
+/// `skills::Loader::expand_template`) is its own work in every later run;
+/// another employee's, the folder above it and another skill's are not.
 #[tokio::test]
-async fn full_access_own_work_is_its_own_across_runs() {
-    use types::permissions::{Door, Mode, Why};
+async fn own_work_is_its_own_across_runs() {
+    use types::permissions::{Door, Mode};
     let (_d, store) = store();
     for agent in ["inv", "acct"] {
         store.set_permission_mode(&Scope::Employee(agent.into()), Mode::FullAccess).unwrap();
@@ -492,37 +496,21 @@ async fn full_access_own_work_is_its_own_across_runs() {
         };
         decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
     };
-    let refused = |d: &Decision| matches!(d, Decision::Deny { why: Why::HardLimit { limit }, .. } if limit == "not_its_own");
+    let asked = |d: &Decision| matches!(d, Decision::Ask { case: AskCase::RemovesFolders { .. } });
     let allowed = |d: &Decision| matches!(d, Decision::Allow { .. });
 
-    // The step exactly as Vivid's order-intake runs it.
     let data = "/data/appdata/skills/vw-order-intake";
-    let parse = format!(
-        "rm -f {data}/last_run_log.jsonl; python3 /data/nebo/skills/vw-order-intake/scripts/parse_report.py parse \
-         /data/appdata/skills/vw-order-intake/inbox/1a-Open_Order_Report.xls --state {data}/fo_state.json \
-         --outdir {data}/chunks --chunk-size 4"
-    );
-    assert!(refused(&run("inv", "r1", &parse)), "before the skill is expanded for it, the folder is no one's");
+    let clean = format!("rm -rf {data}/chunks {data}/state; python3 /data/nebo/skills/vw-order-intake/scripts/parse_report.py");
+    assert!(asked(&run("inv", "r1", &clean)), "before the skill is expanded for it, the folder is no one's");
 
     // The workflow expands its skill for the employee: the row it writes.
     store.add_employee_created("inv", &format!("file:{data}")).unwrap();
-    assert!(allowed(&run("inv", "r2", &parse)), "{:?}", run("inv", "r2", &parse));
-    // Whatever its skill script wrote there, on any run, is its own.
-    assert!(allowed(&run("inv", "r3", &format!("rm -rf {data}/chunks/chunk_0.json {data}/state"))));
+    assert!(allowed(&run("inv", "r2", &clean)), "{:?}", run("inv", "r2", &clean));
     // Another employee never inherits it.
-    assert!(refused(&run("acct", "r1", &parse)));
-
-    // A file the employee made on run N is its own on run N+1.
-    let made = "/Users/owner/reports/intake-summary.csv";
-    assert!(refused(&run("inv", "r4", &format!("rm {made}"))));
-    store.add_employee_created("inv", &format!("file:{made}")).unwrap();
-    assert!(allowed(&run("inv", "r5", &format!("rm {made}"))));
-    assert!(refused(&run("acct", "r2", &format!("rm {made}"))), "another employee's file stays refused");
-
-    // The owner's files and another skill's data folder stay refused.
-    assert!(refused(&run("inv", "r6", "rm -f /Users/owner/reports/q3.xlsx")));
-    assert!(refused(&run("inv", "r7", "rm -f /data/appdata/skills/vw-job-costing/last_run_log.jsonl")));
-    assert!(refused(&run("inv", "r8", "rm -rf /data/appdata/skills")), "the folder above the skill's is not its own");
+    assert!(asked(&run("acct", "r1", &clean)));
+    // The folder above the skill's and another skill's stay outside its work.
+    assert!(asked(&run("inv", "r3", "rm -rf /data/appdata/skills")));
+    assert!(asked(&run("inv", "r4", "rm -rf /data/appdata/skills/vw-job-costing/chunks")));
 }
 
 /// A server on this computer that answers every request with a page titled

@@ -53,6 +53,17 @@ pub struct CallEffects {
     /// time, in every mode: never "Allow always".
     #[serde(default)]
     pub removes_employee: bool,
+    /// The folders and trees of files the call removes outright (a
+    /// recursive or folder delete: `rm -r`, `rmdir`, `find … -delete`,
+    /// `rsync --delete`), each named as `deletes` names a file
+    /// (`file:<path>`, `file:<folder>/*` for what is in a folder, a trailing
+    /// `/` kept as written: through a link it removes what the link points
+    /// to), or by its
+    /// command (`command:<words>`) when only running it knows the target.
+    /// Outside the run's own work it asks, in every mode
+    /// (`permissions::removals`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removes_trees: Vec<String>,
     /// The call creates, re-arms or fires scheduled work: a schedule, a
     /// workflow trigger, an employee's automations. Only a run someone is
     /// attending may do that (`limits::arms_schedule`): an unattended run
@@ -123,6 +134,17 @@ impl CallEffects {
         };
         self.deletes = self.deletes.into_iter().map(anchor).collect();
         self.overwrites = self.overwrites.into_iter().map(anchor).collect();
+        // A trailing `/` is kept: `rm -rf link/` removes what a link points
+        // to, `rm -rf link` only the link.
+        self.removes_trees = self
+            .removes_trees
+            .into_iter()
+            .map(|named| {
+                let slashed = named.len() > "file:/".len() && named.starts_with("file:") && named.ends_with('/');
+                let anchored = anchor(named);
+                if slashed && !anchored.ends_with('/') { format!("{anchored}/") } else { anchored }
+            })
+            .collect();
         self.creates = self
             .creates
             .into_iter()
@@ -621,6 +643,11 @@ pub enum AskCase {
     /// The call deletes an employee: the owner answers every one, once or
     /// no.
     RemovesEmployee,
+    /// The call removes folders or trees of files outside the run's own
+    /// work (`targets`, as `CallEffects::removes_trees` names them), or a
+    /// working copy or the project it copies, itself (`whole_work`: never
+    /// covered by "Allow always").
+    RemovesFolders { targets: Vec<String>, whole_work: bool },
     /// The call watches the owner or drives his apps (`CallEffects::reaches_owner`).
     ReachesOwner { reach: OwnerReach },
     /// An employee made by an employee needs more than its creator holds:

@@ -92,6 +92,7 @@ impl DynTool for Act {
             creates: list("creates"),
             widens: false,
             removes_employee: false,
+            removes_trees: Vec::new(),
             arms_schedule: false,
             reaches_owner: None,
         }
