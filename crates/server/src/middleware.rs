@@ -342,6 +342,12 @@ fn host_is_local(host: &str, port: u16) -> bool {
 #[derive(Clone, Debug)]
 pub struct PathCredential(pub String);
 
+/// The caller presented the install key (`local_boundary`): one of the
+/// owner's own clients, never an employee's command (its file is one of
+/// Nebo's secrets) or another program.
+#[derive(Debug, Clone, Copy)]
+pub struct OwnerKey;
+
 /// Takes a credential carried as the path's first segment (`/k/<credential>`)
 /// off the path, before routing, into the request's `PathCredential`. A
 /// process that knows Nebo only as a base URL joins its paths onto it:
@@ -603,7 +609,7 @@ impl Boundary {
 /// scoped credential.
 pub async fn local_boundary(
     axum::extract::State(boundary): axum::extract::State<Boundary>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let headers = request.headers();
@@ -631,6 +637,9 @@ pub async fn local_boundary(
         .is_some_and(|ci| ci.0.ip().is_loopback());
     if boundary.network && !from_this_machine {
         if request.uri().path() == "/health" || holds_key {
+            if holds_key {
+                request.extensions_mut().insert(OwnerKey);
+            }
             return next.run(request).await;
         }
         return boundary_refusal(
@@ -653,6 +662,9 @@ pub async fn local_boundary(
         || boundary.signed_in_browser(headers)
         || boundary.scoped(request.method(), path, headers, presented, path_credential).await
     {
+        if holds_key {
+            request.extensions_mut().insert(OwnerKey);
+        }
         return next.run(request).await;
     }
     tracing::debug!(path = %path, "refused a caller that proved nothing");
@@ -795,7 +807,13 @@ mod boundary_tests {
             .route("/api/v1/apps/{id}/storage", axum::routing::get(echo))
             .route("/api/v1/apps/{id}/files/{*path}", axum::routing::get(echo))
             .route("/apps/{id}/ui/{*path}", axum::routing::get(echo))
-            .route("/agent/mcp", axum::routing::post(echo))
+            // Says whether the caller came as the owner's own client.
+            .route(
+                "/agent/mcp",
+                axum::routing::post(|req: axum::extract::Request| async move {
+                    format!("{} owner={}", req.uri().path(), req.extensions().get::<OwnerKey>().is_some())
+                }),
+            )
             .route("/v1/models", axum::routing::get(echo))
             .route("/api/v1/files/{*path}", axum::routing::get(echo))
             .route("/api/v1/files/upload", axum::routing::post(echo))
@@ -1009,6 +1027,16 @@ mod boundary_tests {
         assert_eq!(status(loopback_bind(), "/api/v1/agents", LOCAL, &[HOST, ("authorization", "Bearer ")]).await, StatusCode::UNAUTHORIZED);
     }
 
+    /// Only a caller that presented the install key reaches `/agent/mcp` as
+    /// the owner's own client, on this machine and from the network.
+    #[tokio::test]
+    async fn only_the_install_key_comes_as_the_owners_client() {
+        let owner = (StatusCode::OK, "/agent/mcp owner=true".to_string());
+        assert_eq!(send(loopback_bind(), request("POST", "/agent/mcp", LOCAL, &[HOST, KEYED])).await, owner);
+        assert_eq!(send(loopback_bind(), request("POST", "/k/k-123/agent/mcp", LOCAL, &[HOST])).await, owner);
+        assert_eq!(send(network_bind(Some(KEY)), request("POST", "/agent/mcp", LAN, &[HOST, KEYED])).await, owner);
+    }
+
     /// The owner's own clients (the CLI, the MCP bridge, the desktop shell,
     /// a harness fixture) send the install key, as a bearer token or as the
     /// path's credential; the route sees the path without it.
@@ -1111,7 +1139,7 @@ mod boundary_tests {
         let guard = b.credentials.issue(agent::RunGrant { ctx: Default::default(), agent_id: "emp-1".into(), verify: None }, None);
         let token = guard.token().to_string();
         let run = || ("x-nebo-run-credential", token.as_str());
-        assert_eq!(send(b.clone(), request("POST", "/agent/mcp", LOCAL, &[HOST, run()])).await.0, StatusCode::OK);
+        assert_eq!(send(b.clone(), request("POST", "/agent/mcp", LOCAL, &[HOST, run()])).await, (StatusCode::OK, "/agent/mcp owner=false".to_string()), "a run is not the owner's client");
         assert_eq!(status(b.clone(), "/api/v1/agents", LOCAL, &[HOST, run()]).await, StatusCode::UNAUTHORIZED);
         drop(guard);
         assert_eq!(send(b.clone(), request("POST", "/agent/mcp", LOCAL, &[HOST, run()])).await.0, StatusCode::UNAUTHORIZED, "an ended run's credential");

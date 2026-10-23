@@ -65,9 +65,15 @@ impl JsonRpcResponse {
 /// POST /agent/mcp — JSON-RPC 2.0 handler for CLI provider tool access.
 pub async fn agent_mcp_handler(
     State(state): State<AppState>,
+    owner: Option<axum::Extension<crate::middleware::OwnerKey>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
+    // One of the owner's own clients (it presented the install key) is the
+    // owner: its calls, its chats and their helpers run as his own (10-21:
+    // an owner-driven build through MCP, and its helpers, had no shell).
+    // Any other MCP client is another program's words.
+    let outside = if owner.is_some() { Caller::Owner } else { Caller::Outside };
     let req: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -146,7 +152,8 @@ pub async fn agent_mcp_handler(
             } else if name == "nebo" {
                 // Service tool — chat, sessions, events
                 info!(tool = "nebo", "MCP service tool call");
-                let (text, is_error) = execute_nebo_tool(&state, &arguments).await;
+                let origin = if owner.is_some() { Origin::User } else { Origin::Mcp };
+                let (text, is_error) = execute_nebo_tool(&state, &arguments, origin).await;
                 let content = serde_json::json!([{ "type": "text", "text": text }]);
                 JsonRpcResponse::success(
                     req.id,
@@ -166,7 +173,7 @@ pub async fn agent_mcp_handler(
                         "This run has ended, so its tool access has too. Nothing was run.",
                     ),
                     Some(Some(grant)) => {
-                        let result = call_tool(&state.tools, &state.store, Some(&grant), tool_use_id, name, arguments.clone()).await;
+                        let result = call_tool(&state.tools, &state.store, Caller::Run(&grant), tool_use_id, name, arguments.clone()).await;
                         if let (Some(token), Some(id)) = (credential, tool_use_id)
                             && let Some(handed) = owner_handed(&state.tools, name, &arguments, &result).await
                         {
@@ -174,7 +181,7 @@ pub async fn agent_mcp_handler(
                         }
                         result
                     }
-                    None => call_tool(&state.tools, &state.store, None, None, name, arguments).await,
+                    None => call_tool(&state.tools, &state.store, outside, None, name, arguments).await,
                 };
 
                 let content = serde_json::json!([{
@@ -201,24 +208,36 @@ pub async fn agent_mcp_handler(
     (StatusCode::OK, axum::Json(resp)).into_response()
 }
 
+/// Who a `tools/call` over `/agent/mcp` comes from.
+#[derive(Clone, Copy)]
+enum Caller<'a> {
+    /// A CLI provider's run, by the credential the run issued it.
+    Run(&'a agent::RunGrant),
+    /// One of the owner's own clients: it presented the install key.
+    Owner,
+    /// Any other MCP client.
+    Outside,
+}
+
 /// Run one `tools/call` that arrived over `/agent/mcp`.
 ///
-/// `run` is the run a CLI provider's call carries the credential of: the call
-/// executes as that run — its context and its grant — exactly as the runner's
-/// own tool call would. Without one the caller is an outside MCP client
-/// (Claude Desktop, Cursor): `Origin::Mcp` through `Door::Mcp`, under the main
-/// assistant's grant. Either way the registry's one permission check decides.
+/// A CLI provider's run (`Caller::Run`) calls as that run, its context and
+/// its grant, exactly as the runner's own tool call would. Any other client
+/// calls through `Door::Mcp` under the main assistant's grant: the owner's
+/// own as the owner (`Origin::User`), any other as `Origin::Mcp`. Either way
+/// the registry's one permission check decides.
 async fn call_tool(
     tools: &tools::Registry,
     store: &db::Store,
-    run: Option<&agent::RunGrant>,
+    caller: Caller<'_>,
     tool_use_id: Option<&str>,
     name: &str,
     mut arguments: serde_json::Value,
 ) -> tools::ToolResult {
-    let mut ctx = match run {
-        Some(run) => run.ctx.clone(),
-        None => outside_client(),
+    let (run, mut ctx) = match caller {
+        Caller::Run(run) => (Some(run), run.ctx.clone()),
+        Caller::Owner => (None, mcp_client(Origin::User)),
+        Caller::Outside => (None, mcp_client(Origin::Mcp)),
     };
     if let Some(id) = tool_use_id {
         ctx.tool_call_id = id.to_string();
@@ -288,11 +307,11 @@ async fn owner_handed(
     (handed != Default::default()).then_some(handed)
 }
 
-/// An outside MCP client's standing: the main assistant's grant, which the
-/// permission check resolves from the session.
-fn outside_client() -> tools::ToolContext {
+/// An MCP client's standing, from `origin`: the main assistant's grant,
+/// which the permission check resolves from the session.
+fn mcp_client(origin: Origin) -> tools::ToolContext {
     tools::ToolContext {
-        origin: Origin::Mcp,
+        origin,
         door: types::permissions::Door::Mcp,
         user_id: "mcp-client".into(),
         session_key: "mcp".into(),
@@ -331,12 +350,12 @@ fn service_tools() -> Vec<serde_json::Value> {
 }
 
 /// Dispatch a `nebo` service tool call by resource + action.
-async fn execute_nebo_tool(state: &AppState, input: &serde_json::Value) -> (String, bool) {
+async fn execute_nebo_tool(state: &AppState, input: &serde_json::Value, origin: Origin) -> (String, bool) {
     let action = input["action"].as_str().unwrap_or("");
     let resource = input["resource"].as_str().unwrap_or("");
 
     match (resource, action) {
-        ("chat", "send") => handle_chat_send(state, input).await,
+        ("chat", "send") => handle_chat_send(state, input, origin).await,
         (_, "emit") => handle_emit(state, input).await,
         ("sessions", "list") => handle_sessions_list(state).await,
         (id, "history") if !id.is_empty() => handle_session_history(state, id).await,
@@ -352,7 +371,9 @@ async fn execute_nebo_tool(state: &AppState, input: &serde_json::Value) -> (Stri
 }
 
 /// Send a chat message to nebo's agent and collect the full response.
-async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (String, bool) {
+/// `origin`: `Origin::User` for the owner's own client, whose chat and its
+/// helpers run as his own; `Origin::Mcp` for any other.
+async fn handle_chat_send(state: &AppState, input: &serde_json::Value, origin: Origin) -> (String, bool) {
     let message = match input["message"].as_str() {
         Some(m) if !m.is_empty() => m.to_string(),
         _ => return ("Missing 'message' parameter".into(), true),
@@ -381,10 +402,9 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
         seat: agent::harness::SeatRequest {
             agent_id: String::new(),
             user_id: String::new(),
-            // External MCP clients (Claude Desktop, Cursor) are Origin::Mcp:
-            // Autonomous-class (nobody sees our asks from another app) and
-            // subject to the Mcp origin deny list — never our own UI's trust.
-            origin: Origin::Mcp,
+            // Another MCP client is Origin::Mcp, under its deny list; the
+            // owner's own is the owner.
+            origin,
             door: types::permissions::Door::Mcp,
             mode: None,
             narrow: None,
@@ -631,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_the_employee_lacks_is_refused() {
         let (_d, store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Deny)]).await;
-        let r = call_tool(&registry, &store, None, None, "web", serde_json::json!({})).await;
+        let r = call_tool(&registry, &store, Caller::Outside, None, "web", serde_json::json!({})).await;
         assert!(r.is_error, "ran without the web capability: {}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
@@ -639,7 +659,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_the_employee_has_runs() {
         let (_d, store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, &store, None, None, "web", serde_json::json!({})).await;
+        let r = call_tool(&registry, &store, Caller::Outside, None, "web", serde_json::json!({})).await;
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -651,7 +671,7 @@ mod tests {
             vec![company(RuleKey::Operation("payments.charge".into()), Effect::Deny)],
         )
         .await;
-        let r = call_tool(&registry, &store, None, None, "payments_charge", serde_json::json!({})).await;
+        let r = call_tool(&registry, &store, Caller::Outside, None, "payments_charge", serde_json::json!({})).await;
         assert!(r.is_error, "a denied operation ran: {}", r.content);
         assert!(r.content.contains("turned off"), "{}", r.content);
     }
@@ -660,9 +680,18 @@ mod tests {
     #[tokio::test]
     async fn an_outside_client_is_an_mcp_client() {
         let (_d, store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, &store, None, None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Caller::Outside, None, "run_command", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
+    }
+
+    // The owner's own client (it presented the install key) is the owner:
+    // the shell an employee has runs for it, and for its helpers.
+    #[tokio::test]
+    async fn the_owners_own_client_is_the_owner() {
+        let (_d, store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
+        let r = call_tool(&registry, &store, Caller::Owner, None, "run_command", shell_call()).await;
+        assert!(!r.is_error && r.content == "RAN", "{}", r.content);
     }
 
     fn shell_call() -> serde_json::Value {
@@ -698,7 +727,7 @@ mod tests {
     async fn a_cli_provider_run_calls_as_its_run() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Allow);
-        let r = call_tool(&registry, &store, Some(&run), None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Caller::Run(&run), None, "run_command", shell_call()).await;
         assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -708,7 +737,7 @@ mod tests {
     async fn a_cli_provider_run_keeps_its_employees_rules() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Deny);
-        let r = call_tool(&registry, &store, Some(&run), None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Caller::Run(&run), None, "run_command", shell_call()).await;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
@@ -719,7 +748,7 @@ mod tests {
     async fn a_cli_provider_runs_ask_parks_for_the_owner() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Ask);
-        let r = call_tool(&registry, &store, Some(&run), None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Caller::Run(&run), None, "run_command", shell_call()).await;
         assert_ne!(r.content, "RAN", "an asked call ran");
         let ask = r.parked_ask.as_deref().expect("the call parked");
         assert_eq!(store.get_permission_ask(ask).unwrap().map(|a| a.status).as_deref(), Some("open"));
@@ -792,7 +821,7 @@ mod tests {
         let mut run = cli_run(&store, Effect::Allow);
         run.verify = Some(agent::harness::verify::engine::Verify::begin(&store, builder, None).await);
         let file = project.path().join("total.py").to_string_lossy().into_owned();
-        let r = call_tool(&registry, &store, Some(&run), None, "save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})).await;
+        let r = call_tool(&registry, &store, Caller::Run(&run), None, "save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})).await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("your own working copy"), "the model is told where it works: {}", r.content);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "def total(a, b): return 0\n", "the owner's file is untouched");
