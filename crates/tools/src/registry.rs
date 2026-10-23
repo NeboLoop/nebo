@@ -562,6 +562,11 @@ impl Registry {
         *self.store.write().unwrap() = Some(store);
     }
 
+    /// The DB store, once set.
+    pub(crate) fn db_store(&self) -> Option<Arc<db::Store>> {
+        self.store.read().ok().and_then(|s| s.clone())
+    }
+
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
     pub fn set_plugin_store(&self, ps: Arc<napp::plugin::PluginStore>) {
         *self.plugin_store.write().unwrap() = Some(ps);

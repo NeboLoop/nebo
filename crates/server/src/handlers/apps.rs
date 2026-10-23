@@ -1044,6 +1044,25 @@ struct DevlogEntry {
     time: i64,
     #[serde(default)]
     view: String,
+    /// A failed load's file, relative to `ui/` (or the page's own path
+    /// outside it, from `/`), and the reference as the page writes it.
+    #[serde(default)]
+    file: String,
+    #[serde(default)]
+    written: String,
+}
+
+impl DevlogEntry {
+    fn line(&self, why: String) -> tools::app_console::Line<'_> {
+        tools::app_console::Line {
+            level: &self.level,
+            message: &self.message,
+            source: &self.source,
+            time_ms: self.time,
+            view: &self.view,
+            why,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1113,26 +1132,54 @@ pub async fn post_devlog(
     if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
         return r;
     }
-    let ui = resolve_app_ui(&state, &agent_id).await.map(|(ui, _)| ui);
-    match keep_devlog(&agent_id, ui.as_deref(), &body) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(s) => s.into_response(),
-    }
+    let mut batch = match devlog_batch(&body) {
+        Ok(b) => b,
+        Err(s) => return s.into_response(),
+    };
+    batch.entries.truncate(DEVLOG_MAX_BATCH);
+    let causes = devlog_causes(&state, &agent_id, &batch.entries).await;
+    keep_devlog(&agent_id, &batch.entries, causes);
+    StatusCode::NO_CONTENT.into_response()
 }
 
-/// Keep one devlog body's entries in the app's ring; how many were kept.
-/// `ui` is the folder the app is served from, read for each error's cause.
-fn keep_devlog(agent_id: &str, ui: Option<&StdPath>, body: &[u8]) -> Result<usize, StatusCode> {
-    let batch: DevlogBatch = serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    Ok(tools::app_console::record(
-        agent_id,
-        ui,
-        batch
-            .entries
+fn devlog_batch(body: &[u8]) -> Result<DevlogBatch, StatusCode> {
+    serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+/// The cause of each of `entries`' errors (`app_console::causes`), read
+/// against the app's served `ui/` off the async workers; none when the
+/// batch holds no error.
+async fn devlog_causes(state: &AppState, agent_id: &str, entries: &[DevlogEntry]) -> Vec<String> {
+    if !entries.iter().any(|e| e.level == "error") {
+        return Vec::new();
+    }
+    let ui = resolve_app_ui(state, agent_id).await.map(|(ui, _)| ui);
+    let owned: Vec<(String, String, String, String, String)> = entries
+        .iter()
+        .map(|e| (e.level.clone(), e.source.clone(), e.message.clone(), e.file.clone(), e.written.clone()))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        let failures: Vec<tools::app_console::Failure<'_>> = owned
             .iter()
-            .take(DEVLOG_MAX_BATCH)
-            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time, e.view.as_str())),
-    ))
+            .map(|(level, source, message, file, written)| tools::app_console::Failure {
+                level,
+                source,
+                message,
+                file,
+                written,
+            })
+            .collect();
+        tools::app_console::causes(ui.as_deref(), &failures)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Keep devlog entries in the app's ring, each with its cause (`causes`,
+/// in order; missing ones are none); how many were kept.
+fn keep_devlog<'a>(agent_id: &str, entries: impl IntoIterator<Item = &'a DevlogEntry>, causes: Vec<String>) -> usize {
+    let mut causes = causes.into_iter();
+    tools::app_console::record(agent_id, entries.into_iter().map(|e| e.line(causes.next().unwrap_or_default())))
 }
 
 /// The errors "Send to <employee>" sends at most.
@@ -1169,8 +1216,7 @@ pub async fn send_devlog(
     if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
         return r;
     }
-    let ui = resolve_app_ui(&state, &agent_id).await.map(|(ui, _)| ui);
-    keep_page_errors(&agent_id, ui.as_deref(), &body);
+    keep_page_errors(&state, &agent_id, &body).await;
     let refuse = |status: StatusCode, error: String| (status, axum::Json(serde_json::json!({ "error": error }))).into_response();
     let name = app_employee_name(&state, &agent_id);
     let entries = tools::app_console::recent(&agent_id, None, tools::app_console::RING_CAPACITY);
@@ -1207,19 +1253,18 @@ pub async fn send_devlog(
 /// The errors the page sent with "Send to <employee>" (`{"entries": [...]}`,
 /// or nothing), kept in the app's console beside what its batches already
 /// brought, each once: the send never depends on a batch having landed.
-fn keep_page_errors(agent_id: &str, ui: Option<&StdPath>, body: &[u8]) {
+async fn keep_page_errors(state: &AppState, agent_id: &str, body: &[u8]) {
     let Ok(page) = serde_json::from_slice::<DevlogBatch>(body) else { return };
     let held = tools::app_console::recent(agent_id, None, tools::app_console::RING_CAPACITY);
-    tools::app_console::record(
-        agent_id,
-        ui,
-        page.entries
-            .iter()
-            .take(DEVLOG_MAX_BATCH)
-            .filter(|e| e.level == "error")
-            .filter(|e| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
-            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time, e.view.as_str())),
-    );
+    let new: Vec<DevlogEntry> = page
+        .entries
+        .into_iter()
+        .take(DEVLOG_MAX_BATCH)
+        .filter(|e| e.level == "error")
+        .filter(|e| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
+        .collect();
+    let causes = devlog_causes(state, agent_id, &new).await;
+    keep_devlog(agent_id, &new, causes);
 }
 
 /// POST /apps/{agent_id}/agents/invoke — run the app's agent and collect text.
@@ -2588,10 +2633,11 @@ mod developer_mode_tests {
             {"level": "error", "message": "GET /track.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_001_000i64, "view": "live-7"}
         ]});
         let mark = tools::app_console::mark();
-        assert_eq!(keep_devlog(&id, None, body.to_string().as_bytes()), Ok(3));
+        let batch = devlog_batch(body.to_string().as_bytes()).unwrap();
+        assert_eq!(keep_devlog(&id, &batch.entries, Vec::new()), 3);
         // The view a line came from is kept with it.
         assert_eq!(tools::app_console::view_lines(&id, mark, "live-7").errors, ["GET /track.json \u{2192} 404 Not Found"]);
-        assert_eq!(keep_devlog(&id, None, b"not json"), Err(StatusCode::BAD_REQUEST));
+        assert_eq!(devlog_batch(b"not json").err(), Some(StatusCode::BAD_REQUEST));
         assert_eq!(tools::app_console::error_count(&id), 2);
 
         let tool = tools::app_console::AppConsoleTool::new(store.clone());

@@ -236,7 +236,7 @@ async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_
     let styled = check("app-styled").await;
     assert!(styled.is_error, "{}", styled.content);
     assert!(
-        styled.content.contains("the page asked for ui/style.css (written \"./style.css\"), and there is no such file")
+        styled.content.contains("the page asked for ui/style.css (the served page writes \"./style.css\"), and there is no such file")
             && styled.content.contains("ui/css/style.css is there"),
         "both paths named: {}",
         styled.content

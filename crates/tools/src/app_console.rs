@@ -105,26 +105,39 @@ fn clip(s: &str, max: usize) -> String {
     out
 }
 
+/// One line an app's page sent, as [`record`] keeps it: `why` is its
+/// cause ([`causes`]), empty when none was read.
+#[derive(Debug, Clone, Default)]
+pub struct Line<'a> {
+    pub level: &'a str,
+    pub message: &'a str,
+    pub source: &'a str,
+    pub time_ms: i64,
+    pub view: &'a str,
+    pub why: String,
+}
+
+impl<'a> From<(&'a str, &'a str, &'a str, i64, &'a str)> for Line<'a> {
+    fn from((level, message, source, time_ms, view): (&'a str, &'a str, &'a str, i64, &'a str)) -> Self {
+        Line { level, message, source, time_ms, view, why: String::new() }
+    }
+}
+
 /// Keep what an app's page sent: `(level, message, source, time_ms, view)`
-/// each. `ui` is the folder the app is served from, read for each error's
-/// cause ([`why`]).
-pub fn record<'a>(
-    app_id: &str,
-    ui: Option<&Path>,
-    entries: impl IntoIterator<Item = (&'a str, &'a str, &'a str, i64, &'a str)>,
-) -> usize {
+/// each, or a [`Line`] with its cause.
+pub fn record<'a, L: Into<Line<'a>>>(app_id: &str, entries: impl IntoIterator<Item = L>) -> usize {
     let mut added = Vec::new();
-    for (level, message, source, time_ms, view) in entries {
-        let level = level_of(level);
-        let why = if level == "error" { why(ui, source, message).unwrap_or_default() } else { String::new() };
+    for line in entries {
+        let line = line.into();
+        let level = level_of(line.level);
         added.push(Entry {
             seq: 0,
             level: level.to_string(),
-            message: clip(message, MAX_MESSAGE_CHARS),
-            source: clip(source, 40),
-            time_ms,
-            view: clip(view, 64),
-            why,
+            message: clip(line.message, MAX_MESSAGE_CHARS),
+            source: clip(line.source, 40),
+            time_ms: line.time_ms,
+            view: clip(line.view, 64),
+            why: if level == "error" { clip(&line.why, MAX_MESSAGE_CHARS) } else { String::new() },
         });
     }
     let mut rings = rings().lock().unwrap_or_else(|e| e.into_inner());
@@ -160,90 +173,136 @@ pub fn record<'a>(
     count
 }
 
-/// The calls `nebo.storage` has (the SDK's `src/storage.ts`), each async.
-const STORAGE_CALLS: [&str; 6] = ["getItem", "setItem", "removeItem", "clear", "keys", "onChange"];
+/// The calls `nebo.storage` has (the SDK's `src/storage.ts`), each async;
+/// the bundle the page loads is checked to export each one.
+pub(crate) const STORAGE_CALLS: [&str; 6] = ["getItem", "setItem", "removeItem", "clear", "keys", "onChange"];
 
-/// Files in `ui/` looked through for one of the same name.
+/// Entries of `ui/` looked through, once per batch, for files of a name.
 const NAMESAKES_LOOKED: usize = 2000;
+/// The most of a stylesheet read for its `@import`s.
+const CSS_READ: u64 = 256 * 1024;
 
-/// The cause of an error an app's page reported, and its next step, when
-/// one can be read: a file of its own the page could not load (`resource`),
-/// measured against `ui/` (the folder it is served from), and the SDK
-/// called the wrong way. `None` for anything else.
-pub fn why(ui: Option<&Path>, source: &str, message: &str) -> Option<String> {
-    if source == "resource" {
-        let rest = message.strip_prefix("Failed to load ")?;
-        let (asked, written) = match rest.split_once(" (written \"") {
-            Some((asked, w)) => (asked, w.strip_suffix("\")")),
-            None => (rest, None),
-        };
-        return ui.and_then(|ui| failed_file(ui, asked, written));
-    }
-    sdk_misuse(message)
+/// One failure an app's page reported, as its cause is read: what the
+/// developer script sent besides the message.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Failure<'a> {
+    pub level: &'a str,
+    pub source: &'a str,
+    pub message: &'a str,
+    /// The file a failed load asked for: relative to `ui/` (`css/a.css`),
+    /// or the page's own path outside `ui/`, from `/` (`/style.css`).
+    /// Empty when the load was not the app's own file.
+    pub file: &'a str,
+    /// The reference as the served page writes it (`./style.css`).
+    pub written: &'a str,
 }
 
-/// Why the page could not load `asked` (the address the browser asked for,
-/// `written` as the page wrote it), against what `ui/` holds now.
-fn failed_file(ui: &Path, asked: &str, written: Option<&str>) -> Option<String> {
-    let path = asked.split(['?', '#']).next().unwrap_or(asked);
-    let path = urlencoding::decode(path).map(|p| p.into_owned()).unwrap_or_else(|_| path.to_string());
-    if path.ends_with("/sdk/nebo.global.js") {
+/// The cause and next step of each of a batch's errors, in order, empty
+/// where none can be read: a file of its own the page could not load,
+/// measured against `ui/` (the folder it is served from, walked at most
+/// once), and the SDK called the wrong way. Blocking: reads the disk.
+pub fn causes(ui: Option<&Path>, failures: &[Failure<'_>]) -> Vec<String> {
+    let mut names: Option<HashMap<String, Vec<String>>> = None;
+    failures
+        .iter()
+        .map(|f| {
+            if level_of(f.level) != "error" {
+                return None;
+            }
+            if f.source == "resource" {
+                let ui = ui?;
+                return failed_file(ui, f.file, f.written, &mut names);
+            }
+            sdk_misuse(f.message)
+        })
+        .map(Option::unwrap_or_default)
+        .collect()
+}
+
+/// Every file in `ui/` by its name, as `ui/<path>`.
+fn files_by_name(ui: &Path) -> HashMap<String, Vec<String>> {
+    let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+    for e in walkdir::WalkDir::new(ui).into_iter().filter_map(Result::ok).take(NAMESAKES_LOOKED) {
+        if !e.file_type().is_file() {
+            continue;
+        }
+        if let Ok(rel) = e.path().strip_prefix(ui) {
+            let rel = format!("ui/{}", rel.to_string_lossy().replace('\\', "/"));
+            by_name.entry(e.file_name().to_string_lossy().into_owned()).or_default().push(rel);
+        }
+    }
+    by_name
+}
+
+/// Whether `rel` names a file inside `ui/`: plain names only, never `..`,
+/// a root, a drive or a backslash.
+fn inside(rel: &str) -> bool {
+    !rel.is_empty()
+        && !rel.contains('\\')
+        && !rel.contains(':')
+        && Path::new(rel).components().all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Why the page could not load `file` (as [`Failure::file`] says it), the
+/// page writing it `written`, against what `ui/` holds now. `names` is
+/// every file of `ui/` by its name, walked the first time one is needed.
+fn failed_file(
+    ui: &Path,
+    file: &str,
+    written: &str,
+    names: &mut Option<HashMap<String, Vec<String>>>,
+) -> Option<String> {
+    let as_written = if written.is_empty() { String::new() } else { format!(" (the served page writes \"{written}\")") };
+    let namesakes = |names: &mut Option<HashMap<String, Vec<String>>>, name: &str, fix: &str| {
+        match names.get_or_insert_with(|| files_by_name(ui)).get(name).filter(|found| !found.is_empty()) {
+            Some(found) => format!("{} is there: {fix}.", found.iter().take(3).cloned().collect::<Vec<_>>().join(", ")),
+            None => format!("No file named {name} is anywhere in ui/: write it there, or drop the reference."),
+        }
+    };
+    if let Some(outside) = file.strip_prefix('/') {
+        if outside == "sdk/nebo.global.js" {
+            return Some(format!(
+                "the SDK loads from ui/index.html with {} exactly, before your own scripts.",
+                crate::agent_tool::PersonaTool::APP_SDK_SCRIPT
+            ));
+        }
+        let name = outside.rsplit('/').next().unwrap_or_default();
         return Some(format!(
-            "the SDK loads from ui/index.html with {} exactly, before your own scripts.",
-            crate::agent_tool::PersonaTool::APP_SDK_SCRIPT
+            "the page asked for /{outside}{as_written}, which is outside the app's ui/ folder. {}",
+            namesakes(names, name, "write the path relative to the page")
         ));
     }
-    let as_written = written.map(|w| format!(" (written \"{w}\")")).unwrap_or_default();
-    if path.split('/').any(|s| s == "..") {
+    if !inside(file) {
         return None;
     }
-    let Some((_, rel)) = path.split_once("/ui/").filter(|_| path.contains("/apps/")) else {
-        let name = path.rsplit('/').next().unwrap_or_default();
-        return Some(format!(
-            "the page asked for {path}{as_written}, which is outside the app's ui/ folder: a path that starts with / \
-             leaves it. {}",
-            namesakes(ui, name, "Write it relative to the page")
-        ));
-    };
-    let file = ui.join(rel);
-    if file.is_file() {
-        if rel.ends_with(".css") {
-            let imports = imports(&std::fs::read_to_string(&file).unwrap_or_default());
+    let path = ui.join(file);
+    if path.is_file() {
+        if file.ends_with(".css") {
+            let mut css = String::new();
+            if let Ok(f) = std::fs::File::open(&path) {
+                use std::io::Read;
+                let _ = f.take(CSS_READ).read_to_string(&mut css);
+            }
+            let imports = imports(&css);
             if !imports.is_empty() {
                 return Some(format!(
-                    "ui/{rel} is there, so its path is right; a stylesheet also fails when an @import in it fails, and it \
-                     imports {}. Put the rules it needs in ui/ and drop the @import.",
+                    "ui/{file} is there, so its path is right; a stylesheet also fails when an @import in it fails, and \
+                     it imports {}. Put the rules it needs in ui/ and drop the @import.",
                     imports.join(", ")
                 ));
             }
         }
         return Some(format!(
-            "ui/{rel} is there now, so its path is right; it was missing or being rewritten when the page asked. Load the \
-             page again with app_reload(check: true) before changing anything."
+            "ui/{file} is there, so its path is right: what failed is in it or behind it (a module it imports, which \
+             app_status names when it is missing; content the browser can't read as that type; or the file was being \
+             rewritten as the page asked). Check those; the path needs no change."
         ));
     }
-    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let name = file.rsplit('/').next().unwrap_or(file);
     Some(format!(
-        "the page asked for ui/{rel}{as_written}, and there is no such file. {}",
-        namesakes(ui, name, "Point the page at it, relative to the page")
+        "the page asked for ui/{file}{as_written}, and there is no such file. {}",
+        namesakes(names, name, "point the page at it, relative to the page")
     ))
-}
-
-/// Where in `ui/` a file named `name` is, and what to do about it.
-fn namesakes(ui: &Path, name: &str, fix: &str) -> String {
-    let found: Vec<String> = walkdir::WalkDir::new(ui)
-        .into_iter()
-        .filter_map(Result::ok)
-        .take(NAMESAKES_LOOKED)
-        .filter(|e| e.file_type().is_file() && !name.is_empty() && e.file_name().to_string_lossy() == name)
-        .filter_map(|e| e.path().strip_prefix(ui).ok().map(|p| format!("ui/{}", p.to_string_lossy().replace('\\', "/"))))
-        .take(3)
-        .collect();
-    if found.is_empty() {
-        format!("No file named {name} is anywhere in ui/: write it there, or drop the reference.")
-    } else {
-        format!("{} is there: {fix}.", found.join(", "))
-    }
 }
 
 /// The addresses a stylesheet's `@import`s name.
@@ -393,7 +452,7 @@ impl DynTool for AppConsoleTool {
         "Read an app's console from its open views: console output, uncaught errors, \
          unhandled promise rejections and failed network requests, newest last. \
          Use it after an edit or a reload to see what the app did. An error whose cause \
-         Nebo can read ends with `Why:` and the next step: fix that, nothing else. Pass \
+         Nebo can read ends with `Why:`: its cause and the next step. Pass \
          `since` from the last call to read only newer entries.\n"
             .to_string()
             + crate::app_dev::SEE_IT_RUN
@@ -463,11 +522,10 @@ mod tests {
     #[test]
     fn a_live_check_counts_its_own_views_errors_and_a_failed_request_fails_it() {
         let id = app();
-        record(&id, None, [("error", "from before", "error", 1, "live-1")]);
+        record(&id, [("error", "from before", "error", 1, "live-1")]);
         let mark = mark();
         record(
             &id,
-            None,
             [
                 ("log", "ready", "console", 2, "live-1"),
                 ("error", "GET /api/items → 500 Internal Server Error", "network", 3, "live-1"),
@@ -491,7 +549,6 @@ mod tests {
         let mark = mark();
         record(
             &id,
-            None,
             [
                 ("error", "GET /api/items → 500 Internal Server Error", "network", 1, "live-n"),
                 ("warn", "GET https://stats.example/hit → network error (another site's, not counted)", "network", 2, "live-n"),
@@ -514,7 +571,7 @@ mod tests {
     fn the_ring_keeps_the_newest_entries_in_order() {
         let id = app();
         let lines: Vec<String> = (0..RING_CAPACITY + 20).map(|i| format!("line {i}")).collect();
-        record(&id, None, lines.iter().map(|l| ("log", l.as_str(), "console", 0, "")));
+        record(&id, lines.iter().map(|l| ("log", l.as_str(), "console", 0, "")));
         let all = recent(&id, None, usize::MAX);
         assert_eq!(all.len(), RING_CAPACITY, "bounded");
         assert_eq!(all.first().unwrap().message, "line 20", "the oldest went first");
@@ -530,10 +587,10 @@ mod tests {
     #[test]
     fn since_reads_only_newer_entries_and_errors_are_counted() {
         let id = app();
-        record(&id, None, [("info", "booted", "console", 1, ""), ("error", "boom", "error", 2, "")]);
+        record(&id, [("info", "booted", "console", 1, ""), ("error", "boom", "error", 2, "")]);
         let first = recent(&id, None, 10);
         let mark = first.last().unwrap().seq;
-        record(&id, None, [("warning", "slow", "console", 3, ""), ("error", "GET /x → 404", "network", 4, "")]);
+        record(&id, [("warning", "slow", "console", 3, ""), ("error", "GET /x → 404", "network", 4, "")]);
         let newer = recent(&id, Some(mark), 10);
         assert_eq!(newer.iter().map(|e| e.level.as_str()).collect::<Vec<_>>(), ["warn", "error"]);
         assert_eq!(error_count(&id), 2);
@@ -543,7 +600,7 @@ mod tests {
     #[test]
     fn rendering_says_what_to_pass_next() {
         let id = app();
-        record(&id, None, [("error", "Uncaught TypeError: x is undefined (main.js:3:9)", "error", 0, "")]);
+        record(&id, [("error", "Uncaught TypeError: x is undefined (main.js:3:9)", "error", 0, "")]);
         let entries = recent(&id, None, 10);
         let text = render("Racer", &entries, None);
         assert!(text.contains("[error] error: Uncaught TypeError"), "{text}");
@@ -558,9 +615,9 @@ mod tests {
     fn a_live_views_error_survives_log_spam() {
         let id = app();
         let mark = mark();
-        record(&id, None, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
+        record(&id, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
         let frames: Vec<String> = (0..RING_CAPACITY).map(|i| format!("frame {i}")).collect();
-        record(&id, None, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
+        record(&id, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
         assert_eq!(view_lines(&id, mark, "live-x").errors, ["Uncaught TypeError: boot failed"]);
     }
 
@@ -573,7 +630,7 @@ mod tests {
         let since = mark();
         let views: Vec<String> = (0..=VIEWS_KEPT).map(|i| format!("live-evict-{i}")).collect();
         for v in &views {
-            record(&id, None, [("error", "boom", "error", 1, v.as_str())]);
+            record(&id, [("error", "boom", "error", 1, v.as_str())]);
         }
         assert_eq!(view_lines(&id, since, &views[0]), ViewLines::default(), "the oldest view put away");
         for v in &views[1..] {
@@ -581,73 +638,96 @@ mod tests {
         }
     }
 
+    /// The cause of one failure, as a batch of one.
+    fn cause(ui: Option<&Path>, f: Failure<'_>) -> String {
+        causes(ui, &[f]).remove(0)
+    }
+
+    fn load(file: &'static str, written: &'static str) -> Failure<'static> {
+        Failure { level: "error", source: "resource", message: "Failed to load …", file, written }
+    }
 
     /// Live 2026-10-22: Football League's console said "Failed to load
     /// …/ui/style.css" while ui/style.css was there, and its employee blamed
     /// caching. A failed load says what the page asked for against what ui/
-    /// holds: another path than the file's, a path outside ui/, or the
-    /// stylesheet's own @import.
+    /// holds: another path than the file's, a path outside ui/, the
+    /// stylesheet's own @import, or what is behind a file that is there.
     #[test]
     fn a_file_that_did_not_load_is_measured_against_ui() {
         let dir = tempfile::tempdir().unwrap();
-        let ui = dir.path();
-        std::fs::create_dir_all(ui.join("css")).unwrap();
-        std::fs::write(ui.join("css/style.css"), "body { color: red }").unwrap();
+        let ui = Some(dir.path());
+        std::fs::create_dir_all(dir.path().join("css")).unwrap();
+        std::fs::write(dir.path().join("css/style.css"), "body { color: red }").unwrap();
 
-        let moved = why(Some(ui), "resource", "Failed to load /t/bot/apps/a1/ui/style.css (written \"./style.css\")").unwrap();
-        assert!(moved.contains("ui/style.css") && moved.contains("\"./style.css\""), "{moved}");
+        let moved = cause(ui, load("style.css", "./style.css"));
+        assert!(moved.contains("asked for ui/style.css (the served page writes \"./style.css\")"), "{moved}");
         assert!(moved.contains("ui/css/style.css is there"), "the file that exists: {moved}");
 
-        let outside = why(Some(ui), "resource", "Failed to load /style.css (written \"/style.css\")").unwrap();
+        let outside = cause(ui, load("/style.css", ""));
         assert!(outside.contains("outside the app's ui/ folder") && outside.contains("ui/css/style.css"), "{outside}");
+        assert!(cause(ui, load("/sdk/nebo.global.js", "")).contains("../../../sdk/nebo.global.js"));
 
-        std::fs::write(ui.join("style.css"), "/* x */\n@import url('https://esm.sh/css@1');\nbody{}").unwrap();
-        let import = why(Some(ui), "resource", "Failed to load /apps/a1/ui/style.css").unwrap();
+        std::fs::write(dir.path().join("style.css"), "/* x */\n@import url('https://esm.sh/css@1');\nbody{}").unwrap();
+        let import = cause(ui, load("style.css", ""));
         assert!(import.contains("ui/style.css is there") && import.contains("https://esm.sh/css@1"), "{import}");
 
-        std::fs::write(ui.join("plain.css"), "body{}").unwrap();
-        let there = why(Some(ui), "resource", "Failed to load /apps/a1/ui/plain.css").unwrap();
-        assert!(there.contains("app_reload(check: true)"), "{there}");
+        std::fs::write(dir.path().join("app.js"), "import './gone.js';").unwrap();
+        let there = cause(ui, load("app.js", ""));
+        assert!(there.contains("a module it imports") && there.contains("the path needs no change"), "{there}");
 
-        let missing = why(Some(ui), "resource", "Failed to load /apps/a1/ui/assets/turf.jpg").unwrap();
+        let missing = cause(ui, load("assets/turf.jpg", ""));
         assert!(missing.contains("No file named turf.jpg"), "{missing}");
-        assert_eq!(why(Some(ui), "resource", "Failed to load /apps/a1/ui/../../secret.css"), None, "never outside ui/");
+
+        for escape in ["../secret.css", "/etc/x.css/../..", "a/../../b.css", "..\\..\\x.css", "C:/x.css", ""] {
+            let shown = cause(ui, load(escape, ""));
+            assert!(!shown.contains("is there"), "never read outside ui/: {escape} gave {shown}");
+        }
+        assert_eq!(cause(None, load("style.css", "")), "", "no folder, no cause");
+        let warn = Failure { level: "warn", ..load("style.css", "") };
+        assert_eq!(cause(ui, warn), "", "a note gets no cause");
     }
 
     /// The SDK called the wrong way points to the call that is right.
     #[test]
     fn sdk_misuse_points_to_the_right_call() {
         let tag = crate::agent_tool::PersonaTool::APP_SDK_SCRIPT;
-        let no_sdk = why(None, "error", "Uncaught TypeError: Cannot read properties of undefined (reading 'nebo')").unwrap();
+        let err = |source: &'static str, message: &'static str| {
+            cause(None, Failure { level: "error", source, message, ..Default::default() })
+        };
+        let no_sdk = err("error", "Uncaught TypeError: Cannot read properties of undefined (reading 'nebo')");
         assert!(no_sdk.contains(tag) && no_sdk.contains("const { nebo } = window.NeboAppSDK"), "{no_sdk}");
-        let bare = why(None, "error", "Uncaught ReferenceError: nebo is not defined").unwrap();
+        let bare = err("error", "Uncaught ReferenceError: nebo is not defined");
         assert!(bare.contains("const { nebo } = window.NeboAppSDK"), "{bare}");
-        let get = why(None, "promise", "Unhandled promise rejection: TypeError: nebo.storage.get is not a function").unwrap();
+        let get = err("promise", "Unhandled promise rejection: TypeError: nebo.storage.get is not a function");
         assert!(get.contains("getItem") && get.contains("reads null"), "{get}");
-        assert_eq!(why(None, "error", "Uncaught TypeError: x.storage.getItem is not a function"), None, "a real call is not misuse");
-        assert_eq!(why(None, "error", "Uncaught TypeError: boom"), None);
+        assert_eq!(err("error", "Uncaught TypeError: x.storage.getItem is not a function"), "", "a real call is not misuse");
+        assert_eq!(err("error", "Uncaught TypeError: boom"), "");
     }
 
     /// The cause rides with the error to every reader: the console, the live
-    /// check and "Send to <employee>"; warnings get none.
+    /// check and "Send to <employee>".
     #[test]
     fn the_cause_rides_with_the_error() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("style.css"), "@import url('https://esm.sh/css@1');").unwrap();
         let id = app();
         let since = mark();
         record(
             &id,
-            Some(dir.path()),
             [
-                ("error", "Failed to load /apps/a1/ui/style.css", "resource", 1, "live-why"),
-                ("warn", "Failed to load https://cdn.example/x.css (another site's, not counted)", "resource", 2, "live-why"),
+                Line {
+                    level: "error",
+                    message: "Failed to load /apps/a1/ui/style.css",
+                    source: "resource",
+                    time_ms: 1,
+                    view: "live-why",
+                    why: "ui/style.css is there; it imports https://esm.sh/css@1".into(),
+                },
+                ("log", "ready", "console", 2, "live-why").into(),
             ],
         );
         let entries = recent(&id, None, 10);
         let shown = format_entry(&entries[0]);
         assert!(shown.contains("Failed to load /apps/a1/ui/style.css\n  Why: ui/style.css is there"), "{shown}");
-        assert!(entries[1].why.is_empty(), "a note gets no cause");
+        assert!(entries[1].why.is_empty());
         let lines = view_lines(&id, since, "live-why");
         assert!(lines.errors[0].contains("Why: ") && lines.errors[0].contains("esm.sh/css@1"), "{:?}", lines.errors);
     }

@@ -122,7 +122,12 @@ impl DynTool for FindToolsTool {
                 crate::desktop_available(),
             );
             let mut result = answer(&catalog, query, max_results);
-            if let Some(note) = crate::app_dev::withheld_note(query, ctx.withheld_tools.as_deref()) {
+            let seat = types::keyparser::extract_agent_id(&ctx.session_key);
+            let note = self
+                .registry
+                .db_store()
+                .and_then(|store| crate::app_dev::withheld_note(&store, &seat, query, ctx.withheld_tools.as_deref()));
+            if let Some(note) = note {
                 result.content.push_str("\n\n");
                 result.content.push_str(&note);
             }

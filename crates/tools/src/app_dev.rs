@@ -190,16 +190,24 @@ pub fn withheld(store: &db::Store, agent_id: &str) -> Vec<String> {
     }
 }
 
-/// What `find_tools` adds when `query` names developer tools this seat is
-/// not offered ([`withheld`]): whose tools they are and who does the work,
-/// so a seat never takes them for missing and opens the app some other way
-/// (live 2026-10-22: Jetson, told "no deferred tool matches", opened the app
-/// in the plain browser and went looking for the install key).
-pub fn withheld_note(query: &str, withheld: Option<&HashSet<String>>) -> Option<String> {
-    let withheld = withheld?;
+/// What `find_tools` adds when `query` names developer tools the seat
+/// `agent_id` is not offered because it does not build that app
+/// ([`withheld`]; `run_withheld` is what the run leaves out): whose tools
+/// they are and who does the work, so a seat never takes them for missing
+/// and opens the app some other way (live 2026-10-22: Jetson, told "no
+/// deferred tool matches", opened the app in the plain browser and went
+/// looking for the install key).
+pub fn withheld_note(
+    store: &db::Store,
+    agent_id: &str,
+    query: &str,
+    run_withheld: Option<&HashSet<String>>,
+) -> Option<String> {
+    let run_withheld = run_withheld?;
+    let pack_withheld = withheld(store, agent_id);
     let named: Vec<&str> = query
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| TOOLS.contains(w) && withheld.contains(*w))
+        .filter(|w| run_withheld.contains(*w) && pack_withheld.iter().any(|t| t.as_str() == *w))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -1364,13 +1372,19 @@ mod tests {
     /// they are and who does the work, never only "no match".
     #[test]
     fn asking_for_an_apps_own_tools_says_whose_they_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        app_row(&store, "app-1", "Tracker", &dir.path().join("ui"));
+        store.create_agent("acct-1", None, "Accountant", "", "", "{}", None, None).unwrap();
         let held: HashSet<String> = TOOLS.iter().map(|t| t.to_string()).collect();
-        let note = withheld_note("select:app_status,app_reload,code", Some(&held)).unwrap();
+        let note = withheld_note(&store, "acct-1", "select:app_status,app_reload,code", Some(&held)).unwrap();
         assert!(note.starts_with("app_reload, app_status are an app's own tools"), "{note}");
         assert!(note.contains("assign_task") && note.contains("App Developer mode"), "{note}");
         assert!(note.contains("never look for keys"), "{note}");
-        assert_eq!(withheld_note("app screenshot console", Some(&held)), None, "keywords name no tool");
-        assert_eq!(withheld_note("select:app_status", Some(&HashSet::new())), None, "offered: nothing to say");
-        assert_eq!(withheld_note("select:app_status", None), None);
+        assert_eq!(withheld_note(&store, "acct-1", "app screenshot console", Some(&held)), None, "keywords name no tool");
+        assert_eq!(withheld_note(&store, "acct-1", "select:app_status", Some(&HashSet::new())), None, "offered");
+        assert_eq!(withheld_note(&store, "acct-1", "select:app_status", None), None);
+        // The app itself, its tool scope leaving one out: not another app's.
+        assert_eq!(withheld_note(&store, "app-1", "select:app_reload", Some(&held)), None, "its own, scoped out");
     }
 }

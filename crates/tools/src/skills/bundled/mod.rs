@@ -266,6 +266,11 @@ mod bundled_skill_tests {
         // The store is shared with the app's employee, and the page hears
         // its writes: the skill says so and the bundle carries it.
         assert!(content.contains("`storage.onChange(cb)"), "the skill names storage.onChange");
+        // The calls the console's causes name for `nebo.storage`
+        // (`app_console::STORAGE_CALLS`) are the bundle's own.
+        for call in crate::app_console::STORAGE_CALLS {
+            assert!(bundle.contains(&format!("{call}(")), "the bundle's storage has {call}");
+        }
         assert!(content.contains("app_data(action:"), "the skill shows the employee's app_data tool");
         assert!(
             bundle.contains("onChange") && bundle.contains("app_data_changed"),
