@@ -835,7 +835,7 @@ mod tests {
     fn a_refusal_points_to_the_sdk_docs_and_the_apps_folder() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("Nebo");
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false, false);
         let said = |rel: &str| nebo_file_refusal(&root.join(rel).to_string_lossy(), &fence);
         let sdk = said("user/sdk/nebo.global.js");
         assert!(sdk.contains("references/app-data.md") && sdk.contains("references/sdk-more.md"), "{sdk}");
