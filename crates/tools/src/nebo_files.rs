@@ -165,6 +165,22 @@ impl NeboFiles {
         out
     }
 
+    /// Where `path` sits in this Nebo's folder (relative to it, empty for
+    /// the folder itself), as named or with links resolved; `None` outside.
+    pub fn part_of(&self, path: &Path) -> Option<PathBuf> {
+        let named = lexical(&absolute(path, None));
+        let landed = resolved(&named);
+        [&named, &landed].into_iter().find_map(|p| {
+            [&self.root, &self.real].into_iter().find_map(|root| p.strip_prefix(root).ok().map(Path::to_path_buf))
+        })
+    }
+
+    /// The folder every employee's own package is in (`user/agents`), open
+    /// to it: an app's pages and sources are in its folder there.
+    pub fn agents_dir(&self) -> PathBuf {
+        self.root.join("user/agents")
+    }
+
     /// The workspace, where the employee's own documents go: the owner's
     /// (`config::workspace_dir`) for this Nebo's root, `files` under any other.
     pub fn workspace(&self) -> PathBuf {

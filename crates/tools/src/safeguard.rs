@@ -94,12 +94,34 @@ impl Run<'_> {
 }
 
 /// The refusal for reaching one of Nebo's own files, in the one wording
-/// every door uses.
+/// every door uses. Where the employee was most likely looking for
+/// something it may use, the refusal says where that is instead: the app
+/// SDK, which is not a file at all (live 2026-10-23: refused
+/// `user/sdk/nebo.global.js`, an employee swapped the app's storage for
+/// `localStorage`), and an app's own folder, looked for from the data
+/// folder or `user` (live 2026-10-23: `find` there was refused, and the
+/// employee made the app's folder by hand).
 pub fn nebo_file_refusal(path: &str, fence: &NeboFiles) -> String {
+    let part = fence.part_of(Path::new(path));
+    let instead = match part.as_deref() {
+        Some(p) if p.components().any(|c| c.as_os_str() == "sdk") => " The app SDK is not a file here: Nebo serves \
+             it to every app page, through the script tag the starter page already has \
+             (`../../../sdk/nebo.global.js`). Its API is in the app-studio skill: \
+             read_skill_file(name: \"app-studio\", path: \"references/app-data.md\") and \
+             read_skill_file(name: \"app-studio\", path: \"references/sdk-more.md\")."
+            .to_string(),
+        Some(p) if p.as_os_str().is_empty() || p == Path::new("user") => format!(
+            " An app's or employee's own files are in its folder under {}, which is open to you: the app's \
+             location line (\"<name> is an app; its files are served from ...\") names its folder, and so does \
+             get_employee(name: \"<name>\").",
+            fence.agents_dir().display()
+        ),
+        _ => String::new(),
+    };
     format!(
         "BLOCKED: {path:?} is one of Nebo's own files (its settings, logs, database and other internals). \
          An employee never reads or changes them, and they are not where your work is: what Nebo knows \
-         reaches you through your tools. Your working files are under {}. \
+         reaches you through your tools. Your working files are under {}.{instead} \
          This is a hard safety limit that cannot be overridden",
         fence.workspace().display()
     )
@@ -782,6 +804,32 @@ mod tests {
 
     /// Nebo's own files are closed to every file action and every command
     /// that names them, reads included; the workspace stays open.
+    /// A refusal where the employee was looking for something it may use
+    /// says where that is: the SDK's API for `…/sdk/…`, the apps' folder
+    /// for the data folder itself and `user`. Nothing more opens.
+    #[test]
+    fn a_refusal_points_to_the_sdk_docs_and_the_apps_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Nebo");
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let said = |rel: &str| nebo_file_refusal(&root.join(rel).to_string_lossy(), &fence);
+        let sdk = said("user/sdk/nebo.global.js");
+        assert!(sdk.contains("references/app-data.md") && sdk.contains("references/sdk-more.md"), "{sdk}");
+        assert!(sdk.contains("Nebo serves it to every app page"), "{sdk}");
+        let agents = root.join("user/agents").display().to_string();
+        for looked in ["", "user"] {
+            let r = said(looked);
+            assert!(r.contains(&agents) && r.contains("location line"), "{looked:?}: {r}");
+            assert!(!r.contains("app-data.md"), "{r}");
+        }
+        let settings = said("settings.json");
+        assert!(!settings.contains("app-data.md") && !settings.contains("location line"), "{settings}");
+        for rel in ["user/sdk/nebo.global.js", "", "user", "settings.json"] {
+            assert!(fence.closes(&root.join(rel), None, crate::nebo_files::Access::Read), "{rel:?} stays closed");
+        }
+        assert!(!fence.closes(&root.join("user/agents/Scores/ui/index.html"), None, crate::nebo_files::Access::Write));
+    }
+
     #[test]
     fn nebo_own_files_are_closed_to_every_action() {
         let dir = tempfile::tempdir().unwrap();
