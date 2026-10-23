@@ -1046,6 +1046,36 @@ mod tests {
         }
     }
 
+    /// `git init` and nothing after: the project's first write, its first
+    /// commit command included, goes to a copy instead of being refused.
+    #[test]
+    fn a_brand_new_repository_takes_its_first_change_in_a_copy() {
+        crate::test_home::with_home(|home| {
+            rt().block_on(async {
+                let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+                let projects = tempfile::tempdir().unwrap();
+                let project = projects.path().join("flight-deals");
+                std::fs::create_dir_all(&project).unwrap();
+                worktree::git(&project, &["init", "-q", "-b", "main"]).await.unwrap();
+                let work = TurnWork::default();
+                let who = who(&store);
+
+                let mut write = json!({"path": project.join(".gitignore").to_string_lossy(), "content": "target/\n"});
+                let r = work.route(&mut write, &mut None, true, &who).await.unwrap();
+                assert!(r.started.is_some(), "the work started");
+                let copy = work.snapshot().await[0].work_dir.clone();
+                assert_eq!(write["path"], copy.join(".gitignore").to_string_lossy().as_ref());
+                assert!(copy.join(".git").exists(), "the copy exists");
+
+                let mut commit = json!({"command": format!("cd {} && git add .gitignore && git commit -m start", project.display())});
+                let r = work.route(&mut commit, &mut None, true, &who).await.unwrap();
+                assert!(r.rewrote, "the commit runs in the copy");
+                assert_eq!(work.snapshot().await.len(), 1, "no second copy");
+            })
+        })
+    }
+
+
     #[test]
     fn the_first_change_to_a_project_moves_the_work_into_a_copy_and_records_it() {
         crate::test_home::with_home(|home| {
