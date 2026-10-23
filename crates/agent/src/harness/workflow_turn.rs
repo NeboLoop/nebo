@@ -619,7 +619,6 @@ impl ActivityLoop for WorkflowTurns {
         Ok(LoopOutcome {
             text,
             total_tokens: total_in + total_out,
-            output_tokens: total_out,
             tainted,
             steps: assistant_rows(&session_id).saturating_sub(rows_before).max(1),
         })

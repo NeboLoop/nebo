@@ -4464,7 +4464,7 @@
 			"needs_decision": "Braucht Ihre Entscheidung: {items}",
 			"stopped_by_owner": "Von dir gestoppt; offene Probleme: {open, plural, other {#}}",
 			"stalled": "Kein Fortschritt mehr; offene Probleme: {open, plural, other {#}}",
-			"no_checks": "Keine Tests oder Builds konnten laufen",
+			"no_checks": "Nichts hat gezeigt, dass es funktioniert: Das Projekt hat keinen Build, keine Typprüfung und keine Tests zum Ausführen",
 			"landed_unreviewed": "Ohne bestandene Prüfung übernommen, auf Ihren Wunsch",
 			"edits_in_way": "Noch nicht übernommen: Ihre Änderungen stehen noch im Weg",
 			"kept_own_edits": "Nicht übernommen: Sie haben Ihre eigenen Änderungen behalten, die Änderung wartet in ihrer Kopie",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} Min. {s} Sek."
-		}
+		},
+		"answering": "Antwort auf: {question}",
+		"tellIt": "Sag, was zu tun ist",
+		"sending": "Wird gesendet…",
+		"sendFailed": "Deine Antwort wurde nicht gesendet."
+	},
+	"appPermissions": {
+		"title": "{name} möchte mehr tun",
+		"intro": "Sag nur Ja, wenn du dieser App vertraust. Du kannst es später in den Einstellungen der App ändern.",
+		"origin": "Diese App wurde nicht hier gemacht. Jemand außerhalb deiner Firma hat sie gemacht.",
+		"wantsFiles": "{name} möchte die Dateien in {target} sehen",
+		"wantsWeb": "{name} möchte mit {target} sprechen",
+		"wantsWebAny": "{name} möchte mit jeder Website sprechen",
+		"wantsHelper": "{name} möchte {target} um Hilfe bitten",
+		"wantsHelperAny": "{name} möchte jeden deiner Mitarbeiter um Hilfe bitten",
+		"wantsPlugin": "{name} möchte {target} benutzen",
+		"canFiles": "Dateien in {target} sehen",
+		"canWeb": "Mit {target} sprechen",
+		"canWebAny": "Mit jeder Website sprechen",
+		"canHelper": "{target} um Hilfe bitten",
+		"canHelperAny": "Jeden deiner Mitarbeiter um Hilfe bitten",
+		"canPlugin": "{target} benutzen",
+		"allow": "Erlauben",
+		"deny": "Nicht erlauben",
+		"off": "Aus",
+		"notNow": "Nicht jetzt",
+		"sectionTitle": "Was diese App darf",
+		"sectionHint": "Diese App kommt vom Marktplatz. Sie darf nur, was du erlaubst.",
+		"ownHint": "Du hast diese App hier gemacht, also darf sie, worum sie bittet.",
+		"notAnswered": "Noch nicht beantwortet"
 	}
 }

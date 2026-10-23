@@ -372,11 +372,79 @@ const VALID_PERMISSION_PREFIXES: &[&str] = &[
     "user:",
     "hook:",
     "device:",
+    "plugin:",
 ];
 
-/// Every permission must carry a known prefix. The one check for a
-/// manifest's `permissions`, whether it arrives as a file (`validate`) or as
-/// the `app.permissions` a tool call is about to write.
+/// The permission that lets an app's page read one folder of the owner's
+/// workspace (`~/NeboAI`): `filesystem:read:Media/Projects`. The page reads
+/// it through its own route, `/api/v1/apps/<id>/files/<path>`, and nothing
+/// outside the folder (`handlers::apps::serve_app_file`).
+pub const FILESYSTEM_READ: &str = "filesystem:read:";
+
+/// The folder a `filesystem:read:<folder>` permission grants, when it is one:
+/// a path relative to the workspace, `/`-separated, every part a name (no
+/// empty part, `.` or `..`, no `\`, `:` or NUL), so it can only name a
+/// folder inside the workspace, and one the workspace's one servability
+/// rule lets any route serve (`config::workspace_private`: nothing hidden,
+/// no coding agent's folder, none of Nebo's own). `None` for any other
+/// permission.
+pub fn file_read_folder(perm: &str) -> Option<&str> {
+    let folder = perm.strip_prefix(FILESYSTEM_READ)?;
+    let named = !folder.is_empty()
+        && !folder.contains(['\\', ':', '\0'])
+        && folder.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+        && !config::workspace_private(folder);
+    named.then_some(folder)
+}
+
+/// Whether `granted` covers `perm`: the same permission, a granted one
+/// ending in `:` that it starts with, or `<prefix>:*` (`network:*`). The
+/// one matching rule for a manifest and for an app's granted permissions.
+pub fn permission_covers(granted: &[String], perm: &str) -> bool {
+    let wildcard = format!("{}:*", perm.split(':').next().unwrap_or(""));
+    granted.iter().any(|p| p == perm || (p.ends_with(':') && perm.starts_with(p.as_str())) || *p == wildcard)
+}
+
+/// The permissions an app installed from the marketplace or shared through
+/// a loop holds only once the owner allows them: reading his files, talking
+/// to another website, asking another of his employees, running one of his
+/// plugins. An app his own employees build here holds them as its manifest
+/// asks.
+pub fn needs_consent(perm: &str) -> bool {
+    ["filesystem:", "network:", "subagent:", "plugin:"].iter().any(|p| perm.starts_with(p))
+}
+
+/// An app's grant to run an installed plugin directly, with no AI in the
+/// middle: `plugin:<slug>` grants every command of the plugin `slug`, and
+/// `plugin:<slug>:<command>` only the commands whose first word is
+/// `<command>` (`plugin:nebo-media:strip`). Returns the slug and the
+/// command, `None` for any other permission and for a malformed grant (an
+/// empty or wildcard slug, a command of more than one word).
+pub fn plugin_grant(perm: &str) -> Option<(&str, Option<&str>)> {
+    let rest = perm.strip_prefix("plugin:")?;
+    let (slug, command) = match rest.split_once(':') {
+        Some((slug, command)) => (slug, Some(command)),
+        None => (rest, None),
+    };
+    let word = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (word(slug) && command.is_none_or(word)).then_some((slug, command))
+}
+
+/// Whether `permissions` let an app run a command on the plugin `slug`
+/// ([`plugin_grant`]). `first_word`: the command's first word as the plugin
+/// receives it (`tools::plugin_tool::command_words`, the one reading of a
+/// command), `None` for a command with no words.
+pub fn grants_plugin_command(permissions: &[String], slug: &str, first_word: Option<&str>) -> bool {
+    permissions
+        .iter()
+        .filter_map(|p| plugin_grant(p))
+        .any(|(s, c)| s == slug && c.is_none_or(|c| first_word == Some(c)))
+}
+
+/// Every permission must carry a known prefix, and a `filesystem:read:`
+/// grant must name a folder inside the workspace ([`file_read_folder`]). The
+/// one check for a manifest's `permissions`, whether it arrives as a file
+/// (`validate`) or as the `app.permissions` a tool call is about to write.
 pub fn validate_permissions(permissions: &[String]) -> Result<(), NappError> {
     for perm in permissions {
         let valid = VALID_PERMISSION_PREFIXES
@@ -384,6 +452,16 @@ pub fn validate_permissions(permissions: &[String]) -> Result<(), NappError> {
             .any(|prefix| perm.starts_with(prefix));
         if !valid {
             return Err(NappError::Manifest(format!("unknown permission: {}", perm)));
+        }
+        if perm.starts_with(FILESYSTEM_READ) && file_read_folder(perm).is_none() {
+            return Err(NappError::Manifest(format!(
+                "{perm}: a visible folder inside the NeboAI workspace, relative to it, like {FILESYSTEM_READ}Media/Projects"
+            )));
+        }
+        if perm.starts_with("plugin:") && plugin_grant(perm).is_none() {
+            return Err(NappError::Manifest(format!(
+                "malformed permission: {perm} (plugin:<slug>, or plugin:<slug>:<command> for one command)"
+            )));
         }
     }
     Ok(())
@@ -471,11 +549,7 @@ impl Manifest {
 
     /// Check if the tool has a specific permission.
     pub fn has_permission(&self, perm: &str) -> bool {
-        self.permissions.iter().any(|p| {
-            p == perm
-                || (p.ends_with(':') && perm.starts_with(p))
-                || p == &format!("{}:*", perm.split(':').next().unwrap_or(""))
-        })
+        permission_covers(&self.permissions, perm)
     }
 
     /// Check if the tool has a permission with a prefix (wildcard support).
@@ -614,6 +688,63 @@ mod tests {
         validate_permissions(&["storage:readwrite".into(), "network:outbound".into()]).unwrap();
         let err = validate_permissions(&["bogus:thing".into()]).unwrap_err();
         assert_eq!(err.to_string(), NappError::Manifest("unknown permission: bogus:thing".into()).to_string());
+    }
+
+    /// A read grant names a folder inside the workspace, relative to it; a
+    /// grant that could name anything else is refused when it is written.
+    #[test]
+    fn a_read_grant_names_a_folder_inside_the_workspace() {
+        assert_eq!(file_read_folder("filesystem:read:Media/Projects"), Some("Media/Projects"));
+        assert_eq!(file_read_folder("filesystem:read:Media"), Some("Media"));
+
+        assert_eq!(file_read_folder("storage:readwrite"), None);
+        assert_eq!(file_read_folder("filesystem:*"), None);
+        for bad in [
+            "filesystem:read:",
+            "filesystem:read:/etc",
+            "filesystem:read:../secrets",
+            "filesystem:read:Media/../..",
+            "filesystem:read:Media/./Projects",
+            "filesystem:read:Media//Projects",
+            "filesystem:read:Media/",
+            "filesystem:read:C:/Users",
+            "filesystem:read:Media\\Projects",
+            "filesystem:read:Media\0",
+            // What no route serves: hidden, a coding agent's folder, Nebo's own.
+            "filesystem:read:.proxies",
+            "filesystem:read:Media/Projects/reel/.proxies",
+            "filesystem:read:claude-code",
+            "filesystem:read:codex-2/repo",
+            "filesystem:read:uploads",
+            "filesystem:read:work",
+        ] {
+            assert_eq!(file_read_folder(bad), None, "{bad}");
+            assert!(validate_permissions(&[bad.into()]).is_err(), "{bad}");
+        }
+        validate_permissions(&["filesystem:read:Media/Projects".into(), "storage:readwrite".into()]).unwrap();
+    }
+
+    /// `plugin:<slug>` grants every command of one plugin and
+    /// `plugin:<slug>:<command>` one command; nothing else is a grant.
+    #[test]
+    fn a_plugin_grant_names_one_plugin_and_maybe_one_command() {
+        validate_permissions(&["plugin:nebo-media".into(), "plugin:nebo-media:strip".into()]).unwrap();
+        for bad in ["plugin:", "plugin:*", "plugin:nebo-media:", "plugin:nebo media", "plugin:a:b:c", "plugin:../x"] {
+            let err = validate_permissions(&[bad.into()]).unwrap_err().to_string();
+            assert!(err.contains("malformed permission"), "{bad}: {err}");
+        }
+
+        let all = vec!["plugin:nebo-media".to_string()];
+        assert!(grants_plugin_command(&all, "nebo-media", Some("strip")));
+        assert!(grants_plugin_command(&all, "nebo-media", None), "every command, none included");
+        assert!(!grants_plugin_command(&all, "gmail", Some("send")), "another plugin");
+
+        let strip = vec!["plugin:nebo-media:strip".to_string(), "network:example.com".to_string()];
+        assert!(grants_plugin_command(&strip, "nebo-media", Some("strip")));
+        assert!(!grants_plugin_command(&strip, "nebo-media", Some("render")));
+        assert!(!grants_plugin_command(&strip, "nebo-media", Some("Strip")), "the word as written");
+        assert!(!grants_plugin_command(&strip, "nebo-media", None), "no command, no scoped grant");
+        assert!(!grants_plugin_command(&[], "nebo-media", Some("strip")));
     }
 
     #[test]

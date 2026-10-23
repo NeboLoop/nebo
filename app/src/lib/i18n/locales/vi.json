@@ -4464,7 +4464,7 @@
 			"needs_decision": "Cần quyết định của bạn: {items}",
 			"stopped_by_owner": "Bạn đã dừng lại; vấn đề còn mở: {open, plural, other {#}}",
 			"stalled": "Không còn tiến triển; vấn đề còn mở: {open, plural, other {#}}",
-			"no_checks": "Không thể chạy kiểm thử hay bản dựng nào",
+			"no_checks": "Không có gì chứng minh nó hoạt động: dự án không có bản dựng, kiểm tra kiểu hay kiểm thử nào để chạy",
 			"landed_unreviewed": "Đã đưa vào mà chưa qua xem xét, theo lựa chọn của bạn",
 			"edits_in_way": "Chưa đưa vào: các chỉnh sửa của bạn vẫn đang cản trở",
 			"kept_own_edits": "Không đưa vào: bạn giữ chỉnh sửa của riêng mình, và thay đổi này chờ trong bản sao của nó",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} phút {s} giây"
-		}
+		},
+		"answering": "Đang trả lời: {question}",
+		"tellIt": "Bảo nó cần làm gì",
+		"sending": "Đang gửi…",
+		"sendFailed": "Câu trả lời của bạn chưa được gửi."
+	},
+	"appPermissions": {
+		"title": "{name} muốn làm thêm",
+		"intro": "Chỉ đồng ý nếu bạn tin ứng dụng này. Bạn có thể đổi ý sau trong phần cài đặt của ứng dụng.",
+		"origin": "Ứng dụng này không được làm ở đây. Một người ngoài công ty bạn đã tạo ra nó.",
+		"wantsFiles": "{name} muốn xem các tệp trong {target}",
+		"wantsWeb": "{name} muốn trò chuyện với {target}",
+		"wantsWebAny": "{name} muốn trò chuyện với bất kỳ trang web nào",
+		"wantsHelper": "{name} muốn nhờ {target} giúp",
+		"wantsHelperAny": "{name} muốn nhờ bất kỳ nhân viên nào của bạn giúp",
+		"wantsPlugin": "{name} muốn dùng {target}",
+		"canFiles": "Xem các tệp trong {target}",
+		"canWeb": "Trò chuyện với {target}",
+		"canWebAny": "Trò chuyện với bất kỳ trang web nào",
+		"canHelper": "Nhờ {target} giúp",
+		"canHelperAny": "Nhờ bất kỳ nhân viên nào của bạn giúp",
+		"canPlugin": "Dùng {target}",
+		"allow": "Cho phép",
+		"deny": "Không cho phép",
+		"off": "Tắt",
+		"notNow": "Để sau",
+		"sectionTitle": "Những gì ứng dụng này được làm",
+		"sectionHint": "Ứng dụng này đến từ marketplace. Nó chỉ được làm những gì bạn cho phép.",
+		"ownHint": "Bạn đã tạo ứng dụng này ở đây, nên nó được làm những gì nó yêu cầu.",
+		"notAnswered": "Chưa trả lời"
 	}
 }

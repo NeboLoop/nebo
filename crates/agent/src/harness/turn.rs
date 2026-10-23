@@ -319,6 +319,10 @@ pub enum TurnExit {
     GoalPaused(goal::Pause),
 }
 
+/// How a run that panicked ended, as [`Harness::turn_ended`] tells it
+/// (there is no [`TurnExit`] for it: the run never reached one).
+pub const PANICKED: &str = "panicked";
+
 impl TurnExit {
     /// The word stored on the run's usage row and read by the workflow
     /// engine and `test runs`.
@@ -666,6 +670,10 @@ async fn run(
                 use super::verify::engine::Closed;
                 close_verifications(&h, &verify, Closed::Ended(super::verify::Why::new("turn_ended"))).await;
             }
+            // Its end is still told, freed first, as any end is: what waits
+            // on this turn (a schedule's answer) is not left waiting.
+            drop(guard);
+            h.turn_ended(&session_key, PANICKED);
             std::panic::resume_unwind(panic)
         }
     };
@@ -679,6 +687,7 @@ async fn run(
         )
         .await;
     drop(guard);
+    h.turn_ended(&session_key, &exit.label());
     if carried > 0 {
         match h.answer_thread() {
             Some(answer) => {
@@ -5355,6 +5364,50 @@ mod tests {
         assert_eq!(closes, vec![Some(tab)], "the panicked run's tab closes");
     }
 
+    /// A run that panics still tells its end, so nothing waiting on the
+    /// turn (a schedule's answer) waits forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_panics_still_tells_its_end() {
+        struct Boom;
+        impl tools::registry::DynTool for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            fn description(&self) -> String {
+                "fails hard".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move { panic!("the tool broke") })
+            }
+        }
+        let model = Scripted::new(vec![Step::Call("boom", serde_json::json!({}))]);
+        let h = harness_with(&model, vec![Box::new(Boom)]).await;
+        let ends = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let told = ends.clone();
+        h.bind(crate::harness::Outlets {
+            turn_ended: Some(Arc::new(move |key: &str, exit: &str| told.lock().unwrap().push((key.to_string(), exit.to_string())))),
+            ..Default::default()
+        });
+        let req = owner("Do the thing");
+        let key = req.session_key.clone();
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        assert_eq!(*ends.lock().unwrap(), vec![(key, PANICKED.to_string())]);
+    }
+
     /// A tab the run left open for the owner stays open when it ends.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tab_left_open_for_the_owner_stays_open_when_the_run_ends() {
@@ -7316,6 +7369,7 @@ mod tests {
             // An app that builds itself has the developer pack's tools.
             h.store.create_agent("ops", Some("agent"), "Kart Racer", "", "", "{}", None, None).unwrap();
             h.store.set_agent_app_fields("ops", true, Some("/tmp/kart/ui"), None, None).unwrap();
+            h.store.set_agent_built_here("ops", true).unwrap();
             let mut req = owner(request);
             req.seat.agent_id = "ops".into();
             run_turn(&h, req).await;
@@ -7387,6 +7441,7 @@ mod tests {
             let h = harness_with(&model, vec![code]).await;
             h.store.create_agent("ops", Some("agent"), "Flip-Flap", "", "", "{}", None, None).unwrap();
             h.store.set_agent_app_fields("ops", true, Some("/tmp/flip/ui"), None, None).unwrap();
+            h.store.set_agent_built_here("ops", true).unwrap();
             h.store.update_settings(None, None, None, None, None, None, None, Some(on), None, Some(on)).unwrap();
             let mut req = owner("Fix the tap.");
             req.seat.agent_id = "ops".into();
@@ -10851,6 +10906,373 @@ mod tests {
         })
     }
 
+    /// An app's live check (`app_reload(check: true)`): each call answers
+    /// with the next of its results (`passed`, what it says), then passes;
+    /// `None` is a bot with no browser. Every call's input is kept.
+    struct LiveChecks {
+        results: Mutex<std::collections::VecDeque<Option<(bool, &'static str)>>>,
+        calls: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl tools::registry::DynTool for LiveChecks {
+        fn name(&self) -> &str {
+            tools::app_dev::APP_RELOAD
+        }
+        fn description(&self) -> String {
+            "reloads and checks an app".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"app": {"type": "string"}, "check": {"type": "boolean"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push(input);
+                let next = self.results.lock().unwrap().pop_front().unwrap_or(Some((true, "Live check: passed.")));
+                let (result, passed, could_not_run, errors) = match next {
+                    Some((true, text)) => (tools::ToolResult::ok(text), true, None, vec![]),
+                    Some((false, text)) => (tools::ToolResult::error(text), false, None, vec![text]),
+                    None => (
+                        tools::ToolResult::error("This bot has no built-in browser."),
+                        false,
+                        Some(tools::app_dev::LIVE_NO_BROWSER),
+                        vec![],
+                    ),
+                };
+                result.with_payload(serde_json::json!({
+                    "kind": tools::app_dev::LIVE_CHECK, "passed": passed, "couldNotRun": could_not_run, "errors": errors, "notes": []
+                }))
+            })
+        }
+    }
+
+    /// An app's folder with a `ui/` holding an entry page; and the path of
+    /// that page.
+    fn app_folder() -> (tempfile::TempDir, String) {
+        let folder = tempfile::tempdir().unwrap();
+        let ui = folder.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Score</h1>").unwrap();
+        let page = ui.join("index.html").to_string_lossy().into_owned();
+        (folder, page)
+    }
+
+    /// The owner's own app `ops` (the builder of [`KEY`]), served from
+    /// `folder`'s `ui/`; its live checks answer with `results`. Returns
+    /// every live check's input and every command check that ran.
+    async fn app_harness(
+        model: &Arc<Scripted>,
+        folder: &tempfile::TempDir,
+        results: Vec<Option<(bool, &'static str)>>,
+    ) -> (Harness, Arc<Mutex<Vec<serde_json::Value>>>, Arc<Mutex<Vec<String>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let live = LiveChecks { results: Mutex::new(results.into()), calls: calls.clone() };
+        let h = harness_with(model, vec![Box::new(FileWriter), Box::new(Checks(ran.clone())), Box::new(live)]).await;
+        let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+        h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+        let ui = folder.path().join("ui");
+        h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+        h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+        h.store.set_agent_built_here("ops", true).unwrap();
+        (h, calls, ran)
+    }
+
+    /// The owner asks the app `ops` itself.
+    fn owner_of_app(text: &str) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.agent_id = "ops".into();
+        req
+    }
+
+    const CLEAN_PAGE: &str = r#"{"findings": [], "verified_ok": [{"checked": "the score renders"}]}"#;
+
+    /// An app's own check is its live load, run every round like any other
+    /// check: a console error in it is a failed check the builder hears and
+    /// fixes in the same turn, and the next round's load passes: verified.
+    #[test]
+    fn an_apps_console_error_fails_its_live_check_and_the_builder_fixes_it() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><script>score.show()</script>"})),
+                    Step::Say("Done: the score shows."),
+                    // Round 1: correctness and what people see, both clean;
+                    // the live load fails.
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    // The builder fixes what the live load reported.
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p id=\"score\">0</p>"})),
+                    Step::Say("Fixed the live check: no script reads an undefined score."),
+                    // Round 2 reviews the fix; the live load passes.
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("The score shows; the live check caught a script error and I fixed it. Verified."),
+                ]);
+                let (h, calls, _) = app_harness(
+                    &model,
+                    &folder,
+                    vec![
+                        Some((false, "Live check of Scoreboard: failed.\n- Phone (390×844): Uncaught ReferenceError: score is not defined (/app.js:1)")),
+                        Some((true, "Live check of Scoreboard: passed.")),
+                    ],
+                )
+                .await;
+                run_turn(&h, owner_of_app("Show the score")).await;
+
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.work_kind, "app_pages");
+                assert_eq!((v.state.as_str(), v.reason.as_str(), v.rounds), ("verified", "", 2), "{v:?}");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
+                assert_eq!(kinds, ["review", "review"], "the live load is a check of each round, not a step of its own");
+                let first: Vec<super::super::verify::checks::CheckRun> = serde_json::from_value(rounds[0].checks.clone()).unwrap();
+                assert_eq!(first.len(), 1);
+                assert_eq!(first[0].label, "Live load on a phone and a desktop");
+                assert!(!first[0].passed && first[0].tail.contains("score is not defined"), "{first:?}");
+                let second: Vec<super::super::verify::checks::CheckRun> = serde_json::from_value(rounds[1].checks.clone()).unwrap();
+                assert!(second[0].passed, "{second:?}");
+                // The builder heard the failed check, with its errors, as its
+                // next step in the same turn.
+                let heard = model.calls().iter().any(|c| {
+                    c.messages.iter().any(|m| m.content.contains("score is not defined") && m.content.contains(r#"app_reload(app: "ops", check: true)"#))
+                });
+                assert!(heard, "the builder was told what the live load reported");
+                let checked = calls.lock().unwrap().clone();
+                assert_eq!(checked.len(), 2, "one live load a round");
+                assert!(checked.iter().all(|c| c["check"] == true && c["app"] == "ops"), "{checked:?}");
+            })
+        })
+    }
+
+    /// A clean app (its live load passes) ends Verified in one round. The
+    /// checks its app folder's `checks/` declares run too, before the live
+    /// load; nothing in `ui/` is ever one.
+    #[test]
+    fn a_clean_app_ends_verified() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let checks = folder.path().join("checks");
+                std::fs::create_dir_all(&checks).unwrap();
+                std::fs::write(checks.join("Makefile"), "test:\n\tnode score.test.js\n").unwrap();
+                std::fs::write(folder.path().join("ui/Makefile"), "test:\n\tfalse\n").unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p>0</p>"})),
+                    Step::Say("Done."),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("The score shows. Verified."),
+                ]);
+                let (h, _, ran) = app_harness(&model, &folder, vec![Some((true, "Live check of Scoreboard: passed."))]).await;
+                run_turn(&h, owner_of_app("Show the score")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
+                assert!(v.message_id.is_some(), "the badge sits on the report");
+                assert_eq!(*ran.lock().unwrap(), [format!("make test in {}", checks.display())], "the app's checks, never ui/");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let labels: Vec<String> = rounds[0].checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap().to_string()).collect();
+                assert_eq!(labels, ["make test", "Live load on a phone and a desktop"]);
+                assert_eq!(rounds[0].detail["checksPlanned"], serde_json::json!(labels), "the sheet shows it planned, then run");
+            })
+        })
+    }
+
+    /// With no browser to load the app in, its live check can't run: the
+    /// work is not verified, and says why.
+    #[test]
+    fn an_app_with_no_browser_to_load_it_in_is_not_verified() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p>0</p>"})),
+                    Step::Say("Done."),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("Reviewed, but it could not be checked live."),
+                ]);
+                let (h, _, _) = app_harness(&model, &folder, vec![None]).await;
+                run_turn(&h, owner_of_app("Show the score")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"live_unavailable"}"#));
+            })
+        })
+    }
+
+    /// A command that deploys a build into an app's pages: `make deploy`,
+    /// writing the page it was given.
+    struct Deployer(std::path::PathBuf);
+
+    impl tools::registry::DynTool for Deployer {
+        fn name(&self) -> &str {
+            "deploy_command"
+        }
+        fn description(&self) -> String {
+            "runs a deploy".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                std::fs::write(&self.0, "<h1>Score</h1><p id=\"score\">0</p><script src=\"app.js\"></script>").unwrap();
+                std::fs::write(self.0.with_file_name("app.js"), "document.title = 'Score';").unwrap();
+                tools::ToolResult::ok("deployed")
+            })
+        }
+    }
+
+    /// An app built in a source project of its own: its build is deployed
+    /// into its pages by a command. The deploy's live load is one of the
+    /// project work's checks, so the work is Verified only when the deployed
+    /// page loads clean, and the builder hears that when it deploys.
+    #[test]
+    fn a_deploy_into_an_apps_pages_is_checked_live_with_the_project() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let project = tempfile::tempdir().unwrap();
+                let repo = project.path().to_path_buf();
+                for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                    crate::worktree::git(&repo, &args).await.unwrap();
+                }
+                std::fs::write(repo.join("Makefile"), "test:\n\tnode score.test.js\n").unwrap();
+                std::fs::write(repo.join("score.js"), "export const score = () => null;\n").unwrap();
+                crate::worktree::git(&repo, &["add", "-A"]).await.unwrap();
+                crate::worktree::git(&repo, &["commit", "-q", "-m", "base"]).await.unwrap();
+                let file = repo.join("score.js").to_string_lossy().into_owned();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "export const score = () => 0;\n"})),
+                    Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
+                    Step::Say("Done: the score shows."),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("The score shows; its deploy loaded clean. Verified."),
+                ]);
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let ran = Arc::new(Mutex::new(Vec::new()));
+                let live = LiveChecks { results: Mutex::new(vec![Some((true, "Live check of Scoreboard: passed."))].into()), calls: calls.clone() };
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(ran.clone())), Box::new(Deployer(page.into())), Box::new(live)],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let ui = folder.path().join("ui");
+                h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+                h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                h.store.set_agent_built_here("ops", true).unwrap();
+                run_turn(&h, owner_of_app("Show the score")).await;
+
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.work_kind.as_str(), v.state.as_str()), ("isolated", "verified"), "{v:?}");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let labels: Vec<String> = rounds[0].checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap().to_string()).collect();
+                assert_eq!(labels, ["make test", "Live load of Scoreboard on a phone and a desktop"]);
+                assert_eq!(rounds[0].detail["checksPlanned"], serde_json::json!(labels));
+                assert_eq!(rounds[0].checks[1]["command"], r#"app_reload(app: "ops", check: true)"#);
+                let checked = calls.lock().unwrap().clone();
+                assert_eq!(checked, [serde_json::json!({"app": "ops", "check": true})]);
+                let heard = model.calls().iter().any(|c| {
+                    c.messages.iter().any(|m| {
+                        let said = |t: &str| t.contains("deployed into the pages of Scoreboard");
+                        said(&m.content) || m.tool_results.as_ref().is_some_and(|r| said(&r.to_string()))
+                    })
+                });
+                assert!(heard, "the builder heard its deploy is checked live");
+            })
+        })
+    }
+
+    /// Review 2026-10-22: a deploy with no change to the project's source
+    /// (only `make deploy`) is still checked: its work gets a round of
+    /// checks alone (no reviewer reads an empty change), the deployed page's
+    /// live load among them, and is Verified only when that load passes.
+    #[test]
+    fn a_deploy_with_no_source_change_is_checked_live() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let project = tempfile::tempdir().unwrap();
+                let repo = project.path().to_path_buf();
+                for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                    crate::worktree::git(&repo, &args).await.unwrap();
+                }
+                std::fs::write(repo.join("Makefile"), "test:\n\tnode score.test.js\n").unwrap();
+                std::fs::write(repo.join("score.js"), "export const score = () => 0;\n").unwrap();
+                crate::worktree::git(&repo, &["add", "-A"]).await.unwrap();
+                crate::worktree::git(&repo, &["commit", "-q", "-m", "base"]).await.unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
+                    Step::Say("Deployed."),
+                    // No reviewer: the round is the checks alone. The live
+                    // load fails; the builder deploys again.
+                    Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
+                    Step::Say("Deployed again."),
+                    Step::Say("Deployed; its live load passed. Verified."),
+                ]);
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let live = LiveChecks {
+                    results: Mutex::new(
+                        vec![
+                            Some((false, "Live check of Scoreboard: failed.\n- Phone (390×844): Uncaught Error: boom")),
+                            Some((true, "Live check of Scoreboard: passed.")),
+                        ]
+                        .into(),
+                    ),
+                    calls: calls.clone(),
+                };
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(Deployer(page.into())), Box::new(live)],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let ui = folder.path().join("ui");
+                h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+                h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                h.store.set_agent_built_here("ops", true).unwrap();
+                run_turn(&h, owner_of_app("Deploy the score")).await;
+
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.work_kind.as_str(), v.state.as_str(), v.rounds), ("isolated", "verified", 2), "{v:?}");
+                assert_eq!((v.deployed_apps.clone(), v.deploy_unchecked), (vec!["ops".to_string()], false));
+                let rounds: Vec<_> = h.store.verification_rounds(&v.id).unwrap().into_iter().filter(|r| r.kind == "review").collect();
+                assert_eq!(rounds.len(), 2, "{rounds:?}");
+                for r in &rounds {
+                    assert_eq!(r.lenses, serde_json::json!([]), "no reviewer reads an empty change");
+                    let labels: Vec<&str> = r.checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap()).collect();
+                    assert_eq!(labels, ["make test", "Live load of Scoreboard on a phone and a desktop"]);
+                }
+                assert_eq!(calls.lock().unwrap().len(), 2, "one live load a round");
+            })
+        })
+    }
+
     /// The owner's answer on the card, as the ask_owner tool returns it.
     struct Answers(&'static str);
 
@@ -11127,6 +11549,214 @@ mod tests {
         })
     }
 
+
+    /// The owner's replies to the loop's questions, in order, as the
+    /// ask_owner tool returns them; each question asked is kept. `on_ask`
+    /// runs as each question is asked.
+    struct OwnerReplies {
+        replies: Mutex<std::collections::VecDeque<serde_json::Value>>,
+        asked: Arc<Mutex<Vec<String>>>,
+        on_ask: Option<Box<dyn Fn() + Send + Sync>>,
+    }
+
+    impl tools::registry::DynTool for OwnerReplies {
+        fn name(&self) -> &str {
+            "ask_owner"
+        }
+        fn description(&self) -> String {
+            "asks the owner".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.asked.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                if let Some(f) = &self.on_ask {
+                    f();
+                }
+                let reply = self.replies.lock().unwrap().pop_front().expect("a question the test did not expect");
+                tools::ToolResult::ok(reply.to_string())
+            })
+        }
+    }
+
+    /// The same blocker, every round: a review that never gets fewer.
+    const SAME_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "kind": "defect", "title": "total() drops cents", "evidence": "total.py:1", "repro": "total(0.1, 0.2)", "impact": "invoices are wrong", "fix": "add exactly"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+
+    /// A verifying harness whose owner answers with `replies`; `on_ask`
+    /// runs as each question is asked.
+    async fn stalling_harness(
+        model: &Arc<Scripted>,
+        replies: Vec<serde_json::Value>,
+        on_ask: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> (Harness, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let h = harness_with(
+            model,
+            vec![
+                Box::new(FileWriter),
+                Box::new(Checks(Arc::new(Mutex::new(Vec::new())))),
+                Box::new(OwnerReplies { replies: Mutex::new(replies.into()), asked: asked.clone(), on_ask }),
+            ],
+        )
+        .await;
+        let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+        h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+        (h, asked)
+    }
+
+    /// Review of #998: the owner's own words to a stalled loop replaced its
+    /// findings, and the builder heard only his words. They go on top of
+    /// the round's findings, in the same brief.
+    #[test]
+    fn his_words_to_a_stalled_loop_go_on_top_of_its_findings() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried again."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Used Decimal."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                ]);
+                let replies = vec![serde_json::json!({"own_words": "use Decimal for the total"}), serde_json::json!({"picked": "Stop here"})];
+                let (h, asked) = stalling_harness(&model, replies, None).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(asked.lock().unwrap().len(), 2, "{:?}", asked.lock().unwrap());
+                let calls = model.calls();
+                let told = calls
+                    .iter()
+                    .flat_map(|c| c.messages.iter())
+                    .find(|m| m.content.contains("use Decimal for the total"))
+                    .expect("the builder heard his words");
+                assert!(told.content.contains("Independent reviewers checked your change"), "the findings brief stays: {}", told.content);
+                assert!(told.content.contains("total() drops cents"), "with its findings: {}", told.content);
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert!(v.reason.contains("stopped_by_owner"), "{v:?}");
+            })
+        })
+    }
+
+    /// Review of #998: his own words to a stalled loop's question asked
+    /// again after a restart went on top of the card's short list of
+    /// problems. They go on top of the full brief the question was asked
+    /// with: repro, impact and fix included.
+    #[test]
+    fn his_words_after_a_restart_go_on_top_of_the_brief_it_was_asked_with() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Tried again."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                    Step::Say("Nothing else."),
+                    Step::Say("Used Decimal."),
+                    Step::Say(SAME_BLOCKER),
+                    Step::Say("Stopped, not verified."),
+                ]);
+                // The question as the row held it while it was asked: what a
+                // restart finds.
+                let rows: Arc<Mutex<Option<Arc<db::Store>>>> = Default::default();
+                let held: Arc<Mutex<Option<serde_json::Value>>> = Default::default();
+                let (r, k) = (rows.clone(), held.clone());
+                let on_ask: Box<dyn Fn() + Send + Sync> = Box::new(move || {
+                    let store = r.lock().unwrap().clone().expect("the store");
+                    let v = store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    k.lock().unwrap().get_or_insert(v.pending_ask.expect("the question waits on the row"));
+                });
+                let replies = vec![
+                    serde_json::json!({"picked": "Stop here"}),
+                    serde_json::json!({"own_words": "use Decimal for the total"}),
+                    serde_json::json!({"picked": "Stop here"}),
+                ];
+                let (h, asked) = stalling_harness(&model, replies, Some(on_ask)).await;
+                *rows.lock().unwrap() = Some(h.store.clone());
+                run_turn(&h, owner("Make total() add a and b")).await;
+                // A restart while the question waited.
+                let ask = held.lock().unwrap().clone().expect("the stalled question was asked");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                h.store.set_verification_pending_ask(&v.id, Some(&ask)).unwrap();
+                h.store
+                    .set_verification_state(&v.id, &db::VerificationState { state: "paused", rounds: v.rounds, ..Default::default() }, 5)
+                    .unwrap();
+                let before = model.calls().len();
+                run_turn(&h, owner("Anything else?")).await;
+                assert_eq!(asked.lock().unwrap().len(), 3, "{:?}", asked.lock().unwrap());
+                let calls = model.calls();
+                let told = calls[before..]
+                    .iter()
+                    .flat_map(|c| c.messages.iter())
+                    .find(|m| m.content.contains("use Decimal for the total"))
+                    .expect("the builder heard his words");
+                assert!(
+                    told.content.trim_start_matches("<system-reminder>").trim_start().starts_with("Review of your code work: Independent reviewers checked your change"),
+                    "the brief first, whole: {}",
+                    told.content
+                );
+                for part in ["total() drops cents", "total(0.1, 0.2)", "invoices are wrong", "add exactly"] {
+                    assert!(told.content.contains(part), "the brief keeps {part:?}: {}", told.content);
+                }
+                assert!(told.content.contains("his words win"), "his words on top: {}", told.content);
+            })
+        })
+    }
+
+    /// Review of #998: a stalled loop the owner kept sending on asked him
+    /// again every round, without end. After he has sent it on three
+    /// times in a turn and it stalls again, it stops as stalled, said so,
+    /// with no fourth question.
+    #[test]
+    fn a_stalled_loop_he_keeps_sending_on_stops_after_three_tries() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let mut steps = vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                ];
+                for _ in 0..5 {
+                    steps.push(Step::Say(SAME_BLOCKER));
+                    steps.push(Step::Say("Tried."));
+                }
+                steps.push(Step::Say(SAME_BLOCKER));
+                steps.push(Step::Say("Stopped: it kept finding the same problem."));
+                let model = Scripted::new(steps);
+                let replies = vec![serde_json::json!({"picked": "Keep going"}); 4];
+                let (h, asked) = stalling_harness(&model, replies, None).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let asked = asked.lock().unwrap().clone();
+                assert_eq!(asked.len(), 3, "asked three times, never a fourth: {asked:?}");
+                assert!(asked.iter().all(|q| q.contains("keeps finding problems")), "{asked:?}");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "not_verified", "{v:?}");
+                assert!(v.reason.contains(r#""code":"stalled""#), "said as stalled: {}", v.reason);
+                assert_eq!(model.calls().len(), 14, "it stopped at the sixth review");
+            })
+        })
+    }
     /// Review round 3 M5: work that kept changing after it was reported is
     /// checked again over the change: the old verdict is no longer what its
     /// badge says, and the new one is reported.
@@ -11344,6 +11974,39 @@ mod tests {
         })
     }
 
+    /// A round whose reviewers' copy could not be made ends unreviewed, and
+    /// its record names each reviewer as failed, never "no issues".
+    #[test]
+    fn a_round_nobody_could_review_records_each_reviewer_failed() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                // The reviewers' folder can't be made: a file sits where it goes.
+                let reviewers = config::copies_dir().unwrap().join("verify");
+                let _ = std::fs::remove_dir_all(&reviewers);
+                std::fs::write(&reviewers, "").unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say("It could not be reviewed, so it isn't verified."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                std::fs::remove_file(&reviewers).unwrap();
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#), "{v:?}");
+                assert!(v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].kind, "review");
+                assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
+                assert_eq!(rounds[0].detail["reviewers"], serde_json::json!({ "correctness": "failed" }));
+                assert!(!model.calls().iter().any(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))), "no reviewer ran");
+            })
+        })
+    }
+
     /// Review 2026-10-20 B3: work reported once is never reported again: a
     /// turn with no code after a turn whose work was not verified costs
     /// exactly one model call.
@@ -11378,7 +12041,7 @@ mod tests {
     #[test]
     fn an_answer_after_a_restart_does_what_it_did_before() {
         for (purpose, picked, state, reason) in [
-            (serde_json::json!({"kind": "stalled", "open": 2}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
+            (serde_json::json!({"kind": "stalled", "open": 2, "brief": ""}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
             (serde_json::json!({"kind": "no_checks"}), "Keep it in its copy", "not_verified", r#"{"code":"no_checks"}"#),
             (serde_json::json!({"kind": "owner_edits"}), "Keep mine, don't land it", "verified", r#"{"code":"kept_own_edits"}"#),
         ] {

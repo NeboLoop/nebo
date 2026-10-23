@@ -462,6 +462,7 @@ pub(crate) fn notify_updates_available(state: &AppState) {
             Some(&|ev, payload| state.hub.broadcast(ev, payload)),
             &older,
             Some(&notif_id),
+            None,
             "Superseded",
         );
         tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n);
@@ -531,6 +532,7 @@ pub(crate) async fn apply_claimed_update(
                 &state.store,
                 Some(&|ev, payload| state.hub.broadcast(ev, payload)),
                 &format!("artifact-update:{atype}:{id}:"),
+                None,
                 None,
                 "Updated",
             );

@@ -52,7 +52,12 @@ pub async fn fake_model(script: Script) -> (u16, Calls) {
                     return;
                 };
                 let messages = body["messages"].as_array().cloned().unwrap_or_default();
-                let reply = script(&purpose, &messages);
+                // A script may take its time (a slow model): off the async
+                // workers, so the server under test keeps answering meanwhile.
+                let reply = {
+                    let (script, purpose) = (script.clone(), purpose.clone());
+                    tokio::task::spawn_blocking(move || script(&purpose, &messages)).await.expect("the script answers")
+                };
                 seen.lock().unwrap().push((purpose, body));
                 let chunk = |delta: Value, finish: Value| {
                     format!(

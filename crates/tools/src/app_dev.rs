@@ -103,25 +103,16 @@ pub fn app_location(row: &db::models::Agent) -> Option<String> {
     served_dir(row).map(|dir| location_line(&row.name, dir))
 }
 
-/// Whether an app is the owner's own: made on this bot (a loose package in
-/// `user/agents/`, or a database-only row), never one installed from the
-/// marketplace (a sealed `.napp`, or a package under `nebo/agents/`). Only
-/// the owner's own apps carry developer tooling and build themselves.
+/// Whether an app is the owner's own: made on this bot (his employees
+/// built it, or he put its folder in `user/agents/` himself), never one
+/// installed from the store, a loop or an install code. Read from the one
+/// record of where it came from, set when its row is made
+/// (`Store::set_agent_built_here`; a duplicate keeps its source's); nothing
+/// recorded means installed. Only the owner's own apps carry developer
+/// tooling, build themselves, and hold what they ask for without his OK
+/// (`app_grants`).
 pub fn is_own_app(row: &db::models::Agent) -> bool {
-    if row.is_app.unwrap_or(0) == 0 {
-        return false;
-    }
-    let installed_root = config::nebo_dir().ok().map(|d| d.join("agents"));
-    !row
-        .napp_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(Path::new)
-        .is_some_and(|p| {
-            p.extension().is_some_and(|e| e == "napp")
-                || installed_root.as_deref().is_some_and(|root| p.starts_with(root))
-        })
+    row.is_app.unwrap_or(0) != 0 && row.built_here == 1
 }
 
 /// Whether `caller` may use the developer pack on `app`: only ever one of
@@ -282,11 +273,17 @@ pub fn misplaced_web_file_note(store: &db::Store, path: &Path) -> Option<String>
     })
 }
 
-/// The developer pack, on one store and the bot's WS broadcaster.
-pub fn tools(store: Arc<db::Store>, broadcaster: Option<Broadcaster>) -> Vec<Box<dyn DynTool>> {
+/// The developer pack, on one store, the bot's WS broadcaster and its
+/// browser (the live check of `app_reload`).
+pub fn tools(
+    store: Arc<db::Store>,
+    broadcaster: Option<Broadcaster>,
+    browser: Option<Arc<browser::Manager>>,
+) -> Vec<Box<dyn DynTool>> {
     let core = Arc::new(AppDev {
         store: store.clone(),
         broadcaster,
+        browser,
     });
     vec![
         Box::new(AppReloadTool(core.clone())),
@@ -298,6 +295,7 @@ pub fn tools(store: Arc<db::Store>, broadcaster: Option<Broadcaster>) -> Vec<Box
 struct AppDev {
     store: Arc<db::Store>,
     broadcaster: Option<Broadcaster>,
+    browser: Option<Arc<browser::Manager>>,
 }
 
 impl AppDev {
@@ -360,15 +358,26 @@ fn status_schema() -> Value {
     schema
 }
 
-/// `app_reload`'s input: the app, and `restore` to go back to a version.
+/// `app_reload`'s input: the app, `restore` to go back to a version, and
+/// `check` for the live check.
 fn reload_schema() -> Value {
     let mut schema = app_schema();
     schema["properties"]["restore"] = json!({
         "type": "string",
         "description": "A version id from app_status(history: true): puts the app's files back to that version, then reloads."
     });
+    schema["properties"]["check"] = json!({
+        "type": "boolean",
+        "description": "true: instead of reloading the open views, load the page fresh on a phone and a desktop in a view of its own and fail on any console error, uncaught exception, unhandled rejection, failed request of the app's own or blank page. The same live check that verifies app work."
+    });
     schema
 }
+
+/// The kind of the payload `app_reload(check: true)` returns: `{"kind",
+/// "passed", "couldNotRun" (null, [`LIVE_NO_BROWSER`] or
+/// [`LIVE_NO_SCRIPT`]), "errors", "notes" (failures from other sites, not
+/// counted)}`.
+pub const LIVE_CHECK: &str = "live_check";
 
 /// The version a call asks to restore, when it asks.
 fn restore_id(input: &Value) -> Option<&str> {
@@ -398,7 +407,11 @@ impl DynTool for AppReloadTool {
          Use it after changing an app's files; never rename files to get past a stale copy.\n\
          restore: \"<version id>\" first puts the app's page and source back to a saved version (app_status(history: true) lists \
          them), as a new version, so a restore can itself be undone. Use it when the owner asks to go back (\"put it back to how it \
-         was this morning\") and when a change made the app worse: restore the last good version instead of rewriting."
+         was this morning\") and when a change made the app worse: restore the last good version instead of rewriting.\n\
+         check: true instead loads the page fresh on a phone and a desktop, in a view of its own in this bot's browser (the open \
+         views are not reloaded), and fails with every console error, uncaught exception, unhandled rejection, failed request of \
+         the app's own, or a page that drew nothing; another site's failures are listed, not counted. It is the live check that \
+         verifies app work: run it after a change or a deploy, and fix what it reports."
             .to_string()
     }
 
@@ -430,6 +443,13 @@ impl DynTool for AppReloadTool {
                 },
                 None => String::new(),
             };
+            // The check loads the page in a view of its own and never
+            // reloads the owner's open views: a failing build stays off his
+            // screens.
+            if input.get("check").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let loaded = crate::app_publish::live_load(self.0.browser.as_ref(), &app).await;
+                return live_check_result(&app, &restored, loaded);
+            }
             let Some(broadcast) = self.0.broadcaster.as_ref() else {
                 if !restored.is_empty() {
                     return ToolResult::ok(restored);
@@ -451,6 +471,71 @@ impl DynTool for AppReloadTool {
             ))
         })
     }
+}
+
+/// Why `app_reload(check: true)` could not run its check at all, in its
+/// payload's `couldNotRun`: the bot has no browser to load the page in.
+pub const LIVE_NO_BROWSER: &str = "no_browser";
+/// ... or the page loaded without the developer script that reports what
+/// it does ([`crate::app_publish::NO_SCRIPT`]).
+pub const LIVE_NO_SCRIPT: &str = "no_script";
+
+/// What `app_reload(check: true)` returns for `app`'s live load: passed
+/// only when every view loaded with zero errors and the app's folder,
+/// entry page and every file it loads are there ([`live_problem`]); an
+/// error naming each problem otherwise. Failures from other sites are
+/// listed as notes and never fail it. A check that could not run says why
+/// (`couldNotRun`): it neither passed nor failed. Its [`LIVE_CHECK`]
+/// payload says the same for a caller that branches on it.
+fn live_check_result(
+    app: &db::models::Agent,
+    restored: &str,
+    loaded: Result<crate::app_console::ViewLines, crate::app_publish::LiveLoadError>,
+) -> ToolResult {
+    use crate::app_publish::LiveLoadError;
+    let dir = Path::new(served_dir(app).unwrap_or_default());
+    let views = crate::app_publish::live_views(app)
+        .iter()
+        .map(|(name, (w, h))| format!("{} ({w}×{h})", name.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let head = if restored.is_empty() { String::new() } else { format!("{restored}\n\n") };
+    let not_run = |why: &str, said: String| {
+        ToolResult::error(format!("{head}Live check of {}: it could not run. {said}", app.name)).with_payload(json!({
+            "kind": LIVE_CHECK, "passed": false, "couldNotRun": why, "errors": [], "notes": []
+        }))
+    };
+    let seen = match loaded {
+        Err(LiveLoadError::NoBrowser(e)) => return not_run(LIVE_NO_BROWSER, e),
+        Err(LiveLoadError::NoScript(_)) => return not_run(LIVE_NO_SCRIPT, format!("{}.", crate::app_publish::NO_SCRIPT)),
+        Err(LiveLoadError::NotOpened(e)) => crate::app_console::ViewLines { errors: vec![e], notes: Vec::new() },
+        Ok(seen) => seen,
+    };
+    let mut errors: Vec<String> = live_problem(dir, 0).map(str::to_string).into_iter().collect();
+    errors.extend(seen.errors);
+    let notes = if seen.notes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nNot counted (failures from other sites, never the app's own):\n- {}",
+            seen.notes.join("\n- ")
+        )
+    };
+    let passed = errors.is_empty();
+    let payload = json!({ "kind": LIVE_CHECK, "passed": passed, "couldNotRun": null, "errors": errors, "notes": seen.notes });
+    let result = if passed {
+        ToolResult::ok(format!(
+            "{head}Live check of {}: passed. It loaded on a {views} with no errors, and drew something.{notes}",
+            app.name
+        ))
+    } else {
+        ToolResult::error(format!(
+            "{head}Live check of {}: failed. Loaded on a {views}:\n- {}{notes}",
+            app.name,
+            errors.join("\n- ")
+        ))
+    };
+    result.with_payload(payload)
 }
 
 // ── app_status ─────────────────────────────────────────────────────
@@ -880,6 +965,26 @@ mod tests {
         store
             .set_agent_app_fields(id, true, Some(&ui.to_string_lossy()), None, None)
             .unwrap();
+        store.set_agent_built_here(id, true).unwrap();
+    }
+
+    /// Whether an app is his own is what its row records, never where its
+    /// folder is: a copy of an installed app in `user/agents/` stays
+    /// installed.
+    #[test]
+    fn an_app_is_his_own_only_when_its_row_says_it_was_made_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        store.create_agent("app-1", None, "Mine", "", "", "{}", None, None).unwrap();
+        store.set_agent_app_fields("app-1", true, Some("/data/ui1"), None, None).unwrap();
+        let row = || store.get_agent("app-1").unwrap().unwrap();
+        assert!(!is_own_app(&row()), "nothing recorded: installed");
+        store.set_agent_napp_path("app-1", "/data/user/agents/Mine").unwrap();
+        assert!(!is_own_app(&row()), "its folder alone says nothing");
+        store.set_agent_built_here("app-1", true).unwrap();
+        assert!(is_own_app(&row()));
+        store.set_agent_napp_path("app-1", "/data/nebo/agents/mine.napp").unwrap();
+        assert!(is_own_app(&row()), "the record holds wherever its folder is");
     }
 
     /// app_status names the entry page's scripts and styles, flags the one
@@ -958,6 +1063,131 @@ mod tests {
         assert!(!text.contains("Not loaded by"), "{text}");
     }
 
+    /// `app_reload(check: true)` passes only a page that loaded on a phone
+    /// and a desktop with zero errors and has every file it loads; each
+    /// error is named; another site's failures are notes that never fail
+    /// it; no browser, or a page without the check script, says it could
+    /// not run, never that it failed.
+    #[test]
+    fn the_live_check_passes_only_a_clean_load_and_names_every_error() {
+        use crate::app_console::ViewLines;
+        use crate::app_publish::LiveLoadError;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
+        app_row(&store, "app-1", "Puzzler", &ui);
+        let app = store.get_agent("app-1").unwrap().unwrap();
+        let lines = |errors: &[&str], notes: &[&str]| -> Result<ViewLines, LiveLoadError> {
+            Ok(ViewLines {
+                errors: errors.iter().map(|e| e.to_string()).collect(),
+                notes: notes.iter().map(|e| e.to_string()).collect(),
+            })
+        };
+
+        let clean = live_check_result(&app, "", lines(&[], &[]));
+        assert!(!clean.is_error, "{}", clean.content);
+        assert!(clean.content.contains("phone (390×844) and desktop (1280×800)"), "{}", clean.content);
+        let payload = clean.payload.unwrap();
+        assert_eq!((payload["kind"].as_str(), payload["passed"].as_bool()), (Some(LIVE_CHECK), Some(true)));
+        assert!(payload["couldNotRun"].is_null());
+
+        let broken = live_check_result(
+            &app,
+            "Restored.",
+            lines(&["Phone (390×844): Uncaught TypeError: x is undefined (/app.js:3)"], &[]),
+        );
+        assert!(broken.is_error);
+        assert!(broken.content.starts_with("Restored.\n\n"), "{}", broken.content);
+        assert!(broken.content.contains("- Phone (390×844): Uncaught TypeError"), "{}", broken.content);
+        let payload = broken.payload.unwrap();
+        assert_eq!(payload["passed"], false);
+        assert_eq!(payload["errors"].as_array().unwrap().len(), 1, "each error, counted one by one");
+
+        let blank = live_check_result(
+            &app,
+            "",
+            lines(&["Desktop (1280×800): The page loaded but drew nothing: no text, picture or canvas is on screen."], &[]),
+        );
+        assert!(blank.is_error && blank.content.contains("drew nothing"), "{}", blank.content);
+
+        // Analytics that failed (offline, blocked) is another site's: listed, never counted.
+        let noisy = live_check_result(
+            &app,
+            "",
+            lines(&[], &["Phone (390×844): POST https://stats.example/hit → network error (another site's, not counted)"]),
+        );
+        assert!(!noisy.is_error, "{}", noisy.content);
+        assert!(noisy.content.contains("Not counted") && noisy.content.contains("stats.example"), "{}", noisy.content);
+        assert_eq!(noisy.payload.unwrap()["notes"].as_array().unwrap().len(), 1);
+
+        std::fs::write(ui.join("index.html"), "<script src=\"app.js\"></script>").unwrap();
+        let missing = live_check_result(&app, "", lines(&[], &[]));
+        assert!(missing.is_error && missing.content.contains("a file the page loads is missing"), "{}", missing.content);
+
+        for (loaded, why) in [
+            (LiveLoadError::NoScript("x".into()), LIVE_NO_SCRIPT),
+            (LiveLoadError::NoBrowser("no browser".into()), LIVE_NO_BROWSER),
+        ] {
+            let not_run = live_check_result(&app, "", Err(loaded));
+            assert!(not_run.is_error && not_run.content.contains("it could not run"), "{}", not_run.content);
+            let payload = not_run.payload.unwrap();
+            assert_eq!((payload["passed"].as_bool(), payload["couldNotRun"].as_str()), (Some(false), Some(why)));
+        }
+    }
+
+    /// The check runs on a bot with no live views to reload: the tool
+    /// itself, with no broadcaster and no browser, says the check could not
+    /// run rather than refusing the call.
+    #[test]
+    fn a_reload_with_check_runs_the_check_without_open_views() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(store(tmp.path()));
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
+        app_row(&store, "app-1", "Puzzler", &ui);
+        let reload = tools(store, None, None).into_iter().find(|t| t.name() == APP_RELOAD).unwrap();
+        let ctx = ToolContext { session_key: "agent:app-1:web".into(), ..Default::default() };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let plain = rt.block_on(reload.execute_dyn(&ctx, json!({})));
+        assert!(plain.is_error && plain.payload.is_none(), "{}", plain.content);
+        let checked = rt.block_on(reload.execute_dyn(&ctx, json!({ "check": true })));
+        let payload = checked.payload.expect("the check's payload");
+        assert_eq!(payload["couldNotRun"], LIVE_NO_BROWSER, "{}", checked.content);
+    }
+
+    /// Review 2026-10-21: the check loads the app in a view of its own; the
+    /// owner's open windows are never reloaded by it (a failing build stays
+    /// off his screens). A plain reload still reaches them.
+    #[test]
+    fn the_check_never_reloads_the_owners_open_views() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(store(tmp.path()));
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
+        let id = format!("app-{}", uuid::Uuid::new_v4().simple());
+        app_row(&store, &id, "Puzzler", &ui);
+        let sent: Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+        let heard = sent.clone();
+        let broadcaster: Broadcaster = Arc::new(move |event: &str, data: Value| {
+            assert_eq!(event, RELOAD_EVENT);
+            heard.lock().unwrap().push(data);
+        });
+        let reload = tools(store, Some(broadcaster), None).into_iter().find(|t| t.name() == APP_RELOAD).unwrap();
+        let ctx = ToolContext { session_key: format!("agent:{id}:web"), ..Default::default() };
+        let _window = view_opened(&id);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let checked = rt.block_on(reload.execute_dyn(&ctx, json!({ "check": true })));
+        assert!(checked.payload.is_some(), "{}", checked.content);
+        assert!(sent.lock().unwrap().is_empty(), "the check reloaded the owner's window");
+        let reloaded = rt.block_on(reload.execute_dyn(&ctx, json!({})));
+        assert!(!reloaded.is_error && reloaded.content.contains("Reloaded every open view"), "{}", reloaded.content);
+        assert_eq!(*sent.lock().unwrap(), [json!({ "appId": id })]);
+    }
+
     /// The code tool is up front for an app employee only with App
     /// Developer mode on; never for anyone else.
     #[test]
@@ -1024,6 +1254,7 @@ mod tests {
         store
             .set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp")
             .unwrap();
+        store.set_agent_built_here("app-9", false).unwrap();
         assert!(withheld(&store, "app-1").is_empty(), "mode off: the app builds itself");
         assert_eq!(withheld(&store, "dev-1").len(), TOOLS.len(), "mode off: not its teammate");
         assert_eq!(withheld(&store, "app-9").len(), TOOLS.len(), "never an installed app");

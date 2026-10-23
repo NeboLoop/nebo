@@ -1582,7 +1582,8 @@ impl Registry {
         // The developer pack for apps (deferred): offered to the owner's own
         // app for itself, and under App Developer mode to app employees and
         // their teammates (`app_dev::withheld`).
-        for tool in crate::app_dev::tools(store.clone(), broadcaster.clone()) {
+        let reload_browser = self.browser_manager.read().unwrap().clone();
+        for tool in crate::app_dev::tools(store.clone(), broadcaster.clone(), reload_browser) {
             self.register(tool).await;
         }
 
@@ -2615,6 +2616,16 @@ pub(crate) mod tests {
         let out = r.execute(&ctx, "echo_text", serde_json::json!({})).await;
         assert!(out.content.contains("The required parameter `text` is missing"), "{}", out.content);
         assert!(out.content.contains("A minimal valid call: {\"text\": <string>}"), "{}", out.content);
+    }
+
+    /// A number sent as a string runs as the number, in the one place every
+    /// call is settled.
+    #[tokio::test]
+    async fn a_number_sent_as_a_string_runs() {
+        let r = echo_registry().await;
+        let out = r.execute(&ToolContext::default(), "echo_text", serde_json::json!({"text": "hi", "times": "3"})).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "hihihi");
     }
 
     /// Invalid input is never concurrency-safe: a call that won't run as

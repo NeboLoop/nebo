@@ -1115,6 +1115,17 @@ fn mail_send_refusal(input: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The hourly calendar check of 2026-10-22 sent `days: "2"` and failed
+    /// every hour with "invalid type: string \"2\", expected i64". The
+    /// registry repairs it against this tool's schema before it runs.
+    #[test]
+    fn a_number_sent_as_a_string_parses() {
+        let mut input = serde_json::json!({"resource": "calendar", "action": "list", "days": "2"});
+        crate::mcp_tool::coerce_schema_types(&mut input, &OsTool::new().schema());
+        let parsed: organizer::OrganizerInput = serde_json::from_value(input).expect("parses");
+        assert_eq!(parsed.days, Some(2));
+    }
+
     /// Every row of the 2026-09-05 misroute table (audit class C, os) plus
     /// the arms that already existed: the resource a call resolves to when
     /// it names none. One table so a dropped arm shows up as one row.

@@ -58,6 +58,7 @@
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
   import Toast from '$lib/components/Toast.svelte';
   import AskPopover from '$lib/components/AskPopover.svelte';
+  import AppConsentModal from '$lib/components/apps/AppConsentModal.svelte';
   import { unreadCount, loadNotifications } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
@@ -211,7 +212,7 @@
 
   // An app window's voice pill: a window too small for anything but itself.
   const isVoicePill = $derived(appPath($page.url.pathname).startsWith('/voice-pill'));
-  const isEmbed = $derived(appPath($page.url.pathname).startsWith('/chat-embed') || isVoicePill);
+  const isEmbed = $derived(isVoicePill);
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />
@@ -266,6 +267,7 @@
      by his click on its toast or OS notification; he answers without
      leaving the chat he is in. -->
 <AskPopover />
+<AppConsentModal />
 <!-- The ONE install/configure modal for the whole app. Opened via the
      installFlow store (product/configure) or window nebo:code_* events (code
      paste). Mounted once here so two install modals can never stack. -->

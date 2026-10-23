@@ -4464,7 +4464,7 @@
 			"needs_decision": "Perlukan keputusan anda: {items}",
 			"stopped_by_owner": "Dihentikan oleh anda; isu terbuka: {open, plural, other {#}}",
 			"stalled": "Berhenti membuat kemajuan; isu terbuka: {open, plural, other {#}}",
-			"no_checks": "Tiada ujian atau binaan dapat dijalankan",
+			"no_checks": "Tiada apa yang membuktikan ia berfungsi: projek ini tiada binaan, semakan jenis atau ujian untuk dijalankan",
 			"landed_unreviewed": "Dimasukkan tanpa lulus semakan, atas pilihan anda",
 			"edits_in_way": "Belum dimasukkan: suntingan anda masih menghalang",
 			"kept_own_edits": "Tidak dimasukkan: anda kekalkan suntingan anda sendiri, dan perubahan ini menunggu dalam salinannya",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} saat"
-		}
+		},
+		"answering": "Menjawab: {question}",
+		"tellIt": "Beritahu apa yang perlu dibuat",
+		"sending": "Menghantar…",
+		"sendFailed": "Jawapan anda tidak dihantar."
+	},
+	"appPermissions": {
+		"title": "{name} mahu buat lebih banyak",
+		"intro": "Setuju hanya jika anda mempercayai aplikasi ini. Anda boleh mengubahnya kemudian dalam tetapan aplikasi.",
+		"origin": "Aplikasi ini tidak dibuat di sini. Orang di luar syarikat anda yang membuatnya.",
+		"wantsFiles": "{name} mahu melihat fail dalam {target}",
+		"wantsWeb": "{name} mahu bercakap dengan {target}",
+		"wantsWebAny": "{name} mahu bercakap dengan mana-mana laman web",
+		"wantsHelper": "{name} mahu meminta bantuan {target}",
+		"wantsHelperAny": "{name} mahu meminta bantuan mana-mana pekerja anda",
+		"wantsPlugin": "{name} mahu menggunakan {target}",
+		"canFiles": "Melihat fail dalam {target}",
+		"canWeb": "Bercakap dengan {target}",
+		"canWebAny": "Bercakap dengan mana-mana laman web",
+		"canHelper": "Meminta bantuan {target}",
+		"canHelperAny": "Meminta bantuan mana-mana pekerja anda",
+		"canPlugin": "Menggunakan {target}",
+		"allow": "Benarkan",
+		"deny": "Jangan benarkan",
+		"off": "Mati",
+		"notNow": "Bukan sekarang",
+		"sectionTitle": "Apa yang boleh dibuat oleh aplikasi ini",
+		"sectionHint": "Aplikasi ini dari marketplace. Ia hanya boleh buat apa yang anda benarkan.",
+		"ownHint": "Anda membina aplikasi ini di sini, jadi ia boleh buat apa yang dimintanya.",
+		"notAnswered": "Belum dijawab"
 	}
 }

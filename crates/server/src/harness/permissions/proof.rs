@@ -1172,6 +1172,80 @@ async fn a_relayed_question_is_a_needs_you_item_answered_on_its_card() {
     drop(handle);
 }
 
+/// A question and an approval the last process's runs were waiting on died
+/// with that process: on the next boot they leave Needs you, settled as
+/// withdrawn, never to point the owner at a card that is no longer anywhere
+/// (live 2026-10-23: React Demo's question stayed in Needs you after a
+/// restart ended its run, and Review opened the assistant's chat with no
+/// card in it). Anything made since the boot, and any other kind of item,
+/// stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_left_by_the_last_process_leaves_needs_you_at_boot() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let emp = format!("demo-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let key = format!("agent:{emp}:coworker:assistant");
+    let req = format!("req-{}", uuid::Uuid::new_v4().simple());
+    let card = json!([{ "type": "options", "multiSelect": false, "options": ["Add it", "Leave it"] }]);
+    let (handle, _rx) = park_card(&nebo, &emp, &key, &Door::Coworker { from: "assistant".into() }, &req, "Add aria-current to the nav?", card).await;
+    // The process ends: the run and its answer channel go without a turn end.
+    drop(handle);
+    state.ask_channels.lock().await.remove(&req);
+    let question = crate::handlers::asks::push_id(&req);
+
+    let appr = format!("toolu-{}", uuid::Uuid::new_v4().simple());
+    crate::handlers::asks::approval_raised(
+        state,
+        &appr,
+        &tools::ApprovalCard {
+            event: json!({ "relayed": true }),
+            session_key: key.clone(),
+            agent_id: emp.clone(),
+            summary: format!("{emp} wants to run `shell`"),
+            since: chrono::Utc::now().timestamp(),
+        },
+    );
+    let approval = crate::handlers::asks::approval_push_id(&appr);
+
+    let other = format!("note-{}", uuid::Uuid::new_v4().simple());
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    nebo.store()
+        .create_notification_if_not_exists(&db::models::NewNotification {
+            id: &other,
+            user_id: &user,
+            notification_type: "question",
+            title: "Which supplier?",
+            body: None,
+            action_url: None,
+            agent_id: Some(&emp),
+            needs_you: true,
+            options: &[],
+            link_label: None,
+            reply_to: None,
+            made_in: None,
+        })
+        .unwrap();
+    for id in [&question, &approval, &other] {
+        assert_eq!(item(&nebo, id).status, "open", "{id} waits");
+    }
+
+    // Made after this process booted: still waiting on this process.
+    let now = chrono::Utc::now().timestamp();
+    crate::handlers::asks::settle_orphaned(state, now - 3600);
+    assert_eq!(item(&nebo, &question).status, "open");
+    assert_eq!(item(&nebo, &approval).status, "open");
+
+    // Made before it: the run that asked is gone.
+    crate::handlers::asks::settle_orphaned(state, now + 1);
+    let needs_you = inbox(&nebo, db::models::InboxView::NeedsYou);
+    for id in [&question, &approval] {
+        let n = item(&nebo, id);
+        assert_eq!((n.status.as_str(), n.answer.as_deref()), ("answered", Some("Withdrawn")), "{id}");
+        assert!(!needs_you.iter().any(|x| &x.id == id), "{id} left Needs you");
+    }
+    assert!(needs_you.iter().any(|x| x.id == other), "another kind of item stays");
+}
+
 /// An employee's own question (push_notification with options) is a
 /// Needs-you item; its answer settles it with the option's words and goes
 /// to the session that asked, on the wake rail. An update has nothing to
@@ -1405,10 +1479,13 @@ async fn a_learned_rule_acts_only_inside_its_conditions_and_keeps_its_consent_an
     let offer_row = nebo.store().get_pending_write(offer.id.strip_prefix("learn:").unwrap()).unwrap().unwrap();
     assert_eq!((offer_row.status.as_str(), offer_row.resolved_via.as_deref()), ("approved", Some("mobile")));
 
+    // Each call he allowed this once runs when the engine delivers his
+    // answer, on its own clock: all three have, before the next is counted.
+    nebo.wait_until(10, "the three calls he allowed once ran", || ran.load(Ordering::SeqCst) == 3).await;
+
     // Inside: runs, handled for him, with Undo.
-    let before = ran.load(Ordering::SeqCst);
     assert!(buy(&nebo, &emp, &tool, 31_200).await.is_none(), "under $500: it runs");
-    assert_eq!(ran.load(Ordering::SeqCst), before + 1);
+    assert_eq!(ran.load(Ordering::SeqCst), 4);
     let handled: Vec<_> = inbox(&nebo, db::models::InboxView::Updates)
         .into_iter()
         .filter(|n| n.id.starts_with(&format!("handled:{}:", rule.id)))

@@ -146,9 +146,10 @@ impl Store {
     }
 
     /// Settle every open item whose id starts with `prefix` but `keep`
-    /// (an update notice for a version no longer on offer). Returns the ids
-    /// settled.
-    pub fn settle_notifications_like(&self, prefix: &str, keep: Option<&str>, answer: &str) -> Result<Vec<String>, NeboError> {
+    /// (an update notice for a version no longer on offer), and, with
+    /// `before`, only those made before then (what a process that ended left
+    /// open). Returns the ids settled.
+    pub fn settle_notifications_like(&self, prefix: &str, keep: Option<&str>, before: Option<i64>, answer: &str) -> Result<Vec<String>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -156,11 +157,12 @@ impl Store {
                     SET answered_at = strftime('%s', 'now'), answer = ?3,
                         read_at = COALESCE(read_at, strftime('%s', 'now'))
                   WHERE substr(id, 1, length(?1)) = ?1 AND (?2 IS NULL OR id != ?2) AND answered_at IS NULL
+                    AND (?4 IS NULL OR created_at < ?4)
                   RETURNING id",
             )
             .db_err("notifications")?;
         let rows = stmt
-            .query_map(params![prefix, keep, answer], |r| r.get::<_, String>(0))
+            .query_map(params![prefix, keep, answer, before], |r| r.get::<_, String>(0))
             .db_err("notifications")?;
         rows.collect::<Result<Vec<_>, _>>().db_err("notifications")
     }
@@ -193,6 +195,19 @@ impl Store {
         .db_err("notifications")
     }
 
+    /// Whether a run on `session_key` posted an item to the Inbox itself
+    /// (`made_in`) at or after `since`: brought there anew, or a briefing it
+    /// restated, which comes back with a new time.
+    pub fn posted_from_session(&self, session_key: &str, since: i64) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM notifications WHERE made_in = ?1 AND created_at >= ?2)",
+            params![session_key, since],
+            |row| row.get(0),
+        )
+        .db_err("notifications")
+    }
+
     /// Insert an item unless one with the same `id` exists (ids are
     /// deterministic for retryable events). One the owner put away comes
     /// back fresh and unread when it is told again, as a new one would.
@@ -204,14 +219,14 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO notifications (id, user_id, type, title, body, action_url, agent_id,
-                                        needs_you, options, link_label, reply_to, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%s', 'now'))
+                                        needs_you, options, link_label, reply_to, made_in, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, strftime('%s', 'now'))
              ON CONFLICT(id) DO UPDATE SET
                archived_at = NULL, read_at = NULL, created_at = excluded.created_at
              WHERE notifications.archived_at IS NOT NULL",
             params![
                 n.id, n.user_id, n.notification_type, n.title, n.body, n.action_url, n.agent_id,
-                n.needs_you as i64, options, n.link_label, n.reply_to
+                n.needs_you as i64, options, n.link_label, n.reply_to, n.made_in
             ],
         )
         .db_err("notifications")?;

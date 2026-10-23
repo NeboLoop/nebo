@@ -27,6 +27,12 @@
 //!   token, after the same jittered, doubling wait, a few times before the
 //!   caller's own backoff takes over ([`dial_through_busy`]). The token is
 //!   never refreshed for it.
+//! - When the computer is about to sleep (a DarkWake ending included), the
+//!   bot closes both connections itself with [`SLEEP_CLOSE_CODE`] ("sleep"),
+//!   so the hub shows it offline at once instead of finding out a minute
+//!   later from a missed keepalive, and dials nothing while asleep. On wake
+//!   it redials after a random 0–500 ms, from the start of the backoff
+//!   ([`Disconnect::Sleep`]).
 
 use std::future::Future;
 use std::time::Duration;
@@ -44,6 +50,19 @@ pub const DRAIN_CLOSE_CODE: u16 = 1012;
 /// The close code the hub answers a CONNECT with when it is too busy to
 /// take it (1013 Try Again Later).
 pub const TRY_AGAIN_LATER_CLOSE_CODE: u16 = 1013;
+
+/// The close code the bot sends on the comms connection and the tunnel just
+/// before the computer sleeps (1001 Going Away, reason
+/// [`SLEEP_CLOSE_REASON`]). The hub takes it as "this bot is offline now".
+pub const SLEEP_CLOSE_CODE: u16 = 1001;
+
+/// The reason sent with [`SLEEP_CLOSE_CODE`].
+pub const SLEEP_CLOSE_REASON: &str = "sleep";
+
+/// The longest closing for sleep may take, on each connection, and the
+/// longest the OS's sleep is held for those closes: the computer waits on
+/// them, and Windows gives a suspend callback about two seconds.
+pub const SLEEP_CLOSE_LIMIT: Duration = Duration::from_millis(1500);
 
 /// How many times a CONNECT the hub turned away as busy is dialed again by
 /// [`dial_through_busy`] before the caller's own backoff takes over.
@@ -74,6 +93,9 @@ pub enum Disconnect {
     Cut,
     /// Anything else: another close code, or a dial that failed.
     Dropped,
+    /// The bot closed with [`SLEEP_CLOSE_CODE`] because the computer was
+    /// about to sleep. Nothing is dialed until it wakes; then at once.
+    Sleep,
 }
 
 impl Disconnect {
@@ -91,6 +113,16 @@ impl Disconnect {
     /// The comms connection and the tunnel both classify through here.
     pub fn from_close(code: Option<u16>) -> Self {
         code.map_or(Disconnect::Cut, Self::from_close_code)
+    }
+
+    /// The close frame (code, reason) the bot sends when it ends a
+    /// connection this way, if it names one: only [`Disconnect::Sleep`]
+    /// does. Every other close the bot makes sends a bare close frame.
+    pub fn close_frame(self) -> Option<(u16, &'static str)> {
+        match self {
+            Disconnect::Sleep => Some((SLEEP_CLOSE_CODE, SLEEP_CLOSE_REASON)),
+            _ => None,
+        }
     }
 }
 
@@ -115,6 +147,13 @@ impl Backoff {
         }
         match ended {
             Disconnect::Drain => random_up_to(DRAIN_JITTER),
+            // Waking is a fresh start: whatever failed before the sleep says
+            // nothing about the network now. The jitter spreads the bots of
+            // one office that wake together.
+            Disconnect::Sleep => {
+                self.attempt = 0;
+                random_up_to(DRAIN_JITTER)
+            }
             Disconnect::Redirect => crate::cell::jitter(),
             // The first redial after a cut is spread over 0–5 s; a cut that
             // follows a short session counts as a failure like any drop.
@@ -262,6 +301,24 @@ mod tests {
         let w = b.wait(Disconnect::Cut, Duration::from_secs(1));
         assert!(w <= Duration::from_secs(16));
         assert_eq!(b.attempt, 5);
+    }
+
+    /// Waking redials within half a second, from the start of the backoff,
+    /// however many drops came before the sleep; only the sleep close names
+    /// a close frame, and it is 1001 "sleep".
+    #[test]
+    fn a_wake_redials_at_once_and_starts_the_backoff_over() {
+        for _ in 0..200 {
+            let mut b = Backoff { attempt: 6 };
+            assert!(b.wait(Disconnect::Sleep, Duration::ZERO) <= DRAIN_JITTER);
+            assert_eq!(b.attempt, 0);
+        }
+        assert_eq!(Disconnect::Sleep.close_frame(), Some((1001, "sleep")));
+        for other in [Disconnect::Drain, Disconnect::Redirect, Disconnect::Cut, Disconnect::Dropped] {
+            assert_eq!(other.close_frame(), None, "{other:?}");
+        }
+        // The hub's own 1001 is not a sleep of this bot's: a plain drop.
+        assert_eq!(Disconnect::from_close_code(SLEEP_CLOSE_CODE), Disconnect::Dropped);
     }
 
     /// A drain is planned: it waits at most 500 ms and never advances the

@@ -7,6 +7,7 @@
 
 import type { RosterTeam, TeamMessage } from '$lib/api/neboComponents';
 import { stripAttachmentNotes } from '$lib/types/attachment';
+import { plainText } from '$lib/markdown';
 
 /** The newest post in a team's threads: who said it and what. */
 export type TeamLatest = { from: string; mine: boolean; text: string };
@@ -82,11 +83,10 @@ export function rowChip(row: TeamRow | undefined): { live: number } | 'done' | n
  *  `nameOf` names a mentioned employee by id. */
 export function latestLine(latest: TeamLatest | null, you: string, nameOf: (id: string) => string): string {
 	if (!latest) return '';
-	const words = stripAttachmentNotes(latest.text)
-		.replace(/<@([A-Za-z0-9._-]+)>/g, (_, id: string) => `@${nameOf(id)}`)
-		.split('\n')
-		.map((l) => l.replace(/^\s*(?:[#>*-]+\s*)+/, '').replace(/[*_`]{2,}/g, '').trim())
-		.find(Boolean);
+	const words = plainText(
+		stripAttachmentNotes(latest.text).replace(/<@([A-Za-z0-9._-]+)>/g, (_, id: string) => `@${nameOf(id)}`),
+		{ first: true }
+	);
 	if (!words) return '';
 	const who = latest.mine ? you : latest.from;
 	return who ? `${who} · ${words}` : words;

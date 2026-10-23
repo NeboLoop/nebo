@@ -224,6 +224,32 @@ pub fn agent_session_prefix(agent_id: &str) -> String {
 /// a team.
 pub const COWORKER_CHANNEL: &str = "coworker";
 
+/// Channel segment of an app page's conversations with its own employee
+/// (`nebo.chat`): `agent:<id>:page`, or `agent:<id>:page:<thread>`. Its
+/// words are the app's (`Origin::App`), never the owner's: it is never one
+/// of his conversations ([`Conversation::App`]), and the owner's composer
+/// never writes into it.
+pub const APP_PAGE_CHANNEL: &str = "page";
+
+/// An app page's conversation with its own employee: [`APP_PAGE_CHANNEL`],
+/// with the page's `thread` when it names one.
+pub fn app_page_key(agent_id: &str, thread: Option<&str>) -> String {
+    let base = build_agent_session_key(agent_id, APP_PAGE_CHANNEL);
+    match thread {
+        Some(t) => format!("{base}:{t}"),
+        None => base,
+    }
+}
+
+/// Whether `key` is one of app `agent_id`'s own conversations: its page's
+/// ([`app_page_key`]) or its SDK's one-shot requests (`app:<id>:…`).
+pub fn is_app_session(agent_id: &str, key: &str) -> bool {
+    let page = app_page_key(agent_id, None);
+    key == page
+        || key.strip_prefix(&page).is_some_and(|r| r.starts_with(':'))
+        || key.strip_prefix("app:").and_then(|r| r.strip_prefix(agent_id)).is_some_and(|r| r.starts_with(':'))
+}
+
 /// Whose conversation one of an employee's sessions is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Conversation {
@@ -238,15 +264,19 @@ pub enum Conversation {
     /// or in one of the team's projects
     /// (`agent:<id>:coworker:team:<team>:project:<project>`).
     Team { team_id: String, project_id: Option<String> },
+    /// An app page's conversation with its employee ([`APP_PAGE_CHANNEL`]):
+    /// the app's, never one the owner writes in.
+    App,
 }
 
 impl Conversation {
-    /// The wire name: `owner`, `colleague` or `team`.
+    /// The wire name: `owner`, `colleague`, `team` or `app`.
     pub fn kind(&self) -> &'static str {
         match self {
             Conversation::Owner => "owner",
             Conversation::Colleague { .. } => "colleague",
             Conversation::Team { .. } => "team",
+            Conversation::App => "app",
         }
     }
 }
@@ -266,6 +296,7 @@ pub fn conversation_of(key: &str) -> Option<Conversation> {
     }
     match info.channel.as_str() {
         "help" | "workflow" | "cron" => None,
+        APP_PAGE_CHANNEL => Some(Conversation::App),
         COWORKER_CHANNEL => {
             let ctx = info.rest.split_once(':').map(|(_, ctx)| ctx).unwrap_or("");
             Some(match ctx.split_once(':') {
@@ -358,6 +389,21 @@ pub fn agent_id_from_surface_id(surface_id: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    /// An app page's conversation is the app's, never the owner's; the
+    /// embed's old `agent:<id>:app` stays his.
+    #[test]
+    fn an_app_pages_conversation_is_the_apps() {
+        assert_eq!(app_page_key("crm", None), "agent:crm:page");
+        assert_eq!(app_page_key("crm", Some("deal-7")), "agent:crm:page:deal-7");
+        assert_eq!(conversation_of("agent:crm:page"), Some(Conversation::App));
+        assert_eq!(conversation_of("agent:crm:page:deal-7"), Some(Conversation::App));
+        assert_eq!(conversation_of("agent:crm:app"), Some(Conversation::Owner));
+        assert!(is_app_session("crm", "agent:crm:page") && is_app_session("crm", "agent:crm:page:t") && is_app_session("crm", "app:crm:api"));
+        for not in ["agent:crm:web", "agent:crm:app", "agent:crm:pages", "agent:crmx:page", "app:crmx:api", "agent:crm:thread:t"] {
+            assert!(!is_app_session("crm", not), "{not}");
+        }
+    }
+
     #[test]
     fn a_steps_run_and_activity_are_read_from_its_session() {
         use super::workflow_step;

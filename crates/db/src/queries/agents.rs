@@ -26,6 +26,13 @@ pub fn agent_slug(name: &str) -> String {
     out
 }
 
+/// A served folder as `app_served_from` compares it: surrounding
+/// whitespace and any trailing separator dropped, the same characters its
+/// SQL trims from the stored path.
+fn served_path_key(dir: &str) -> &str {
+    dir.trim_matches([' ', '\t', '\n', '\r']).trim_end_matches(['/', '\\'])
+}
+
 #[cfg(test)]
 mod slug_tests {
     use super::agent_slug;
@@ -40,14 +47,63 @@ mod slug_tests {
     }
 }
 
+#[cfg(test)]
+mod served_from_tests {
+    use crate::Store;
+
+    /// One folder rule on both sides: whitespace and a trailing separator
+    /// never decide whether a folder is an app's; a row that is not an app
+    /// is never one.
+    #[test]
+    fn an_app_is_found_by_its_folder_however_the_folder_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        s.create_agent("app-1", None, "Media Studio", "", "", "", None, None).unwrap();
+        s.set_agent_app_fields("app-1", true, Some(" /agents/Media Studio/ui/ "), None, None).unwrap();
+        s.create_agent("emp-1", None, "Writer", "", "", "", None, None).unwrap();
+        s.set_agent_app_fields("emp-1", false, Some("/agents/Writer/ui"), None, None).unwrap();
+        for asked in ["/agents/Media Studio/ui", "/agents/Media Studio/ui/", "  /agents/Media Studio/ui\n"] {
+            assert_eq!(s.app_served_from(asked).unwrap().map(|a| a.id).as_deref(), Some("app-1"), "{asked:?}");
+        }
+        assert!(s.app_served_from("/agents/Writer/ui").unwrap().is_none());
+        assert!(s.app_served_from("/agents/Media Studio").unwrap().is_none());
+        assert!(s.app_served_from(" / ").unwrap().is_none());
+    }
+}
+
 impl Store {
+    /// The app whose pages are served from `dir`, one row. A folder matches
+    /// with surrounding whitespace and any trailing separator ignored, on
+    /// both sides; when two apps name one folder, the latest installed wins.
+    pub fn app_served_from(&self, dir: &str) -> Result<Option<Agent>, NeboError> {
+        let dir = served_path_key(dir);
+        if dir.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id, kind, name, description, agent_md, frontmatter,
+                    pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
+             FROM agents
+             WHERE is_app = 1
+               AND rtrim(trim(app_ui_path, ' ' || char(9) || char(10) || char(13)), '/\\') = ?1
+             ORDER BY installed_at DESC, id
+             LIMIT 1",
+            params![dir],
+            row_to_agent,
+        )
+        .optional()
+        .db_err("app_served_from")
+    }
+
     pub fn list_agents(&self, limit: i64, offset: i64) -> Result<Vec<Agent>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -69,7 +125,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -141,7 +197,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
                  FROM agents",
             )
             .db_err("get_agent_by_slug")?;
@@ -204,7 +260,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -485,7 +541,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -692,6 +748,16 @@ impl Store {
         Ok(())
     }
 
+    /// Record where an app came from: made on this bot (`true`) or installed
+    /// (`false`, every row's start). Set once when the row is made; a
+    /// duplicate copies its source's (`tools::app_dev::is_own_app`).
+    pub fn set_agent_built_here(&self, id: &str, built_here: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE agents SET built_here = ?2 WHERE id = ?1", params![id, built_here as i64])
+            .db_err("set_agent_built_here")?;
+        Ok(())
+    }
+
     pub fn set_agent_napp_path(&self, id: &str, napp_path: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -759,7 +825,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape, built_here
              FROM agents WHERE loop_agent_id = ?1",
             params![loop_agent_id],
             row_to_agent,
@@ -1229,6 +1295,7 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         reports_to: row.get(27)?,
         department_locked: row.get(28)?,
         shape: row.get(29)?,
+        built_here: row.get(30)?,
     })
 }
 

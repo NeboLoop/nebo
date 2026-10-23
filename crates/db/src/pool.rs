@@ -73,7 +73,7 @@ impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for Sqlite
 }
 
 /// `conversation_kind(session_name)`: whose conversation a chat is —
-/// `'owner'`, `'colleague'`, `'team'`, or NULL when it is not a conversation
+/// `'owner'`, `'colleague'`, `'team'`, `'app'`, or NULL when it is not a conversation
 /// — so the queries over an employee's chats ask the key classifier
 /// (`types::keyparser::conversation_of`) rather than keep their own copy of
 /// its rules.
