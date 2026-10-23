@@ -187,18 +187,27 @@ pub fn settle(
     }
 }
 
-/// [`settle`] every open item whose id starts with `prefix`, all but `keep`:
-/// an update notice for a version no longer on offer.
+/// [`settle`] every open item whose id starts with `prefix`, all but `keep`
+/// (an update notice for a version no longer on offer), and, with `before`,
+/// only those made before then (what a process that ended left waiting).
+/// Returns the ids settled.
 pub fn settle_all(
     store: &db::Store,
     broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
     prefix: &str,
     keep: Option<&str>,
+    before: Option<i64>,
     answer: &str,
-) {
-    match store.settle_notifications_like(prefix, keep, answer) {
-        Ok(ids) => ids.iter().for_each(|id| settled(broadcast, id, answer, None)),
-        Err(e) => tracing::warn!(prefix, error = %e, "Inbox items not settled"),
+) -> Vec<String> {
+    match store.settle_notifications_like(prefix, keep, before, answer) {
+        Ok(ids) => {
+            ids.iter().for_each(|id| settled(broadcast, id, answer, None));
+            ids
+        }
+        Err(e) => {
+            tracing::warn!(prefix, error = %e, "Inbox items not settled");
+            Vec::new()
+        }
     }
 }
 

@@ -146,9 +146,10 @@ impl Store {
     }
 
     /// Settle every open item whose id starts with `prefix` but `keep`
-    /// (an update notice for a version no longer on offer). Returns the ids
-    /// settled.
-    pub fn settle_notifications_like(&self, prefix: &str, keep: Option<&str>, answer: &str) -> Result<Vec<String>, NeboError> {
+    /// (an update notice for a version no longer on offer), and, with
+    /// `before`, only those made before then (what a process that ended left
+    /// open). Returns the ids settled.
+    pub fn settle_notifications_like(&self, prefix: &str, keep: Option<&str>, before: Option<i64>, answer: &str) -> Result<Vec<String>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -156,11 +157,12 @@ impl Store {
                     SET answered_at = strftime('%s', 'now'), answer = ?3,
                         read_at = COALESCE(read_at, strftime('%s', 'now'))
                   WHERE substr(id, 1, length(?1)) = ?1 AND (?2 IS NULL OR id != ?2) AND answered_at IS NULL
+                    AND (?4 IS NULL OR created_at < ?4)
                   RETURNING id",
             )
             .db_err("notifications")?;
         let rows = stmt
-            .query_map(params![prefix, keep, answer], |r| r.get::<_, String>(0))
+            .query_map(params![prefix, keep, answer, before], |r| r.get::<_, String>(0))
             .db_err("notifications")?;
         rows.collect::<Result<Vec<_>, _>>().db_err("notifications")
     }

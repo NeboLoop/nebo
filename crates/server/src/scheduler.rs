@@ -73,6 +73,14 @@ pub fn spawn(
             Err(e) => warn!(error = %e, "verifications left running by the last process not swept"),
         }
 
+        // Questions and approvals the last process's runs were waiting on
+        // died with it: they leave Needs you, so no item points at a card
+        // that is no longer anywhere.
+        match crate::handlers::asks::settle_orphaned(&state, booted) {
+            0 => {}
+            n => info!(count = n, "asks left waiting by the last process withdrawn"),
+        }
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
