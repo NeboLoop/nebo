@@ -1168,6 +1168,7 @@ mod tests {
                 std::fs::write(ui.join("index.html"), "<h1>One</h1>").unwrap();
                 store.create_agent("dev", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
                 store.set_agent_app_fields("dev", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                store.set_agent_built_here("dev", true).unwrap();
                 let projects = tempfile::tempdir().unwrap();
                 let project = projects.path().join("scoreboard");
                 std::fs::create_dir_all(project.join("src")).unwrap();

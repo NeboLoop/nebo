@@ -101,6 +101,7 @@ async fn the_live_check_fails_errors_and_a_blank_page_and_passes_a_clean_one() {
         std::fs::write(ui.join("index.html"), html).unwrap();
         store.create_agent(id, None, name, "An app", "", "", None, None).unwrap();
         store.set_agent_app_fields(id, true, Some(ui.to_str().unwrap()), None, None).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
     };
     app(
         "app-broken",

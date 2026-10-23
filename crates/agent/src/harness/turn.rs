@@ -10980,6 +10980,7 @@ mod tests {
         let ui = folder.path().join("ui");
         h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
         h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+        h.store.set_agent_built_here("ops", true).unwrap();
         (h, calls, ran)
     }
 
@@ -11182,6 +11183,7 @@ mod tests {
                 let ui = folder.path().join("ui");
                 h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
                 h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                h.store.set_agent_built_here("ops", true).unwrap();
                 run_turn(&h, owner_of_app("Show the score")).await;
 
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
@@ -11253,6 +11255,7 @@ mod tests {
                 let ui = folder.path().join("ui");
                 h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
                 h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                h.store.set_agent_built_here("ops", true).unwrap();
                 run_turn(&h, owner_of_app("Deploy the score")).await;
 
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
