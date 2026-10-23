@@ -768,6 +768,9 @@ fn pattern_chars(node: Node, script: &str, out: &mut Vec<(char, bool)>) -> Optio
             }
         }
         "raw_string" | "string" => out.extend(shell_word(node, script)?.chars().map(|c| (c, true))),
+        // A numeric range (`{1..3}`) is its own node; its letters/digits,
+        // `.` and braces stand for themselves, for the reader to expand.
+        "brace_expression" => out.extend(node_text(node, script).chars().map(|c| (c, false))),
         "concatenation" => {
             let mut cursor = node.walk();
             for part in node.named_children(&mut cursor) {

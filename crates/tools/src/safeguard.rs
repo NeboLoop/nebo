@@ -937,6 +937,16 @@ mod tests {
         refused("(cd ../nebo-home/files && cat ../settings.json)", None);
         refused("cd -P .. && sqlite3 data/nebo.db .dump", Some(&workspace));
         refused("pushd notes && popd && cat ../settings.json", Some(&workspace));
+        // A `cd` the text can't prove ran keeps the folder before it in
+        // play, so a relative path after it is still checked: the `cd` may
+        // have failed, run in the background, or sat in a branch or function
+        // that never ran.
+        refused("cd notes ; cat ../settings.json", Some(&workspace));
+        refused("cd notes & cat ../settings.json", Some(&workspace));
+        refused("cd notes || true; cat ../settings.json", Some(&workspace));
+        refused("f() { cd notes; }; cat ../settings.json", Some(&workspace));
+        refused("if false; then cd notes; fi; cat ../settings.json", Some(&workspace));
+        refused("cd \"$UNKNOWN\"; cat ../settings.json", Some(&workspace));
         // The call's own folder inside the closed part.
         refused("ls", Some(&root.join("logs")));
         refused("cat nebo.log", Some(&root.join("logs")));
@@ -947,6 +957,8 @@ mod tests {
         refused("cat ../nebo-home/sett*", None);
         refused("cat ../nebo-home/{readme,settings.json}", None);
         refused("cat ../nebo-home/settings.js[o]n", None);
+        refused("cat ../nebo-home/settings.jso{n,x}", None);
+        refused("cat ../nebo-home/logs/nebo{1..3}.log", None);
         refused("cat \"../nebo-home/\"settings.*", None);
         // A read through a link that already exists.
         #[cfg(unix)]

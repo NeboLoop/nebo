@@ -301,8 +301,18 @@ pub fn is_read_only(cmd: &str) -> bool {
 /// One command of a shell call, where it runs.
 pub struct Placed {
     /// The folder it runs in: `None` once a move goes where only running
-    /// the command knows.
+    /// the command knows. The single best guess, for what a command writes
+    /// ([`shell_effects`]).
     pub here: Option<std::path::PathBuf>,
+    /// Every folder the command may run in, for the fence: `cwd` and the
+    /// target of each `cd`/`pushd` before it that this one can still be
+    /// standing in. A `cd` keeps the folders before it as well as its own,
+    /// because the text can't tell a `cd` that ran from one that failed, ran
+    /// in the background, or sat in a branch or a function that never ran —
+    /// so a path after it is checked from where the shell would be either
+    /// way. The owner's call is one fewer missed read for a few more checked
+    /// folders, never an unchecked one.
+    pub reach: Vec<std::path::PathBuf>,
     /// The folders the subshells around it were entered from, outermost
     /// first: where a redirect on one of them is taken from.
     pub outer: Vec<Option<std::path::PathBuf>>,
@@ -323,9 +333,22 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
         scope: (usize, usize),
         here: Option<PathBuf>,
         pushed: Vec<Option<PathBuf>>,
+        reach: Vec<PathBuf>,
     }
-    let mut here: Option<PathBuf> = Some(cwd.map(types::pathres::expand).unwrap_or_default());
+    let start = cwd.map(types::pathres::expand).unwrap_or_default();
+    let mut here: Option<PathBuf> = Some(start.clone());
     let mut pushed: Vec<Option<PathBuf>> = Vec::new();
+    // Every folder a command could still be standing in; folders only, so a
+    // relative path is checked, never dropped when the current folder is
+    // unknown. A `cd` adds its target and keeps what came before.
+    let mut reach: Vec<PathBuf> = vec![start];
+    let add = |reach: &mut Vec<PathBuf>, to: &Option<PathBuf>| {
+        if let Some(to) = to
+            && !reach.contains(to)
+        {
+            reach.push(to.clone());
+        }
+    };
     let mut entered: Vec<Entered> = Vec::new();
     let mut out = Vec::new();
     for sub in subcommands(cmd) {
@@ -334,11 +357,13 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             let left = entered.pop().expect("deeper than shared");
             here = left.here;
             pushed = left.pushed;
+            reach = left.reach;
         }
         for scope in &sub.scopes[shared..] {
-            entered.push(Entered { scope: *scope, here: here.clone(), pushed: pushed.clone() });
+            entered.push(Entered { scope: *scope, here: here.clone(), pushed: pushed.clone(), reach: reach.clone() });
         }
         let before = here.clone();
+        let before_reach = reach.clone();
         if let Some(Some(program)) = sub.words.first() {
             // The folder named, past `cd`'s options (`-P`, `-L`, `--`).
             let mut args = sub.words[1..].iter().skip_while(|w| {
@@ -354,18 +379,29 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
                 _ => None,
             };
             match program.as_str() {
-                "cd" => here = moved(&here),
+                "cd" => {
+                    let to = moved(&here);
+                    add(&mut reach, &to);
+                    here = to;
+                }
                 // `pushd` alone swaps the top two folders.
                 "pushd" if named.is_none() => here = None,
                 "pushd" => {
+                    let to = moved(&here);
+                    add(&mut reach, &to);
                     pushed.push(here.clone());
-                    here = moved(&here);
+                    here = to;
                 }
                 "popd" => here = if named.is_none() { pushed.pop().flatten() } else { None },
                 _ => {}
             }
         }
-        out.push(Placed { here: before, outer: entered.iter().map(|e| e.here.clone()).collect(), sub });
+        out.push(Placed {
+            here: before,
+            reach: before_reach,
+            outer: entered.iter().map(|e| e.here.clone()).collect(),
+            sub,
+        });
     }
     out
 }
@@ -1118,6 +1154,7 @@ mod tests {
             located(cmd, Some("/w")).into_iter().map(|p| p.here.map(|h| h.to_string_lossy().into_owned())).collect()
         };
         let at = |p: &str| Some(p.to_string());
+        let s = |p: &str| p.to_string();
         assert_eq!(folders("cd -P a && ls"), vec![at("/w"), at("/w/a")]);
         assert_eq!(folders("pushd a && pushd /b && popd && ls"), vec![at("/w"), at("/w/a"), at("/b"), at("/w/a")]);
         assert_eq!(folders("cd \"$D\" && ls && cd /x && ls"), vec![at("/w"), None, None, at("/x")]);
@@ -1127,6 +1164,19 @@ mod tests {
         assert_eq!(folders("echo $(cd a) && ls"), vec![at("/w"), at("/w"), at("/w")]);
         assert_eq!(folders("cd a | ls && ls"), vec![at("/w"), at("/w"), at("/w")]);
         assert_eq!(folders("bash -c 'cd a && ls' && ls"), vec![at("/w"), at("/w/a"), at("/w"), at("/w")]);
+        // reach keeps every folder a command could be standing in: a `cd`
+        // the text can't prove ran keeps the one before it.
+        let reach = |cmd: &str| -> Vec<Vec<String>> {
+            located(cmd, Some("/w"))
+                .into_iter()
+                .map(|p| p.reach.iter().map(|f| f.to_string_lossy().into_owned()).collect())
+                .collect()
+        };
+        assert_eq!(reach("cd a ; cat x"), vec![vec![s("/w")], vec![s("/w"), s("/w/a")]]);
+        assert_eq!(reach("cd a & cat x"), vec![vec![s("/w")], vec![s("/w"), s("/w/a")]]);
+        assert_eq!(reach("cd \"$D\" ; cat x"), vec![vec![s("/w")], vec![s("/w")]], "an unknown move keeps the known folder");
+        // A subshell's `cd` is not in the reach of what follows it.
+        assert_eq!(reach("(cd a) ; cat x"), vec![vec![s("/w")], vec![s("/w")]], "a subshell cd does not leak");
         let subs = subcommands("cat < in.txt > out/*.log 2>&1 && cat {a,b} x*");
         assert_eq!(subs[0].redirects(), [Some("in.txt".to_string()), None]);
         assert_eq!(subs[0].patterns(), ["out/*.log"]);

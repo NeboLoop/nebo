@@ -307,10 +307,11 @@ impl NeboFiles {
         let start = lexical(&absolute(cwd.unwrap_or(Path::new(".")), None));
         let placed = crate::policy::located(cmd, Some(&start.to_string_lossy()));
         let known = |here: &Option<PathBuf>| here.as_deref().map(lexical);
+        let reach = |p: &crate::policy::Placed| p.reach.iter().map(|f| lexical(f)).collect::<Vec<_>>();
         // The links the command makes, each refused when it leads to one of
         // Nebo's own files or (a symbolic one) to a folder above one; a path
         // through one made earlier in the command goes on from where it leads.
-        let links: Vec<Link> = placed.iter().flat_map(|p| links(p.sub.words(), known(&p.here).as_slice())).collect();
+        let links: Vec<Link> = placed.iter().flat_map(|p| links(p.sub.words(), &reach(p))).collect();
         for link in &links {
             let access = if link.symbolic { Access::Read } else { Access::Write };
             if through(&link.to, &links).iter().any(|to| self.closes(to, None, access) || (link.symbolic && self.above(to))) {
@@ -325,7 +326,7 @@ impl NeboFiles {
                 .map(str::to_string)
         };
         for p in &placed {
-            let here: Vec<PathBuf> = known(&p.here).into_iter().collect();
+            let here = reach(p);
             // A redirect on a subshell around the command is taken from
             // where that subshell was entered.
             let around: Vec<PathBuf> = here.iter().cloned().chain(p.outer.iter().filter_map(known)).collect();
@@ -356,6 +357,7 @@ impl NeboFiles {
     /// names as written when it matches nothing (the shell then passes it
     /// as it is).
     fn matched(&self, pattern: &str, folder: &Path) -> Option<String> {
+        let mut budget = MAX_PATTERN_ENTRIES;
         for word in braces(pattern) {
             let anchored = match word.strip_prefix('~').filter(|rest| rest.is_empty() || rest.starts_with('/')) {
                 Some(rest) => format!("{}{rest}", glob::Pattern::escape(&dirs::home_dir()?.to_string_lossy())),
@@ -366,7 +368,7 @@ impl NeboFiles {
             if self.closes(&written, None, Access::Read) {
                 return Some(written.to_string_lossy().into_owned());
             }
-            if let Some(hit) = expand(&anchored).into_iter().find(|p| self.closes(p, None, Access::Read)) {
+            if let Some(hit) = expand(&anchored, &mut budget).into_iter().find(|p| self.closes(p, None, Access::Read)) {
                 return Some(hit.to_string_lossy().into_owned());
             }
         }
@@ -499,13 +501,12 @@ fn through(path: &Path, links: &[Link]) -> Vec<PathBuf> {
 const MAX_PATTERN_ENTRIES: usize = 20_000;
 
 /// The paths the absolute pattern `pattern` (`glob` syntax) matches, one
-/// part at a time; nothing when that takes more than
-/// `MAX_PATTERN_ENTRIES` entries.
-fn expand(pattern: &str) -> Vec<PathBuf> {
+/// part at a time; nothing when matching it reads more than `budget` folder
+/// entries (the budget is shared across one pattern's brace words).
+fn expand(pattern: &str, budget: &mut usize) -> Vec<PathBuf> {
     let mut parts = pattern.split(|c| c == '/' || (cfg!(windows) && c == '\\'));
     let first = parts.next().unwrap_or_default();
     let mut found = vec![PathBuf::from(format!("{first}/"))];
-    let mut budget = MAX_PATTERN_ENTRIES;
     for part in parts.filter(|p| !p.is_empty()) {
         if !part.contains(['*', '?', '[']) {
             found.iter_mut().for_each(|p| p.push(part));
@@ -516,10 +517,10 @@ fn expand(pattern: &str) -> Vec<PathBuf> {
         for dir in &found {
             let Ok(entries) = std::fs::read_dir(dir) else { continue };
             for entry in entries.flatten() {
-                if budget == 0 {
+                if *budget == 0 {
                     return Vec::new();
                 }
-                budget -= 1;
+                *budget -= 1;
                 if matcher.matches(&entry.file_name().to_string_lossy()) {
                     next.push(entry.path());
                 }
@@ -559,6 +560,17 @@ const MAX_BRACE_WORDS: usize = 1024;
 /// them: `{a,b}` each of its parts, `{1..3}` and `{a..c}` each of the
 /// sequence. A bracketed character (`[{]`) is itself.
 fn braces(pattern: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    expand_braces(pattern, &mut out);
+    out
+}
+
+/// Append the words `pattern`'s braces stand for to `out`, depth-first and
+/// stopping at `MAX_BRACE_WORDS`, so nesting can't take exponential time.
+fn expand_braces(pattern: &str, out: &mut Vec<String>) {
+    if out.len() >= MAX_BRACE_WORDS {
+        return;
+    }
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -568,23 +580,20 @@ fn braces(pattern: &str) -> Vec<String> {
                 if let Some((end, parts)) = brace_parts(&chars, i) {
                     let prefix: String = chars[..i].iter().collect();
                     let suffix: String = chars[end + 1..].iter().collect();
-                    let mut out = Vec::new();
                     for part in parts {
-                        for word in braces(&format!("{prefix}{part}{suffix}")) {
-                            if out.len() == MAX_BRACE_WORDS {
-                                return out;
-                            }
-                            out.push(word);
+                        if out.len() >= MAX_BRACE_WORDS {
+                            return;
                         }
+                        expand_braces(&format!("{prefix}{part}{suffix}"), out);
                     }
-                    return out;
+                    return;
                 }
                 i += 1;
             }
             _ => i += 1,
         }
     }
-    vec![pattern.to_string()]
+    out.push(pattern.to_string());
 }
 
 /// Where the bracket class opening at `chars[at]` closes: a `]` right after
@@ -900,9 +909,21 @@ mod tests {
             std::fs::write(many.join(n.to_string()), "").unwrap();
         }
         let base = glob::Pattern::escape(&dir.path().to_string_lossy());
-        assert_eq!(expand(&format!("{base}/few/*/*.md")), [dir.path().join("few/a/x.md")]);
-        assert!(expand(&format!("{base}/few/*/none")).is_empty());
-        assert!(expand(&format!("{base}/many/*")).is_empty(), "past the limit");
+        assert_eq!(expand(&format!("{base}/few/*/*.md"), &mut MAX_PATTERN_ENTRIES.clone()), [dir.path().join("few/a/x.md")]);
+        assert!(expand(&format!("{base}/few/*/none"), &mut MAX_PATTERN_ENTRIES.clone()).is_empty());
+        assert!(expand(&format!("{base}/many/*"), &mut MAX_PATTERN_ENTRIES.clone()).is_empty(), "past the limit");
+    }
+
+    /// Brace expansion is bounded: deep nesting finishes at once and gives at
+    /// most `MAX_BRACE_WORDS` words, and a numeric range is expanded.
+    #[test]
+    fn braces_are_bounded_and_ranges_expand() {
+        let deep = format!("a{}", "{a,b}".repeat(40));
+        let words = braces(&deep);
+        assert_eq!(words.len(), MAX_BRACE_WORDS);
+        assert_eq!(braces("x{1..3}y"), ["x1y", "x2y", "x3y"]);
+        assert_eq!(braces("{a..c}"), ["a", "b", "c"]);
+        assert_eq!(braces("p{2..1}"), ["p2", "p1"]);
     }
 
     /// `use_skill` hands the model a plugin skill's folder ("This skill's
