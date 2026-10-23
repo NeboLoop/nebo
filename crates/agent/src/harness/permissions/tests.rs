@@ -1127,3 +1127,161 @@ async fn routine_work_never_asks() {
         }
     }
 }
+
+/// The one delete rule (owner, 10-23), through the one check and the real
+/// shell tool, for each way to remove a folder, each mode, attended and
+/// not:
+/// - outside the run's work it asks: a card waits for him when someone is
+///   there; a run nobody attends is refused at once, its card in his
+///   Inbox, and goes on (it never parks);
+/// - Plan mode refuses it as a change;
+/// - nothing is removed before he answers.
+/// Inside the run's own work (what is in a folder of the job, a folder it
+/// made) it runs without a word.
+#[tokio::test]
+async fn removing_a_folder_outside_the_work_asks_in_every_mode() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let owner = tempfile::tempdir().unwrap();
+    let commands: [(&str, fn(&std::path::Path) -> String); 5] = [
+        ("rm -rf", |p| format!("rm -rf '{}'", p.display())),
+        ("rm -r after cd", |p| format!("cd '{}' && /bin/rm -r '{}'", p.parent().unwrap().display(), p.file_name().unwrap().to_string_lossy())),
+        ("rmdir", |p| format!("rmdir '{}'", p.display())),
+        ("find -delete", |p| format!("find '{}' -delete", p.display())),
+        ("rsync --delete", |p| format!("rsync -a --delete /var/empty/ '{}/'", p.display())),
+    ];
+    let attended = |c: &mut ToolContext| {
+        c.owner_request = true;
+    };
+    let unattended = |c: &mut ToolContext| {
+        c.origin = Origin::System;
+        c.door = Door::Schedule;
+    };
+    let ways: [(&str, fn(&mut ToolContext)); 2] = [("attended", attended), ("unattended", unattended)];
+    let mut n = 0;
+    for (label, command) in commands {
+        for mode in [Mode::FullAccess, Mode::Automatic, Mode::Ask, Mode::Plan] {
+            for (who, set) in ways {
+                n += 1;
+                let agent = format!("e{n}");
+                let folder = owner.path().join(&agent);
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(folder.join("keep.txt"), "the owner's").unwrap();
+                let mut c = with_mode(ctx(&store, &agent, Origin::User), mode);
+                set(&mut c);
+                let input = json!({ "command": command(&folder), "description": "Remove a folder" });
+                let r = reg.execute(&c, "run_command", input).await;
+                let case = format!("{label} / {mode:?} / {who}");
+                assert!(folder.join("keep.txt").exists(), "{case}: nothing is removed before the owner answers: {}", r.content);
+                let asks = store.open_permission_asks(Some(&c.session_key)).unwrap();
+                if mode == Mode::Plan {
+                    assert!(r.is_error && asks.is_empty(), "{case}: Plan refuses it as a change: {}", r.content);
+                    continue;
+                }
+                assert_eq!(asks.len(), 1, "{case}: one card for the owner: {}", r.content);
+                let asked: AskCase = serde_json::from_str(&asks[0].ask_case).unwrap();
+                let AskCase::RemovesFolders { targets, whole_work } = asked else { panic!("{case}: {asked:?}") };
+                assert!(!whole_work, "{case}");
+                assert!(targets.iter().any(|t| t.contains(&agent)), "{case}: names what it removes: {targets:?}");
+                if who == "attended" {
+                    assert!(r.parked_ask.is_some(), "{case}: it waits for him: {}", r.content);
+                } else {
+                    assert!(r.is_error && r.parked_ask.is_none(), "{case}: refused, never parked: {}", r.content);
+                }
+            }
+        }
+    }
+
+    // Inside the run's own work it runs, attended or not.
+    for (who, set) in ways {
+        n += 1;
+        let agent = format!("e{n}");
+        let job = owner.path().join(format!("{agent}-job"));
+        std::fs::create_dir_all(job.join("build/out")).unwrap();
+        put(&store, rule(Scope::Employee(agent.clone()), cap("file"), Some(RuleField::Folder(job.clone())), Effect::Allow));
+        let made = owner.path().join(format!("{agent}-clone"));
+        std::fs::create_dir_all(made.join("x")).unwrap();
+        store.add_employee_created(&agent, &format!("file:{}", made.display())).unwrap();
+        let mut c = with_mode(ctx(&store, &agent, Origin::User), Mode::FullAccess);
+        set(&mut c);
+        let command = format!("rm -rf '{}' && rm -rf '{}'", job.join("build").display(), made.display());
+        let r = reg.execute(&c, "run_command", json!({ "command": command, "description": "Clean up" })).await;
+        assert!(!r.is_error && r.parked_ask.is_none(), "{who}: {}", r.content);
+        assert!(!job.join("build").exists() && !made.exists(), "{who}: it ran");
+        // The job's folder itself is not inside it.
+        let r = reg.execute(&c, "run_command", json!({ "command": format!("rm -rf '{}'", job.display()), "description": "Remove" })).await;
+        assert!(job.exists(), "{who}: the job's folder itself is asked about: {}", r.content);
+    }
+}
+
+/// The working copy the run builds in is its own inside: a build folder in
+/// it is removed without a word. The copy itself and the project it copies
+/// are never removed unasked, and no "Allow always" covers them; a target
+/// only running the command knows asks too.
+#[tokio::test]
+async fn a_working_copy_is_its_own_inside_and_never_removed_whole() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("site");
+    let copy = dir.path().join("copies/site/v-1");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(copy.join("build/out")).unwrap();
+    let mut c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+    c.owner_request = true;
+    let (root, work) = (project.to_string_lossy().into_owned(), copy.to_string_lossy().into_owned());
+    store
+        .create_verification(
+            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &work, isolation: "worktree", work_kind: "isolated", ..Default::default() },
+            1,
+        )
+        .unwrap();
+    let run = |command: String| {
+        let reg = &reg;
+        let c = c.clone();
+        async move { reg.execute(&c, "run_command", json!({ "command": command, "description": "Remove" })).await }
+    };
+
+    let r = run(format!("cd '{}' && rm -rf build", copy.display())).await;
+    assert!(!r.is_error && r.parked_ask.is_none(), "{}", r.content);
+    assert!(!copy.join("build").exists(), "its own build folder is gone");
+
+    let asks = Check::new(store.clone()).asks();
+    for whole in [format!("rm -rf '{}'", copy.display()), format!("rm -rf '{}'", project.display()), format!("cd '{}' && rm -rf *", copy.display())] {
+        let r = run(whole.clone()).await;
+        let id = r.parked_ask.clone().unwrap_or_else(|| panic!("{whole}: {}", r.content));
+        assert!(copy.exists() && project.exists(), "{whole}");
+        let row = store.get_permission_ask(&id).unwrap().unwrap();
+        let case: AskCase = serde_json::from_str(&row.ask_case).unwrap();
+        assert!(matches!(case, AskCase::RemovesFolders { whole_work: true, .. }), "{case:?}");
+        assert!(!asks.get(&id).unwrap().unwrap().allow_always_offered(&store), "never always");
+    }
+    let r = run("rm -rf \"$OLD_BUILD\"".to_string()).await;
+    assert!(r.parked_ask.is_some(), "a target only running it knows asks: {}", r.content);
+}
+
+/// The folders no command removes are refused outright in every mode, with
+/// no card: nothing to allow, once or always. (`rmdir` of a folder that
+/// isn't empty: had it run, nothing would be gone.)
+#[tokio::test]
+async fn the_root_and_home_are_refused_without_a_card() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    for mode in [Mode::FullAccess, Mode::Automatic] {
+        for command in ["rmdir /usr", "rmdir ~", "cd / && rmdir Applications"] {
+            let mut c = with_mode(ctx(&store, "dev", Origin::User), mode);
+            c.owner_request = true;
+            let r = reg.execute(&c, "run_command", json!({ "command": command, "description": "Remove" })).await;
+            assert!(r.is_error && r.parked_ask.is_none() && r.content.contains("never removed"), "{mode:?} {command}: {}", r.content);
+            assert!(store.open_permission_asks(Some(&c.session_key)).unwrap().is_empty(), "{command}: no card");
+        }
+    }
+}

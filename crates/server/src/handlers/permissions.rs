@@ -1244,7 +1244,6 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str, door: &str) -> (St
             "coworker" => "Another employee asked for this, and a coworker's request can only reply".into(),
             "credentials" => "It would have shared a password or key".into(),
             "unattended_schedule" => "It would have scheduled more work from a run nobody was watching; only you schedule work, from your chat".into(),
-            "not_its_own" => "It would have removed or replaced something it didn't make, and you didn't ask for it".into(),
             _ => "A safety limit".into(),
         },
         Why::Ceiling => "It can't do more than the employee or run it works for".into(),
@@ -1305,6 +1304,15 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
         AskCase::AskMode => "Ask mode: it asks before changing anything".into(),
         AskCase::Widens => "It would give an employee more room, which only you can do".into(),
         AskCase::RemovesEmployee => "It would delete an employee, which needs your OK every time".into(),
+        AskCase::RemovesFolders { targets, whole_work } => {
+            let named: Vec<&str> =
+                targets.iter().map(|t| t.strip_prefix("file:").or_else(|| t.strip_prefix("command:")).unwrap_or(t)).collect();
+            if *whole_work {
+                format!("It would remove {}, which needs your OK every time", named.join(", "))
+            } else {
+                format!("It would remove {}, outside its work", named.join(", "))
+            }
+        }
         AskCase::ReachesOwner { reach } => {
             let what = reach.sentence();
             format!("{}{}, which needs your OK", what[..1].to_uppercase(), &what[1..])

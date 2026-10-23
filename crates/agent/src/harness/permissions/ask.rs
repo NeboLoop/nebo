@@ -280,6 +280,7 @@ impl Ask {
                 .is_some_and(|r| !r.locked && r.effect == Effect::Ask),
             AskCase::Widens
             | AskCase::RemovesEmployee
+            | AskCase::RemovesFolders { whole_work: true, .. }
             | AskCase::CompanyMoney { .. }
             | AskCase::UnconfirmedSend { .. } => false,
             _ => true,
@@ -323,6 +324,8 @@ pub fn reason_of(case: &AskCase) -> String {
         AskCase::AskMode => "This employee asks before it changes anything.",
         AskCase::Widens => "Only you can give an employee more room.",
         AskCase::RemovesEmployee => "Deleting an employee needs your OK every time.",
+        AskCase::RemovesFolders { whole_work: true, .. } => "Removing the project or its working copy needs your OK every time.",
+        AskCase::RemovesFolders { .. } => "Removing a folder outside its work needs your OK.",
         AskCase::ReachesOwner { reach } => match reach {
             OwnerReach::Screen => "It would see what's on your screen.",
             OwnerReach::Microphone => "It would hear what your microphone picks up.",
@@ -1142,6 +1145,7 @@ fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
         | AskCase::ReachesOwner { .. }
         | AskCase::Widens
         | AskCase::RemovesEmployee
+        | AskCase::RemovesFolders { .. }
         | AskCase::CreatedExtras { .. }
         | AskCase::UnconfirmedSend { .. }
         | AskCase::CompanyMoney { .. } => (call_key(), t.field.clone(), None),

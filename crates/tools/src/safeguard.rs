@@ -355,6 +355,13 @@ fn check_shell_safeguard(input: &serde_json::Value, run: &Run<'_>) -> Option<Str
     }
 
     let cmd = command.trim();
+    // The command's own folder, when it names one, is where its relative
+    // paths start.
+    let cwd = input.get("cwd").and_then(|v| v.as_str()).map(|c| match run.cwd {
+        Some(base) => base.join(types::pathres::expand(c)),
+        None => types::pathres::expand(c),
+    });
+    let run = &Run { cwd: cwd.as_deref().or(run.cwd), ..*run };
 
     // A cloud bot's package installer, as a command of its own, is the one
     // command that runs through sudo (`system_packages`). Its grammar
@@ -420,6 +427,13 @@ fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
     // wrapped, typed into a shell or tucked into a script.
     if crate::policy::is_destructive_git(text) {
         return Some(crate::policy::DESTRUCTIVE_GIT_REFUSAL.to_string());
+    }
+    if let Some(path) = crate::policy::never_removed(text, run.cwd) {
+        return Some(format!(
+            "BLOCKED: {path:?} is never removed: the root and the folders right under it, a drive and the folders \
+             right under one, and the home folder stay, in every mode, whoever asks. This is a hard safety limit \
+             that cannot be overridden. If you meant a folder inside it, name that folder."
+        ));
     }
     if let Some(reason) = check_destructive_command(text, &lower) {
         return Some(format!(
@@ -504,13 +518,6 @@ fn has_su(cmd_lower: &str) -> bool {
 }
 
 fn check_destructive_command(_cmd: &str, cmd_lower: &str) -> Option<String> {
-    // Block rm -rf / or rm -rf /*
-    if is_root_wipe(cmd_lower) {
-        return Some(
-            "cannot delete root filesystem — this would destroy the operating system".to_string(),
-        );
-    }
-
     // Block dd to block devices
     if cmd_lower.contains("dd ")
         && (cmd_lower.contains("of=/dev/") || cmd_lower.contains("of= /dev/"))
@@ -554,35 +561,6 @@ fn check_destructive_command(_cmd: &str, cmd_lower: &str) -> Option<String> {
     }
 
     None
-}
-
-fn is_root_wipe(cmd_lower: &str) -> bool {
-    let wipe_patterns = [
-        "rm -rf /",
-        "rm -fr /",
-        "rm -rf /*",
-        "rm -fr /*",
-        "rm -rf --no-preserve-root /",
-        "rm -rf --no-preserve-root /*",
-    ];
-    for p in &wipe_patterns {
-        if let Some(idx) = cmd_lower.find(p) {
-            let after = &cmd_lower[idx + p.len()..];
-            let last_char = p.as_bytes()[p.len() - 1];
-            if last_char == b'/'
-                && (after.is_empty()
-                    || after.starts_with(' ')
-                    || after.starts_with(';')
-                    || after.starts_with('&'))
-            {
-                return true;
-            }
-            if last_char == b'*' {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// Check if an absolute path is a protected system directory.
@@ -795,11 +773,17 @@ mod tests {
         assert!(scan_command_text("sudo apt-get install -y jq", &cloud).is_some());
     }
 
+    /// The folders no command removes are refused however the command
+    /// reaches them, from its own folder too.
     #[test]
-    fn test_root_wipe_detection() {
-        assert!(is_root_wipe("rm -rf /"));
-        assert!(is_root_wipe("rm -rf /*"));
-        assert!(!is_root_wipe("rm -rf /tmp/test"));
+    fn the_root_and_home_are_never_removed() {
+        let run = crate::origin::ToolContext::default();
+        let shell = |command: &str, cwd: Option<&str>| check_safeguard("run_command", &serde_json::json!({ "command": command, "cwd": cwd }), &run);
+        for (command, cwd) in [("rm -rf /", None), ("rm -rf /*", None), ("/bin/rm -rf /usr", None), ("rm -rf ..", Some("/usr")), ("rm -rf ~", None)] {
+            let said = shell(command, cwd).unwrap_or_else(|| panic!("{command} ran"));
+            assert!(said.contains("never removed"), "{said}");
+        }
+        assert!(shell("rm -rf /tmp/test", None).is_none());
     }
 
     /// A run with no fence: the limits that hold whatever the folder.

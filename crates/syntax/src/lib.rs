@@ -512,6 +512,10 @@ pub struct ShellCommand {
     pub assigns: bool,
     pub words: Vec<Option<String>>,
     pub writes: bool,
+    /// Each word as a filename pattern, beside `words`: the text of a word
+    /// that is `None` only for its glob (`*`, `?`, `[…]`, `{a,b}`), quoting
+    /// removed and the pattern left as written; `None` for every other word.
+    pub globs: Vec<Option<String>>,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -591,15 +595,21 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         writes |= redirects_to_a_file(n, script);
         around = n.parent();
     }
-    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes };
+    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes, globs: Vec::new() };
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "variable_assignment" => command.assigns = true,
-            "command_name" => command.words.push(child.named_child(0).and_then(|w| shell_word(w, script))),
-            kind if kind.ends_with("redirect") => {}
-            _ => command.words.push(shell_word(child, script)),
-        }
+        let word = match child.kind() {
+            "variable_assignment" => {
+                command.assigns = true;
+                continue;
+            }
+            "command_name" => child.named_child(0),
+            kind if kind.ends_with("redirect") => continue,
+            _ => Some(child),
+        };
+        let value = word.and_then(|w| word_text(w, script, false));
+        command.globs.push(word.filter(|_| value.is_none()).and_then(|w| word_text(w, script, true)));
+        command.words.push(value);
     }
     command
 }
@@ -629,6 +639,12 @@ fn redirects_to_a_file(node: Node, script: &str) -> bool {
 
 /// The value of one word, or `None` when only running the script knows it.
 fn shell_word(node: Node, script: &str) -> Option<String> {
+    word_text(node, script, false)
+}
+
+/// One word's text with quoting removed; `globs` keeps an unquoted pattern
+/// (`*`, `?`, `[`, `{`) as written, where without it the word is `None`.
+fn word_text(node: Node, script: &str, globs: bool) -> Option<String> {
     let text = node_text(node, script);
     match node.kind() {
         "word" | "number" => {
@@ -637,7 +653,7 @@ fn shell_word(node: Node, script: &str) -> Option<String> {
             while let Some(c) = chars.next() {
                 match c {
                     '\\' => out.extend(chars.next().filter(|&n| n != '\n')),
-                    '*' | '?' | '[' | '{' => return None,
+                    '*' | '?' | '[' | '{' if !globs => return None,
                     c => out.push(c),
                 }
             }
@@ -668,7 +684,7 @@ fn shell_word(node: Node, script: &str) -> Option<String> {
         }
         "concatenation" => {
             let mut cursor = node.walk();
-            node.named_children(&mut cursor).map(|c| shell_word(c, script)).collect()
+            node.named_children(&mut cursor).map(|c| word_text(c, script, globs)).collect()
         }
         _ => None,
     }
