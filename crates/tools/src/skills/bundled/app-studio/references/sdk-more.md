@@ -1,6 +1,6 @@
 # The rest of the SDK
 
-The calls SKILL.md's table leaves out: the owner's files, sharing a file, running a plugin, streaming, cards, the page's chat with its employee, and pages served outside Nebo.
+The calls SKILL.md's table leaves out: the owner's files, sharing a file, running a plugin, streaming, cards, and the page's chat with its employee.
 
 | Call | Does |
 |------|------|
@@ -12,7 +12,7 @@ The calls SKILL.md's table leaves out: the owner's files, sharing a file, runnin
 | `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |
 | `chat.mount(el, {placeholder?, name?, theme?, height?, borderless?, contextId?, scope?})` | A ready chat with this app's own employee, drawn in the page (history, the reply streaming, Enter to send, Stop, "waiting for your OK"). `contextId` keeps a conversation per document or record (letters, digits, `-`, `_`, `.`); `scope` is a tool scope agent.json declares. `chat.unmount` removes it. |
 | `chat.history({thread?})`, `chat.send(text, {thread?})`, `chat.stop()`, `chat.newThread()`, `chat.onMessage(handler)`, `chat.setContext(ctx)` | The same conversation, to draw your own chat. `onMessage` hears `message`, `stream` (the reply as it comes), `waiting` (the employee waits on the owner's OK), `complete`, `error`, `stopped`, `reconnected` (read the history again). One message at a time: a send while a reply is on its way, or to an employee the owner turned off, is refused (409). The page talks to its own employee only, never another, and its words are the app's, not the owner's: codes, slash commands, file paths and @mentions are just words, and the employee works as for any app request (no shell). The conversation is the app's own, not one of the owner's chats; the page hears the words, never the employee's tool calls. No voice. |
-| `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo; at the top level `NeboAppSDK.setAppId(id)` / `NeboAppSDK.setBaseUrl(url)`, read back with `getAppId()` / `getBaseUrl()`. |
+| `nebo.configure({appId?, baseUrl?})`, `NeboAppSDK.setAppId` / `setBaseUrl` | Never call them: Nebo sets the app and its address on every page it serves (read back with `getAppId()` / `getBaseUrl()`). A page served from anywhere else gets no answer from Nebo. |
 | `window.share_menu` entry `{"label": "Share a link", "say": "Share this as a link.", "share": true}` | A link from the header's Share: its `say` is sent into the chat; answer with ONE file, handed over in your reply (or by the page with `share`), and Nebo opens its Share dialog on it on the device it was picked on. |
 
 ## Showing the owner's files
