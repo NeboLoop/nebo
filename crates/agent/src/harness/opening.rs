@@ -3,8 +3,8 @@
 //! gives a command to run (`owner_command`). Each question is asked only when
 //! its check applies to the turn, and the ones that apply go in ONE call
 //! (Jev through Janus, [`ai::DecideClient`]): one call per message, never
-//! two. A message typed into the running work is decided with its intent
-//! (`owner_intent`), not here.
+//! two. A message typed into the running work is asked its save question
+//! through [`decide`] too, by the step that hears it.
 //!
 //! The call starts at Prepare and runs while the steps do. The first step
 //! waits for it only when the command question is asked (its tool choice

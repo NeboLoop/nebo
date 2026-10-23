@@ -12,12 +12,10 @@
 //! 5. the model is called.
 //!
 //! A step whose conversation holds the owner's mid-turn message with no
-//! reply after it hears it. What the message asks for is decided first
-//! (`owner_intent`): a redirect or an aside joins the work, and the step
-//! goes out with its tools, so the reply answers him and carries on; a stop
-//! (or a message nothing could decide) is answered in words, the one step
-//! with tools off, the turn ends on that reply and the goal pauses. Input
-//! queued while a step is built takes the step again with it.
+//! reply after it hears it, with its tools: the employee answers him and
+//! does what the message asks, carrying on or stopping. Only the Stop
+//! button interrupts the turn. Input queued while a step is built takes the
+//! step again with it.
 //!
 //! A reply with tool calls runs its tool round and takes another step. A
 //! reply without tool calls passes the end checks (`turn_end`); one that
@@ -41,7 +39,6 @@ use tracing::{info, warn};
 use super::conversation::{self, InputRow, MidTurnFrom};
 use super::events::{self, TurnEvent};
 use super::model_call::{self, Block, CallOutcome, RetryWhy};
-use super::owner_intent::{self, OwnerIntent};
 use super::text_fold;
 use super::prompt::{self, Identity, sections};
 use super::seat::{self, GrantRequest, Seat};
@@ -215,9 +212,9 @@ pub struct TurnState {
     /// goes on: the owner has their answer, so a reply with nothing in it
     /// ends the turn.
     answered_owner: bool,
-    /// What the owner's waiting message asks for, with the row id of the
-    /// latest one it was decided for; taken by the reply that answers it.
-    owner_intent: Option<(String, OwnerIntent)>,
+    /// The owner's waiting message whose save question was decided (its
+    /// row id), so it is decided once.
+    owner_decided: Option<String>,
     /// The latest of the owner's mid-turn messages a reply has heard: a
     /// message that joins the work is heard by one step, and the steps
     /// after it are the work's.
@@ -242,9 +239,6 @@ pub struct TurnState {
     /// for a turn that never verifies (a reviewer, an explore or plan
     /// helper, a fork) or with no helper registry to review with.
     pub(crate) verify: Option<super::verify::engine::Verify>,
-    /// How the owner's own message ended the work, when it did: how its
-    /// verifications are settled (`closing`).
-    pub(crate) owner_ended: Option<OwnerEnded>,
 }
 
 /// What the tool round keeps from one round to the next within a turn.
@@ -263,8 +257,7 @@ pub enum Transition {
     First,
     AfterTools,
     MidTurnInput,
-    /// The owner's mid-turn message was answered and the work goes on (a
-    /// redirect or an aside); a stop ends the turn on the answer.
+    /// The owner's mid-turn message was answered and the work goes on.
     MidTurnAnswered,
     CutoffResume { attempt: u8 },
     OutputEscalated,
@@ -1069,8 +1062,7 @@ fn last_reply(h: &Harness, session_id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The owner ended the work (the stop button, or a message of his that
-/// ends it, `OwnerIntent::ends_work`): an agreed goal still worked toward
+/// The owner ended the work (the stop button): an agreed goal still worked toward
 /// pauses, so nothing (a check, a check-in, a woken turn) starts the work
 /// again, and his next message does not resume it; he asks for it back. The goal line tells him,
 /// and a row tells the model. True when a goal was paused.
@@ -1453,7 +1445,7 @@ pub(crate) async fn prepare(
         checkpoints: 0,
         checkpoints_since_progress: 0,
         answered_owner: false,
-        owner_intent: None,
+        owner_decided: None,
         owner_heard: None,
         last_provider: None,
         persisted_renderings: HashSet::new(),
@@ -1464,7 +1456,6 @@ pub(crate) async fn prepare(
         folds: text_fold::TurnFolds::default(),
         reporting: false,
         verify,
-        owner_ended: None,
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
@@ -1809,42 +1800,37 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.correcting = None;
         }
         let correcting = st.correcting;
+        // The owner's message joins the work: the employee hears it with its
+        // tools and decides what it asks. The harness only asks, once per
+        // message, whether it asks for something to be kept in memory.
         if let Some(w) = waiting.as_ref()
-            && st.owner_intent.as_ref().is_none_or(|(latest, _)| *latest != w.latest)
+            && st.owner_decided.as_deref() != Some(w.latest.as_str())
         {
-            let intent = match owner_intent::recorded(&conversation, &w.latest) {
-                Some(intent) => intent,
-                None => {
-                    let asked = owner_intent::Asked { task: &w.task, message: &w.words };
-                    let decided = owner_intent::decide(
-                        h.decide.as_deref(),
-                        owner_intent::mode(),
-                        &asked,
-                        st.saves.applies(),
-                        cx.agent_id(),
-                        owner_intent::DECIDE_TIMEOUT,
-                    );
+            if !heard_before(&conversation, &w.latest) {
+                if st.saves.applies() {
+                    let asked = super::opening::Asks { save: true, command: false };
+                    let decided =
+                        super::opening::decide(h.decide.as_deref(), &w.words, asked, cx.agent_id(), super::memory_save::DECIDE_TIMEOUT);
                     let heard = tokio::select! {
                         biased;
                         _ = cx.request.cancel.cancelled() => return TurnExit::Cancelled,
                         heard = decided => heard,
                     };
                     st.saves.heard(st.step, heard.save);
-                    st.reminders.add(&TurnEvent::MidTurnMessage { via: w.via.clone(), intent: heard.intent });
-                    // Dictation in pieces: a message that carries on one
-                    // that stopped mid-sentence joins the plan made for it;
-                    // one that stops mid-sentence itself waits for the rest.
-                    if let Some(tail) = conversation::cut_off_tail(&w.task) {
-                        st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: true });
-                    }
-                    if let Some(tail) = w.words.rsplit("\n\n").next().and_then(conversation::cut_off_tail) {
-                        st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: false });
-                    }
-                    heard.intent
                 }
-            };
-            info!(session_id = sid, intent = intent.as_str(), "the owner's message is answered at this step");
-            st.owner_intent = Some((w.latest.clone(), intent));
+                st.reminders.add(&TurnEvent::MidTurnMessage { via: w.via.clone() });
+                // Dictation in pieces: a message that carries on one that
+                // stopped mid-sentence joins the plan made for it; one that
+                // stops mid-sentence itself waits for the rest.
+                if let Some(tail) = conversation::cut_off_tail(&w.task) {
+                    st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: true });
+                }
+                if let Some(tail) = w.words.rsplit("\n\n").next().and_then(conversation::cut_off_tail) {
+                    st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: false });
+                }
+            }
+            info!(session_id = sid, "the owner's message joins the work at this step");
+            st.owner_decided = Some(w.latest.clone());
         }
         // Dictation in pieces, heard by the turn's first step: the owner's
         // message carries on one that stopped mid-sentence a moment ago, or
@@ -1860,20 +1846,14 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: false });
             }
         }
-        let intent_now = waiting
-            .as_ref()
-            .and_then(|w| st.owner_intent.as_ref().filter(|(latest, _)| *latest == w.latest).map(|(_, intent)| *intent));
-        // A stop, or a message nothing could decide, is answered in words
-        // and ends the work: the one step whose tools are off, because
-        // nothing more runs after the owner said stop.
-        let reply_in_words = intent_now.is_some_and(OwnerIntent::ends_work);
-        // A message that joins the work is heard by this step, with the
-        // step's tools: the reply answers it and carries on (2026-10-01:
-        // answered with tools off mid-work, the model wrote its calls out
-        // as text and echoed the note's "tools off" into the chat).
+        // The owner's message is heard by this step, with the step's tools:
+        // the reply answers it and the employee does what it asks, carrying
+        // on or not (2026-10-01: answered with tools off mid-work, the model
+        // wrote its calls out as text and echoed the note's "tools off" into
+        // the chat).
         let joins = waiting
             .as_ref()
-            .filter(|w| !reply_in_words && st.owner_heard.as_deref() != Some(w.latest.as_str()))
+            .filter(|w| st.owner_heard.as_deref() != Some(w.latest.as_str()))
             .map(|w| w.latest.clone());
         // The request the first step hears: what it asks for may say an
         // installed plugin's triggers. A linked turn writes no rows, so
@@ -1945,7 +1925,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             model_name.clear();
         }
         let mut request = build_request(cx, st, &window, surface.declared, &model_name);
-        if reply_in_words || st.reporting {
+        if st.reporting {
             request.tool_choice = ai::ToolChoice::None;
         } else if st.step == 1 && correcting.is_none() && st.commands.applies() {
             // A command the owner gave is the first step's call: its tool
@@ -2120,9 +2100,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let mut executor = ToolExecutor::new(&round_cx, st.round.failures.standing(std::time::Instant::now()));
         let reply_heard_through = st.seen.last().map(|m| m.id.clone());
         let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
-        // Tools are off for the answer to a stop: nothing streamed starts.
         // A correction's calls run only once the harness has checked them.
-        if reply_in_words || correcting.is_some() || st.reporting {
+        if correcting.is_some() || st.reporting {
             streamed_calls.close();
         }
         // A correction is the harness's step: nothing the model writes in it
@@ -2278,10 +2257,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // Calls that arrived on a broken stream are not run or stored.
             tool_calls.clear();
         }
-        if reply_in_words || st.reporting {
-            // The answer to a stop, or the report at the step limit, went
-            // out with tools off: a call the provider sent anyway is
-            // neither run nor stored.
+        if st.reporting {
+            // The report at the step limit went out with tools off: a call
+            // the provider sent anyway is neither run nor stored.
             tool_calls.clear();
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
         }
@@ -2392,21 +2370,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
             None => {}
         }
-        // The owner has their answer. A stop ends the work here, whatever
-        // the model would do next: tools never come back, and the goal
-        // pauses.
-        if reply_in_words && !text.trim().is_empty() {
-            let intent = st.owner_intent.take().map_or(OwnerIntent::Undecided, |(_, intent)| intent);
-            info!(session_id = sid, intent = intent.as_str(), "the owner's message ends the work: the turn ends on the answer");
-            st.owner_ended = Some(OwnerEnded { intent, goal_paused: pause_goal_for_the_owner(cx) });
-            return TurnExit::Answered;
-        }
-        // The step that heard a message joining the work answered it in
-        // words only: the work goes on at the next step.
+        // The step that heard the owner's message answered it in words
+        // only: the employee goes on at the next step as the message asks.
         if joins.is_some() && text_call.is_none() && !text.trim().is_empty() {
-            let intent = st.owner_intent.take().map_or(OwnerIntent::Aside, |(_, intent)| intent);
             st.answered_owner = true;
-            st.reminders.add(&TurnEvent::MidTurnAnswered(intent));
+            st.reminders.add(&TurnEvent::MidTurnAnswered);
             st.transition = Transition::MidTurnAnswered;
             continue;
         }
@@ -3306,28 +3274,28 @@ async fn close_verifications(h: &Harness, verify: &super::verify::engine::Verify
     }
 }
 
-/// How the owner's own message ended a turn's work (`reply_in_words`):
-/// what he meant by it, and whether it paused the goal the work was for.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct OwnerEnded {
-    pub intent: OwnerIntent,
-    pub goal_paused: bool,
+/// Whether the owner's message `latest` (its row id) was heard already: a
+/// note about it was written after it. A turn taken again never decides it
+/// twice.
+fn heard_before(messages: &[db::models::ChatMessage], latest: &str) -> bool {
+    let Some(at) = messages.iter().position(|m| m.id == latest) else { return false };
+    messages[at + 1..]
+        .iter()
+        .filter_map(reminders::attachment_fields)
+        .any(|fields| fields.get("kind").and_then(|k| k.as_str()) == Some("mid_turn_message"))
 }
 
 /// How a turn's end leaves its verifications: the one mapping `finish`
-/// settles every exit by.
-fn closing(exit: &TurnExit, stalled: bool, owner_ended: Option<OwnerEnded>) -> super::verify::engine::Closed {
+/// settles every exit by. A stop or an interrupt never closes a code check:
+/// the Stop button only interrupts, and the check waits for the turn that
+/// goes on (owner, 10-23: "shut down the old research" ended a build's
+/// check for good).
+fn closing(exit: &TurnExit, stalled: bool) -> super::verify::engine::Closed {
     use super::verify::engine::Closed;
     match exit {
-        // The owner's message ended the work. A stop he typed is the Stop
-        // button's stop, his goal paused or not. A message no reading could
-        // be had of that paused his goal leaves the work waiting on him;
-        // without a goal it is an answer that skipped its check.
-        TurnExit::Answered if owner_ended.is_some_and(|e| e.intent == OwnerIntent::Stop) => Closed::Stopped,
-        TurnExit::Answered if owner_ended.is_some_and(|e| e.goal_paused) => Closed::Waiting,
         TurnExit::Answered | TurnExit::Compacted => Closed::Unchecked,
         TurnExit::AwaitingApproval | TurnExit::TerminalTool { .. } | TurnExit::OwnerQuestion => Closed::Waiting,
-        TurnExit::Cancelled if !stalled => Closed::Stopped,
+        TurnExit::Cancelled if !stalled => Closed::Waiting,
         TurnExit::MaxSteps { .. } => Closed::Ended(super::verify::Why::new("step_limit")),
         _ => Closed::Ended(super::verify::Why::new("turn_ended")),
     }
@@ -3359,11 +3327,11 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     // Every turn end settles its verifications, here: one that ended before
     // its checking did ends them honestly; one waiting on the owner (an
     // approval, a question) keeps them for the turn that goes on. An answer
-    // that came without its end check (the owner's message ended the work, a
-    // reply with no words) leaves nothing marked as still being checked.
+    // that came without its end check (a reply with no words) leaves nothing
+    // marked as still being checked.
     if let Some(verify) = &st.verify {
         let stalled = cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst);
-        close_verifications(h, verify, closing(exit, stalled, st.owner_ended)).await;
+        close_verifications(h, verify, closing(exit, stalled)).await;
     }
     // The badge of verified work sits on the reply that reported it.
     if let Some(verify) = &st.verify {
@@ -4934,30 +4902,6 @@ mod tests {
         serve_jev(|_| serde_json::json!({"type": "noul", "noul": 0.02})).await
     }
 
-    /// A Jev that reads the owner's mid-turn message as `intent` (`stop`,
-    /// `redirect` or `aside`), and answers anything else "no".
-    async fn jev_reading(intent: &'static str) -> Arc<ai::DecideClient> {
-        let answer: fn(&str) -> serde_json::Value = match intent {
-            "stop" => |q| intent_answer(q, "stop"),
-            "redirect" => |q| intent_answer(q, "redirect"),
-            _ => |q| intent_answer(q, "aside"),
-        };
-        Arc::new(serve_jev(answer).await.0)
-    }
-
-    fn intent_answer(question: &str, picked: &str) -> serde_json::Value {
-        if question != "intent" {
-            return serde_json::json!({"type": "noul", "noul": 0.02});
-        }
-        let p = |option: &str| if option == picked { 0.96 } else { 0.02 };
-        serde_json::json!({
-            "type": "choice",
-            "choice": picked,
-            "confidence": 0.96,
-            "probabilities": {"stop": p("stop"), "redirect": p("redirect"), "aside": p("aside")},
-        })
-    }
-
     /// A Jev served on a local port that answers each question with
     /// `answer(its key)` and keeps each request's `state`.
     async fn serve_jev(answer: fn(&str) -> serde_json::Value) -> (ai::DecideClient, Arc<Mutex<Vec<serde_json::Value>>>) {
@@ -5668,7 +5612,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mid_turn_owner_message_heard_next_step() {
         let model = Arc::new(Scripted::default());
-        let h = harness(&model).await.with_decide(jev_reading("aside").await);
+        let h = harness(&model).await;
         let (busy_tx, busy_rx) = tokio::sync::oneshot::channel();
         let h2 = h.clone();
         let hook: Hook = Box::pin(async move {
@@ -5690,13 +5634,13 @@ mod tests {
         assert_eq!(calls.len(), 3, "heard inside the same turn: the answer, then the step that ends it");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
         assert!(texts(&calls[1]).iter().any(|t| t == "Also check the calendar"), "heard at the next step, as typed");
-        let note = events::attachment_for(&TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Aside }).unwrap();
+        let note = events::attachment_for(&TurnEvent::MidTurnMessage { via: "web".into() }).unwrap();
         assert_eq!(texts(&calls[1]).last(), Some(&reminders::wrap(&note.text)), "the harness's note says what the step does");
         assert_eq!(calls[1].tool_choice, ai::ToolChoice::Auto, "the message joins the work: its step keeps its tools");
         assert!(!calls[1].tools.is_empty(), "the step that hears him has its whole tool surface");
         assert_eq!(calls[2].tool_choice, ai::ToolChoice::Auto);
         assert!(calls.iter().all(|c| texts(c).iter().all(|t| !t.contains("tools off") && !t.contains("tools are off"))));
-        let answered = events::attachment_for(&TurnEvent::MidTurnAnswered(OwnerIntent::Aside)).unwrap();
+        let answered = events::attachment_for(&TurnEvent::MidTurnAnswered).unwrap();
         assert_eq!(texts(&calls[2]).last(), Some(&reminders::wrap(&answered.text)), "the step after the answer is told to go on");
     }
 
@@ -5708,9 +5652,9 @@ mod tests {
     /// the same reply, the call runs, and no note says tools are off.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_message_to_running_work_joins_it_with_tools() {
-        for intent in ["aside", "redirect"] {
+        {
             let model = Arc::new(Scripted::default());
-            let h = harness(&model).await.with_decide(jev_reading(intent).await);
+            let h = harness(&model).await;
             let h2 = h.clone();
             let hook: Hook = Box::pin(async move {
                 let mut handle = h2.start_turn(owner("Use the other file too")).await.expect("queued");
@@ -5722,18 +5666,18 @@ mod tests {
                 Step::Say("Both files are in."),
             ]);
             let events = run_turn(&h, owner("Echo something")).await;
-            assert_eq!(exit_of(&events), "text_response", "{intent}");
+            assert_eq!(exit_of(&events), "text_response");
             let calls = model.calls();
-            assert_eq!(calls.len(), 3, "{intent}: heard, called and answered in one turn");
-            assert!(hears_owner(&calls[1]), "{intent}");
-            assert!(calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto && !c.tools.is_empty()), "{intent}: tools stay on");
+            assert_eq!(calls.len(), 3, "heard, called and answered in one turn");
+            assert!(hears_owner(&calls[1]));
+            assert!(calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto && !c.tools.is_empty()), "tools stay on");
             let results = calls[2].messages.iter().filter(|m| m.role == "tool").count();
-            assert_eq!(results, 2, "{intent}: the call made while answering him ran");
+            assert_eq!(results, 2, "the call made while answering him ran");
             for c in &calls {
-                assert!(texts(c).iter().all(|t| !t.to_lowercase().contains("tools off") && !t.contains("tools are off")), "{intent}");
+                assert!(texts(c).iter().all(|t| !t.to_lowercase().contains("tools off") && !t.contains("tools are off")));
             }
             let shown = shown_text(&events);
-            assert!(shown.contains("Will do, adding it now.") && !shown.to_lowercase().contains("tools off"), "{intent}: {shown}");
+            assert!(shown.contains("Will do, adding it now.") && !shown.to_lowercase().contains("tools off"), "{shown}");
         }
     }
 
@@ -5745,7 +5689,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_message_sent_while_the_model_answers_is_read_after_that_answer() {
         let model = Arc::new(Scripted::default());
-        let h = harness(&model).await.with_decide(jev_reading("aside").await);
+        let h = harness(&model).await;
         let h2 = h.clone();
         let hook: Hook = Box::pin(async move {
             let mut handle = h2.start_turn(owner("What time do we open?")).await.expect("queued");
@@ -6089,7 +6033,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn message_after_last_step_starts_next_turn() {
         let model = Arc::new(Scripted::default());
-        let h = harness(&model).await.with_decide(jev_reading("aside").await);
+        let h = harness(&model).await;
         let h2 = h.clone();
         let hook: Hook = Box::pin(async move {
             let mut handle = h2.start_turn(owner("One more thing")).await.expect("queued");
@@ -6233,8 +6177,6 @@ mod tests {
     struct PartReader {
         runs: Arc<std::sync::atomic::AtomicUsize>,
         during_second: Option<Arc<Owner>>,
-        /// Each run changes the file it names: code work, verified.
-        changes: bool,
     }
 
     impl tools::registry::DynTool for PartReader {
@@ -6245,23 +6187,18 @@ mod tests {
             "reads the next part".into()
         }
         fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "the file the part is in"}}})
+            serde_json::json!({"type": "object"})
         }
         fn read_only(&self, _input: &serde_json::Value) -> bool {
-            !self.changes
+            true
         }
         fn execute_dyn<'a>(
             &'a self,
-            ctx: &'a tools::ToolContext,
-            input: serde_json::Value,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
                 let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                if self.changes
-                    && let (Some(dir), Some(file)) = (ctx.cwd.as_deref(), input["path"].as_str())
-                {
-                    let _ = std::fs::write(std::path::Path::new(dir).join(file), format!("def total(a, b): return a + b  # {run}\n"));
-                }
                 if run == 2
                     && let Some(owner) = &self.during_second
                 {
@@ -6289,7 +6226,7 @@ mod tests {
     /// has said it stopped, it has nothing more to say.
     fn reads_on(req: &ChatRequest) -> Step {
         if hears_owner(req) {
-            return Step::Narrated("Stopping as asked. So far: parts one and two.", "read");
+            return Step::Say("Stopping as asked. So far: parts one and two.");
         }
         if req.messages.iter().any(|m| m.role == "assistant" && m.content.starts_with("Stopping as asked")) {
             return Step::Say("");
@@ -6316,10 +6253,8 @@ mod tests {
 
     /// A turn that reads parts one after another, with the owner acting at
     /// `at`.
-    /// `jev` is how Jev reads the owner's mid-turn message; `None` runs
-    /// without a Jev.
-    async fn interrupted(at: At, act: impl FnOnce(&TurnRequest) -> Act, model: fn(&ChatRequest) -> Step, jev: Option<&'static str>) -> Interrupted {
-        interrupted_with(at, act, model, jev, |_| {}).await
+    async fn interrupted(at: At, act: impl FnOnce(&TurnRequest) -> Act, model: fn(&ChatRequest) -> Step) -> Interrupted {
+        interrupted_with(at, act, model, |_| {}).await
     }
 
     /// [`interrupted`], with `prepare` run on the harness before the turn
@@ -6328,24 +6263,9 @@ mod tests {
         at: At,
         act: impl FnOnce(&TurnRequest) -> Act,
         model: fn(&ChatRequest) -> Step,
-        jev: Option<&'static str>,
         prepare: impl FnOnce(&Harness),
     ) -> Interrupted {
-        interrupted_in(at, act, model, jev, prepare, None).await
-    }
-
-    /// [`interrupted_with`], working in `project` when one is given: each
-    /// read changes its file there, so the turn has code work to verify.
-    async fn interrupted_in(
-        at: At,
-        act: impl FnOnce(&TurnRequest) -> Act,
-        model: fn(&ChatRequest) -> Step,
-        jev: Option<&'static str>,
-        prepare: impl FnOnce(&Harness),
-        project: Option<&std::path::Path>,
-    ) -> Interrupted {
-        let mut req = owner("Read part one and follow it to the end, then summarize.");
-        req.seat.cwd = project.map(|p| p.to_string_lossy().into_owned());
+        let req = owner("Read part one and follow it to the end, then summarize.");
         let owner_act = Arc::new(Owner { h: Default::default(), act: act(&req), done: Default::default() });
         let mut script: Vec<Step> = (0..12).map(|_| Step::Reacting(model)).collect();
         match at {
@@ -6359,12 +6279,8 @@ mod tests {
         let reader = PartReader {
             runs: runs.clone(),
             during_second: (at == At::DuringTools).then(|| owner_act.clone()),
-            changes: project.is_some(),
         };
-        let mut h = harness_with(&model, vec![Box::new(reader)]).await;
-        if let Some(intent) = jev {
-            h = h.with_decide(jev_reading(intent).await);
-        }
+        let h = harness_with(&model, vec![Box::new(reader)]).await;
         let _ = owner_act.h.set(h.clone());
         prepare(&h);
         let hook = match at {
@@ -6390,13 +6306,12 @@ mod tests {
     /// The owner types "stop" at every point of the step loop. The message
     /// is never dropped: the step that has not sent its request yet hears
     /// it, or else the next one does (a whole new turn when the answer was
-    /// already streaming). That step answers with tools off, so no read
-    /// runs after the owner's message is heard, whatever the model's
-    /// momentum, and the turn ends on that answer.
+    /// already streaming). That step keeps its tools, and the employee does
+    /// what the message asks: here it stops reading and says so.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_message_queued_at_any_point_of_a_step_is_heard_at_the_next_boundary() {
         for at in EVERY_POINT {
-            let run = interrupted(at, |_| Act::Message(STOP_READING), reads_on, Some("stop")).await;
+            let run = interrupted(at, |_| Act::Message(STOP_READING), reads_on).await;
             // The call that first carries the message, and the reads that
             // ran before it: the step in flight when the message landed
             // finishes, and nothing after.
@@ -6408,14 +6323,10 @@ mod tests {
             let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
             let first = run.calls.iter().position(carries);
             assert_eq!(first, Some(heard), "{at:?}: heard by the first step that had not sent its request");
-            assert!(run.calls[..heard].iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}");
-            assert_eq!(run.calls[heard].tool_choice, ai::ToolChoice::None, "{at:?}: the step that hears the owner answers in words");
-            assert_eq!(run.reads, reads, "{at:?}: no read ran after the owner's message was heard");
-            assert_eq!(run.calls.len(), heard + 1, "{at:?}: the turn ends on the answer");
+            assert!(run.calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}: a message never turns tools off");
+            assert_eq!(run.reads, reads, "{at:?}: the employee stopped reading, as asked");
             assert_eq!(exit_of(&run.events), "text_response", "{at:?}");
-            let reply = run.rows.iter().rev().find(|m| m.role == "assistant").expect("the reply is stored");
-            assert!(reply.content.starts_with("Stopping as asked"), "{at:?}: {}", reply.content);
-            assert!(reply.tool_calls.is_none(), "{at:?}: the call the model tried with tools off is not stored or run");
+            assert!(replies(&run.rows).iter().any(|r| r.starts_with("Stopping as asked")), "{at:?}");
         }
     }
 
@@ -6425,7 +6336,7 @@ mod tests {
     async fn an_aside_is_answered_and_the_work_carries_on() {
         for at in [At::AfterLoad, At::DuringCall] {
             let run =
-                interrupted(at, |_| Act::Message("While you're at it: what's 12 times 12?"), answers_and_reads_on, Some("aside")).await;
+                interrupted(at, |_| Act::Message("While you're at it: what's 12 times 12?"), answers_and_reads_on).await;
             let heard = if at == At::AfterLoad { 1 } else { 2 };
             assert!(hears_owner(&run.calls[heard]), "{at:?}");
             assert!(run.calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}: an aside never turns tools off");
@@ -6443,7 +6354,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stop_at_any_point_of_a_step_ends_the_turn_there() {
         for at in [At::BeforeLoad, At::AfterLoad, At::DuringCall, At::DuringTools] {
-            let run = interrupted(at, |req| Act::Stop(req.cancel.clone()), reads_on, None).await;
+            let run = interrupted(at, |req| Act::Stop(req.cancel.clone()), reads_on).await;
             assert_eq!(exit_of(&run.events), "cancelled", "{at:?}");
             assert!(run.calls.len() <= 2, "{at:?}: no model call after step 2: {}", run.calls.len());
             let most = if matches!(at, At::BeforeLoad | At::AfterLoad) { 1 } else { 2 };
@@ -6488,7 +6399,7 @@ mod tests {
     async fn queued_then_stopped(at: At, sent: Vec<TurnRequest>) -> (Interrupted, Option<String>, mpsc::UnboundedReceiver<String>) {
         let (outlets, mut asked) = asking_outlets(None);
         let sent = Mutex::new(sent);
-        let run = interrupted_with(at, move |req| Act::QueueThenStop(sent, req.cancel.clone()), reads_on, Some("aside"), |h| h.bind(outlets)).await;
+        let run = interrupted_with(at, move |req| Act::QueueThenStop(sent, req.cancel.clone()), reads_on, |h| h.bind(outlets)).await;
         let key = tokio::time::timeout(std::time::Duration::from_millis(500), asked.recv()).await.ok().flatten();
         (run, key, asked)
     }
@@ -6571,7 +6482,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_queued_message_is_named_once_by_the_step_that_takes_it_in() {
         for at in EVERY_POINT {
-            let run = interrupted(at, |_| Act::Send(Mutex::new(vec![sent(STOP_READING, "m-1")]), false), reads_on, Some("stop")).await;
+            let run = interrupted(at, |_| Act::Send(Mutex::new(vec![sent(STOP_READING, "m-1")]), false), reads_on).await;
             assert_eq!(taken_in(&run.events), [["m-1"]], "{at:?}: named once");
             let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
             assert!(run.calls.iter().any(carries), "{at:?}: heard");
@@ -6588,7 +6499,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_queued_message_taken_back_is_never_heard() {
         for at in [At::DuringCall, At::DuringTools] {
-            let run = interrupted(at, |_| Act::Send(Mutex::new(vec![sent(STOP_READING, "m-1")]), true), reads_on, Some("stop")).await;
+            let run = interrupted(at, |_| Act::Send(Mutex::new(vec![sent(STOP_READING, "m-1")]), true), reads_on).await;
             let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
             assert!(!run.calls.iter().any(carries), "{at:?}: no step heard it");
             assert!(taken_in(&run.events).is_empty(), "{at:?}");
@@ -6677,8 +6588,8 @@ mod tests {
         script[1] = Step::During(Box::new(Step::Reacting(answers_and_reads_on)), message.hook());
         script[3] = Step::During(Box::new(Step::Reacting(answers_and_reads_on)), stop.hook());
         let model = Scripted::new(script);
-        let reader = PartReader { runs: Default::default(), during_second: None, changes: false };
-        let h = harness_with(&model, vec![Box::new(reader)]).await.with_decide(jev_reading("aside").await);
+        let reader = PartReader { runs: Default::default(), during_second: None };
+        let h = harness_with(&model, vec![Box::new(reader)]).await;
         let _ = message.h.set(h.clone());
         let (outlets, mut asked) = asking_outlets(None);
         h.bind(outlets);
@@ -6696,7 +6607,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stop_with_nothing_queued_starts_nothing() {
         let (outlets, mut asked) = asking_outlets(None);
-        let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, None, |h| h.bind(outlets)).await;
+        let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, |h| h.bind(outlets)).await;
         assert_eq!(exit_of(&run.events), "cancelled");
         let key = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
         assert_eq!(key, None, "nothing unanswered: no turn after the stop");
@@ -6762,7 +6673,7 @@ mod tests {
     async fn the_stop_button_pauses_the_goal_until_the_owner_asks() {
         let watch = Arc::new(Watch(Mutex::new(Vec::new())));
         let (outlets, set_goal) = with_goal(&watch);
-        let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, None, |h| {
+        let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, |h| {
             h.bind(outlets);
             set_goal(h);
         })
@@ -6779,118 +6690,20 @@ mod tests {
         assert!(run.model.side.lock().unwrap().iter().all(|r| r.trace.purpose != "done_check"), "no check after it either");
     }
 
-    /// The owner types "stop" while the employee works toward a goal: the
-    /// stop is answered, the turn ends on that answer, and the goal pauses
-    /// rather than a goal check starting the work again.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_typed_stop_answered_in_words_pauses_the_goal() {
-        let watch = Arc::new(Watch(Mutex::new(Vec::new())));
-        let (outlets, set_goal) = with_goal(&watch);
-        let run = interrupted_with(At::DuringTools, |_| Act::Message(STOP_READING), reads_on, Some("stop"), |h| {
-            h.bind(outlets);
-            set_goal(h);
-        })
-        .await;
-        assert_eq!(exit_of(&run.events), "text_response");
-        assert_goal_paused_by_the_owner(&run, &watch);
-    }
-
-    /// [`reads_on`] working on code: each read changes `total.py` in the
-    /// project the turn works in.
-    fn edits_on(req: &ChatRequest) -> Step {
-        match reads_on(req) {
-            Step::Call("read", _) => Step::Call("read", serde_json::json!({"path": "total.py"})),
-            other => other,
-        }
-    }
-
-    /// The owner's message ends code work the way he meant it, end to end:
-    /// a stop he typed closes its verification as stopped, the same as the
-    /// Stop button, his goal paused or not; a message no reading could be
-    /// had of that paused his goal leaves it waiting on him; one that paused
-    /// none is an answer that skipped its check.
-    #[test]
-    fn the_owners_message_ends_code_work_as_he_meant_it() {
-        crate::test_home::with_home(|_| {
-            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-            rt.block_on(async {
-                for (jev, goal, state, reason) in [
-                    (Some("stop"), true, "stopped", ""),
-                    (Some("stop"), false, "stopped", ""),
-                    (None, true, "paused", ""),
-                    (None, false, "not_verified", r#"{"code":"turn_ended"}"#),
-                ] {
-                    let (project, _file) = small_project(true).await;
-                    let watch = Arc::new(Watch(Mutex::new(Vec::new())));
-                    let (outlets, set_goal) = with_goal(&watch);
-                    let run = interrupted_in(
-                        At::DuringTools,
-                        |_| Act::Message(STOP_READING),
-                        edits_on,
-                        jev,
-                        |h| {
-                            let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
-                            h.bind(crate::harness::Outlets { helpers: Some(helpers), ..outlets });
-                            if goal {
-                                set_goal(h);
-                            }
-                        },
-                        Some(project.path()),
-                    )
-                    .await;
-                    assert_eq!(exit_of(&run.events), "text_response", "{jev:?} goal={goal}");
-                    let v = run.h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                    assert_eq!((v.state.as_str(), v.reason.as_str()), (state, reason), "{jev:?} goal={goal}: {v:?}");
-                }
-            })
-        })
-    }
-
-    /// A model with more momentum than [`reads_on`]: told it may not call
-    /// tools, it answers and tries a read anyway, and with its tools back it
-    /// reads on to the end, whatever it said and whatever it was told.
-    fn answers_then_reads_on(req: &ChatRequest) -> Step {
-        if hears_owner(req) {
-            return Step::Narrated("Stopping as asked. So far: parts one and two.", "read");
-        }
-        if reads_in(req) < 3 { Step::Call("read", serde_json::json!({})) } else { Step::Say("All three parts are read.") }
-    }
-
     fn replies(rows: &[ChatMessage]) -> Vec<&str> {
         rows.iter().filter(|m| m.role == "assistant" && !m.content.is_empty()).map(|m| m.content.as_str()).collect()
     }
 
-    /// Stop means stop, and the harness enforces it: once the owner's typed
-    /// stop is answered the turn ends, and tools never come back, however
-    /// much the model wants to read on (2026-09-27 release proof: 3 of 3
-    /// runs of `correction-message-while-working` read part 3 and part 4
-    /// after the answer). With no decision to be had, a message is handled
-    /// like a stop.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_typed_stop_ends_the_turn_on_the_answer_whatever_the_model_does() {
-        for jev in [Some("stop"), None] {
-            for at in [At::AfterLoad, At::DuringCall, At::DuringTools] {
-                let run = interrupted(at, |_| Act::Message(STOP_READING), answers_then_reads_on, jev).await;
-                let heard = if at == At::AfterLoad { 1 } else { 2 };
-                assert_eq!(run.calls[heard].tool_choice, ai::ToolChoice::None, "{jev:?} {at:?}: the answer has tools off");
-                assert_eq!(run.calls.len(), heard + 1, "{jev:?} {at:?}: no step after the answer");
-                assert_eq!(run.reads, heard, "{jev:?} {at:?}: no read after the owner's stop was heard");
-                assert_eq!(exit_of(&run.events), "text_response", "{jev:?} {at:?}");
-                assert_eq!(replies(&run.rows).last(), Some(&"Stopping as asked. So far: parts one and two."), "{jev:?} {at:?}");
-            }
-        }
-    }
-
-    /// A redirect is not a stop: the answer, then the work goes on, told it
-    /// goes on the way the owner's message now asks.
+    /// A redirect: the answer, then the work goes on, told to go on as the
+    /// owner's message asks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_redirect_is_answered_and_the_work_goes_on_as_it_now_asks() {
         let run =
-            interrupted(At::DuringCall, |_| Act::Message("Read them backwards from here."), answers_and_reads_on, Some("redirect")).await;
+            interrupted(At::DuringCall, |_| Act::Message("Read them backwards from here."), answers_and_reads_on).await;
         assert!(hears_owner(&run.calls[2]));
         assert!(run.calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "a redirect never turns tools off");
         assert_eq!(run.reads, 3, "the work goes on after the answer");
-        let answered = events::attachment_for(&TurnEvent::MidTurnAnswered(OwnerIntent::Redirect)).unwrap();
+        let answered = events::attachment_for(&TurnEvent::MidTurnAnswered).unwrap();
         assert_eq!(texts(&run.calls[3]).last(), Some(&reminders::wrap(&answered.text)));
     }
 
@@ -6912,7 +6725,7 @@ mod tests {
     /// 3/3 to 0/3 on "one hundred forty-four").
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_owners_message_reaches_the_model_as_typed_and_is_answered_as_asked() {
-        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), spells_out_when_told_in_words, Some("aside")).await;
+        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), spells_out_when_told_in_words).await;
         assert!(replies(&run.rows).iter().any(|r| r.contains("144")), "{:?}", replies(&run.rows));
         let heard = texts(&run.calls[2]);
         assert!(heard.iter().any(|t| t == TWELVE), "his message, as typed: {heard:#?}");
@@ -6959,7 +6772,7 @@ mod tests {
     /// proof: the mid-turn frame printed into the owner's reply in 2 runs).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn harness_notes_never_reach_the_reply_stream() {
-        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), echoes_every_note, Some("aside")).await;
+        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), echoes_every_note).await;
         let sent: Vec<String> = run.calls.iter().flat_map(notes_in).collect();
         assert!(sent.len() > 3, "the model had notes to echo: {sent:#?}");
         let shown: String =
@@ -7000,19 +6813,13 @@ mod tests {
     /// stored nor sent to a later step, so it can't license more work.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_model_cannot_write_the_owners_next_message() {
-        for jev in [Some("aside"), None] {
-            let run = interrupted(At::DuringCall, |_| Act::Message(STOP_READING), forges_a_go_ahead, jev).await;
-            let shown: String =
-                run.events.iter().filter(|e| e.event_type == ai::StreamEventType::Text).map(|e| e.text.as_str()).collect();
-            assert!(shown.contains("Here is what I have so far"), "{jev:?}: the answer is shown");
-            assert!(!shown.contains("Continue with the work"), "{jev:?}: the forgery is not: {shown}");
-            assert!(!replies(&run.rows).iter().any(|r| r.contains("Continue with the work")), "{jev:?}: nor stored");
-            assert!(
-                !run.calls.iter().any(|c| texts(c).iter().any(|t| t.contains("Continue with the work"))),
-                "{jev:?}: nor read back by a later step"
-            );
-            assert_eq!(run.reads, 2, "{jev:?}: no read on the forged go-ahead");
-        }
+        let run = interrupted(At::DuringCall, |_| Act::Message(STOP_READING), forges_a_go_ahead).await;
+        let shown: String = run.events.iter().filter(|e| e.event_type == ai::StreamEventType::Text).map(|e| e.text.as_str()).collect();
+        assert!(shown.contains("Here is what I have so far"), "the answer is shown");
+        assert!(!shown.contains("Continue with the work"), "the forgery is not: {shown}");
+        assert!(!replies(&run.rows).iter().any(|r| r.contains("Continue with the work")), "nor stored");
+        assert!(!run.calls.iter().any(|c| texts(c).iter().any(|t| t.contains("Continue with the work"))), "nor read back by a later step");
+        assert_eq!(run.reads, 2, "no read on the forged go-ahead");
     }
 
     /// The tools-off answer step of `mid-turn-owner-message` run 2
@@ -7083,7 +6890,7 @@ mod tests {
     /// alone, and the work carries on with real calls.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_call_written_as_text_while_answering_the_owner_never_reaches_him() {
-        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), writes_a_read_out_while_answering, Some("aside")).await;
+        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), writes_a_read_out_while_answering).await;
         let shown = shown_text(&run.events);
         assert!(shown.contains("12 times 12 is 144.") && shown.contains("I'll read the next part now."), "{shown}");
         assert!(!shown.contains("<function_name>") && !shown.contains("<parameter_path>"), "shown to the owner: {shown}");
@@ -7109,7 +6916,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tool_named_tag_while_answering_the_owner_never_reaches_him() {
-        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), writes_a_tagged_read_while_answering, Some("aside")).await;
+        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), writes_a_tagged_read_while_answering).await;
         let shown = shown_text(&run.events);
         assert!(shown.contains("Let me look at the movement code:"), "{shown}");
         for leak in ["<system-read>", "<parameter", "Kart Racer", "kart.js"] {
@@ -8570,7 +8377,7 @@ mod tests {
     /// (an aside) is answered, and the step after the answer ends the turn.
     async fn input_during_a_checkpoint(input: TurnRequest, calls: usize) -> (Vec<StreamEvent>, Vec<String>, Vec<ChatMessage>) {
         let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Answered."), Step::Say("")]);
-        let h = harness(&model).await.with_decide(jev_reading("aside").await);
+        let h = harness(&model).await;
         run_turn(&h, owner("Start the report")).await;
         let h2 = h.clone();
         let hook: Hook = Box::pin(async move {
@@ -10026,7 +9833,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_request_starts_with_the_one_before_it() {
         let model = Arc::new(Scripted::default());
-        let h = harness_selecting(&model, Vec::new(), thinking_selector()).await.with_decide(jev_reading("aside").await);
+        let h = harness_selecting(&model, Vec::new(), thinking_selector()).await;
         let h2 = h.clone();
         let queued: Hook = Box::pin(async move {
             let mut queued = h2.start_turn(on("scripted/deep", "Also check the weather.")).await.expect("queued");
@@ -12230,8 +12037,8 @@ mod tests {
 
     /// Review round 4 (b): a turn that ends waiting on the owner with no
     /// question of the loop's saved leaves its work paused; the next turn
-    /// picks it up into a normal round, and a run stopped while it waits
-    /// ends it as stopped, never paused forever.
+    /// picks it up into a normal round. A run stopped while it waits leaves
+    /// it waiting too: a stop never closes a code check (owner, 10-23).
     #[test]
     fn work_paused_on_the_owner_goes_on_next_turn_and_a_stop_ends_it() {
         for stopped in [false, true] {
@@ -12269,7 +12076,7 @@ mod tests {
                     run_turn(&h, next).await;
                     let after = h.store.get_verification(&v.id).unwrap().unwrap();
                     if stopped {
-                        assert_eq!(after.state, "stopped", "{after:?}");
+                        assert_eq!(after.state, "paused", "{after:?}");
                     } else {
                         assert_eq!((after.state.as_str(), after.rounds), ("verified", 1), "{after:?}");
                         assert!(!after.landed_ref.is_empty(), "a normal round, then it landed");
@@ -12280,10 +12087,11 @@ mod tests {
         }
     }
 
-    /// Review 2026-10-20 M3: the owner's Stop while the builder works ends
-    /// its verification as stopped, never a row left running.
+    /// Review 2026-10-20 M3: the owner's Stop while the builder works never
+    /// leaves a row running; and a stop never closes a code check (owner,
+    /// 10-23): it waits, paused, for the turn that goes on.
     #[test]
-    fn a_stopped_turn_ends_its_verification_as_stopped() {
+    fn a_stopped_turn_leaves_its_verification_waiting() {
         crate::test_home::with_home(|_| {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
@@ -12300,29 +12108,58 @@ mod tests {
                 let events = run_turn(&h, req).await;
                 assert_eq!(exit_of(&events), "cancelled");
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                assert_eq!(v.state, "stopped", "{v:?}");
+                assert_eq!(v.state, "paused", "{v:?}");
             })
         })
     }
 
-    /// The owner's own message ending the work settles its verifications
-    /// the way his intent says: a typed stop is the Stop button's stop; one
-    /// that paused the goal he set leaves the work waiting on him, paused,
-    /// never closed as not verified.
+    /// How each turn's end settles its verifications. A stop never closes
+    /// one: the Stop button waits like any wait on the owner.
     #[test]
-    fn the_owners_message_settles_its_verifications_as_he_meant() {
+    fn a_turns_end_settles_its_verifications_and_a_stop_never_closes_one() {
         use super::super::verify::engine::Closed;
-        let ended = |intent, goal_paused| Some(OwnerEnded { intent, goal_paused });
-        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Stop, true)), Closed::Stopped, "a stop, goal paused or not");
-        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Stop, false)), Closed::Stopped);
-        assert_eq!(closing(&TurnExit::Cancelled, false, None), Closed::Stopped, "the same as the Stop button");
-        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Undecided, true)), Closed::Waiting);
-        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Undecided, false)), Closed::Unchecked);
-        assert_eq!(closing(&TurnExit::AwaitingApproval, false, None), Closed::Waiting, "like any wait on him");
-        assert_eq!(closing(&TurnExit::Answered, false, None), Closed::Unchecked);
-        assert_eq!(closing(&TurnExit::Compacted, false, None), Closed::Unchecked);
-        assert_eq!(closing(&TurnExit::MaxSteps { steps: 3 }, false, None), Closed::Ended(super::super::verify::Why::new("step_limit")));
-        assert_eq!(closing(&TurnExit::Cancelled, true, None), Closed::Ended(super::super::verify::Why::new("turn_ended")), "a stalled run is no stop of his");
+        assert_eq!(closing(&TurnExit::Cancelled, false), Closed::Waiting, "the Stop button");
+        assert_eq!(closing(&TurnExit::AwaitingApproval, false), Closed::Waiting, "like any wait on him");
+        assert_eq!(closing(&TurnExit::Answered, false), Closed::Unchecked);
+        assert_eq!(closing(&TurnExit::Compacted, false), Closed::Unchecked);
+        assert_eq!(closing(&TurnExit::MaxSteps { steps: 3 }, false), Closed::Ended(super::super::verify::Why::new("step_limit")));
+        assert_eq!(closing(&TurnExit::Cancelled, true), Closed::Ended(super::super::verify::Why::new("turn_ended")), "a stalled run is no stop of his");
+    }
+
+    /// Owner, 10-23: "shut down the old research", typed mid-build, ended
+    /// the build's code check for good (0 rounds, never reopened). Words
+    /// never close a check: the employee hears them with its tools and
+    /// answers, and the turn's end reviews the change as usual and lands it.
+    #[test]
+    fn words_typed_mid_build_never_close_its_check() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let bound: Arc<std::sync::OnceLock<Harness>> = Arc::new(std::sync::OnceLock::new());
+                let to = bound.clone();
+                let says: Hook = Box::pin(async move {
+                    let h = to.get().expect("bound").clone();
+                    let mut queued = h.start_turn(owner("Shut down the old research.")).await.expect("queued");
+                    let _ = queued.events.recv().await;
+                });
+                let model = Scripted::new(vec![
+                    Step::During(Box::new(Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"}))), says),
+                    Step::Say("The old research is shut down."),
+                    Step::Say("Done: total() now adds a and b."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                let _ = bound.set(h.clone());
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert!(model.calls().iter().any(|c| texts(c).iter().any(|t| t.contains("Shut down the old research."))), "heard");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
+                assert!(!v.landed_ref.is_empty(), "it landed");
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n");
+            })
+        })
     }
 
     /// A turn that ends on an answer that never reached its end check (a

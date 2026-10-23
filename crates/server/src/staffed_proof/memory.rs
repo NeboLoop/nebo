@@ -441,9 +441,8 @@ fn turn(marker: &'static str, calls: Vec<(&'static str, Value)>, heard: Arc<Hear
 /// The owner writes `text` (naming `marker`) in the conversation `chat` with
 /// employee `agent_id`, and the turn runs to the script's `DONE-` word and
 /// ends. The owner speaks again only then: a message that lands while the
-/// turn still runs, its tail included, is one typed into running work,
-/// which this server, with no decision to be had on it, answers with tools
-/// off (`owner_intent`: it fails toward stopping).
+/// turn still runs, its tail included, is one typed into running work, and
+/// joins it instead of starting a turn of its own.
 async fn owner_turn(rig: &Rig<'_>, agent_id: &str, chat: &str, marker: &str, text: &str) {
     let key = format!("agent:{agent_id}:thread:{chat}");
     rig.owner_writes(&key, agent_id, None, text).await;
