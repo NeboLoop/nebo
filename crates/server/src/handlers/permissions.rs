@@ -54,8 +54,18 @@ pub struct PermissionAskCard {
     /// `amount`, `when`, `link`, `file`, `search`, `command`).
     pub details: Vec<AskDetail>,
     /// What it would do that needs the owner, in plain words (the
-    /// consequence line): "It would use your Messages app as you."
+    /// consequence line): "It would use your Messages app as you." English:
+    /// what a client without `reason_key` shows.
     pub reason: String,
+    /// The same line's message key in the clients' translations
+    /// (`permissionAsk.reason.*`), and the values it fills in: the owner's
+    /// app words it in his language, `reason` when it has no such key.
+    pub reason_key: String,
+    pub reason_values: BTreeMap<String, String>,
+    /// The command's one-line risk, as a message key
+    /// (`permissionAsk.warning.*`), when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_key: Option<String>,
     /// The command a shell ask would run, exactly: the card shows it when
     /// the owner opens it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,6 +114,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
     };
     let employee = employee_name(state, &ask.agent_id);
     let allow_always = ask.allow_always_offered(&state.store);
+    let (reason_key, reason_values) = agent::harness::permissions::ask::reason_key(&ask.case);
     PermissionAskCard {
         id: ask.id.clone(),
         kind: ask.kind().as_str().to_string(),
@@ -115,6 +126,9 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         stated_reason: ask.brief.stated_reason.clone(),
         details: ask.brief.details.iter().map(|d| AskDetail { kind: d.kind.clone(), value: d.value.clone() }).collect(),
         reason: ask.reason(),
+        reason_key,
+        reason_values,
+        warning_key: agent::harness::permissions::ask::warning_key(&ask.case),
         allow_always_covers: if allow_always { allow_always_covers(&state.store, ask, &employee) } else { None },
         employee,
         command: match &ask.target.field {
