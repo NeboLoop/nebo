@@ -609,6 +609,53 @@ pub fn normalize_phone(s: &str) -> Option<String> {
     })
 }
 
+/// What a destructive command may do, in one line for the owner's card:
+/// the first that fits it (`tools::policy::destructive_warning`). Display
+/// only: it decides nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestructiveWarning {
+    DiscardsUncommittedChanges,
+    OverwritesRemoteHistory,
+    DeletesUntrackedFiles,
+    DiscardsWorkingTreeChanges,
+    RemovesStashedChanges,
+    ForceDeletesBranch,
+    SkipsSafetyHooks,
+    RewritesLastCommit,
+    RecursivelyForceRemovesFiles,
+    RecursivelyRemovesFiles,
+    ForceRemovesFiles,
+    DropsDatabaseObjects,
+    DeletesAllRows,
+    DeletesKubernetesResources,
+    DestroysInfrastructure,
+}
+
+impl DestructiveWarning {
+    /// The line in English, for the model and the logs; the owner's app
+    /// words it in his language (`permissionAsk.warning.*`).
+    pub fn words(self) -> &'static str {
+        match self {
+            DestructiveWarning::DiscardsUncommittedChanges => "It may discard uncommitted changes.",
+            DestructiveWarning::OverwritesRemoteHistory => "It may overwrite history on the remote.",
+            DestructiveWarning::DeletesUntrackedFiles => "It may permanently delete files git doesn't track.",
+            DestructiveWarning::DiscardsWorkingTreeChanges => "It may discard every change in the working tree.",
+            DestructiveWarning::RemovesStashedChanges => "It may permanently remove stashed changes.",
+            DestructiveWarning::ForceDeletesBranch => "It may force-delete a branch.",
+            DestructiveWarning::SkipsSafetyHooks => "It may skip the project's safety hooks.",
+            DestructiveWarning::RewritesLastCommit => "It may rewrite the last commit.",
+            DestructiveWarning::RecursivelyForceRemovesFiles => "It may remove whole folders of files, without asking.",
+            DestructiveWarning::RecursivelyRemovesFiles => "It may remove whole folders of files.",
+            DestructiveWarning::ForceRemovesFiles => "It may remove files without asking.",
+            DestructiveWarning::DropsDatabaseObjects => "It may drop or empty database tables.",
+            DestructiveWarning::DeletesAllRows => "It may delete every row of a database table.",
+            DestructiveWarning::DeletesKubernetesResources => "It may delete Kubernetes resources.",
+            DestructiveWarning::DestroysInfrastructure => "It may destroy Terraform infrastructure.",
+        }
+    }
+}
+
 /// Why a call asks the owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -646,8 +693,14 @@ pub enum AskCase {
     /// The call removes folders or trees of files outside the run's own
     /// work (`targets`, as `CallEffects::removes_trees` names them), or a
     /// working copy or the project it copies, itself (`whole_work`: never
-    /// covered by "Allow always").
-    RemovesFolders { targets: Vec<String>, whole_work: bool },
+    /// covered by "Allow always"). `warning` is the command's one-line
+    /// risk, for the card, when it has one.
+    RemovesFolders {
+        targets: Vec<String>,
+        whole_work: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        warning: Option<DestructiveWarning>,
+    },
     /// The call watches the owner or drives his apps (`CallEffects::reaches_owner`).
     ReachesOwner { reach: OwnerReach },
     /// An employee made by an employee needs more than its creator holds:

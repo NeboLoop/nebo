@@ -1183,7 +1183,10 @@ async fn removing_a_folder_outside_the_work_asks_in_every_mode() {
                 }
                 assert_eq!(asks.len(), 1, "{case}: one card for the owner: {}", r.content);
                 let asked: AskCase = serde_json::from_str(&asks[0].ask_case).unwrap();
-                let AskCase::RemovesFolders { targets, whole_work } = asked else { panic!("{case}: {asked:?}") };
+                let AskCase::RemovesFolders { targets, whole_work, warning } = asked else { panic!("{case}: {asked:?}") };
+                if label.starts_with("rm ") {
+                    assert!(warning.is_some(), "{case}: the card names the risk");
+                }
                 assert!(!whole_work, "{case}");
                 assert!(targets.iter().any(|t| t.contains(&agent)), "{case}: names what it removes: {targets:?}");
                 if who == "attended" {

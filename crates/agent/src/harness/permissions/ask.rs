@@ -324,8 +324,17 @@ pub fn reason_of(case: &AskCase) -> String {
         AskCase::AskMode => "This employee asks before it changes anything.",
         AskCase::Widens => "Only you can give an employee more room.",
         AskCase::RemovesEmployee => "Deleting an employee needs your OK every time.",
-        AskCase::RemovesFolders { whole_work: true, .. } => "Removing the project or its working copy needs your OK every time.",
-        AskCase::RemovesFolders { .. } => "Removing a folder outside its work needs your OK.",
+        AskCase::RemovesFolders { whole_work, warning, .. } => {
+            let why = if *whole_work {
+                "Removing this needs your OK every time."
+            } else {
+                "Removing a folder outside its work needs your OK."
+            };
+            return match warning {
+                Some(w) => format!("{why} {}", w.words()),
+                None => why.to_string(),
+            };
+        }
         AskCase::ReachesOwner { reach } => match reach {
             OwnerReach::Screen => "It would see what's on your screen.",
             OwnerReach::Microphone => "It would hear what your microphone picks up.",
@@ -340,6 +349,55 @@ pub fn reason_of(case: &AskCase) -> String {
         }
     };
     words.to_string()
+}
+
+/// The message key the owner's app words [`reason_of`] with, in his
+/// language, and the values it fills in (`permissionAsk.reason.*` in each
+/// client's translations). The English line stays the fallback, and what
+/// the model and the logs read.
+pub fn reason_key(case: &AskCase) -> (String, std::collections::BTreeMap<String, String>) {
+    let mut values = std::collections::BTreeMap::new();
+    let name = match case {
+        AskCase::Money { .. } => "money",
+        AskCase::CompanyMoney { .. } => "companyMoney",
+        AskCase::NewCounterparty { .. } => "newCounterparty",
+        AskCase::Irreversible { .. } => "irreversible",
+        AskCase::OutsideJob { .. } => "outsideJob",
+        AskCase::UntrustedInput { .. } => "untrustedInput",
+        AskCase::AskRule { .. } => "askRule",
+        AskCase::AskMode => "askMode",
+        AskCase::Widens => "widens",
+        AskCase::RemovesEmployee => "removesEmployee",
+        AskCase::RemovesFolders { whole_work: true, .. } => "removesWholeWork",
+        AskCase::RemovesFolders { .. } => "removesFolders",
+        AskCase::ReachesOwner { reach } => match reach {
+            OwnerReach::Screen => "reachesScreen",
+            OwnerReach::Microphone => "reachesMicrophone",
+            OwnerReach::Camera => "reachesCamera",
+            OwnerReach::App { app: Some(app) } => {
+                values.insert("app".to_string(), app.clone());
+                "reachesApp"
+            }
+            OwnerReach::App { app: None } => "reachesApps",
+            OwnerReach::Input => "reachesInput",
+        },
+        AskCase::CreatedExtras { .. } => "createdExtras",
+        AskCase::UnconfirmedSend { .. } => "unconfirmedSend",
+    };
+    (format!("permissionAsk.reason.{name}"), values)
+}
+
+/// The message key of the one-line risk a case carries
+/// (`permissionAsk.warning.*`), when it has one.
+pub fn warning_key(case: &AskCase) -> Option<String> {
+    let AskCase::RemovesFolders { warning: Some(w), .. } = case else { return None };
+    let code = serde_json::to_value(w).ok()?.as_str()?.to_string();
+    let camel: String = code
+        .split('_')
+        .enumerate()
+        .map(|(i, part)| if i == 0 { part.to_string() } else { format!("{}{}", part[..1].to_uppercase(), &part[1..]) })
+        .collect();
+    Some(format!("permissionAsk.warning.{camel}"))
 }
 
 /// Where the card goes and where answers are delivered. The server
@@ -1269,6 +1327,54 @@ mod tests {
 
     use super::super::Check;
     use super::*;
+
+    /// Every ask case's line and every risk line has its key in the app's
+    /// English translations (and so, by the app's own locale test, in every
+    /// language): the owner reads them in his language.
+    #[test]
+    fn every_case_is_worded_in_the_apps_translations() {
+        use types::permissions::DestructiveWarning as W;
+        let en: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/src/lib/i18n/locales/en.json")).unwrap(),
+        )
+        .unwrap();
+        let has = |key: &str| key.split('.').try_fold(&en, |v, k| v.get(k)).is_some_and(|v| v.is_string());
+        let warnings = [
+            W::DiscardsUncommittedChanges, W::OverwritesRemoteHistory, W::DeletesUntrackedFiles, W::DiscardsWorkingTreeChanges,
+            W::RemovesStashedChanges, W::ForceDeletesBranch, W::SkipsSafetyHooks, W::RewritesLastCommit,
+            W::RecursivelyForceRemovesFiles, W::RecursivelyRemovesFiles, W::ForceRemovesFiles, W::DropsDatabaseObjects,
+            W::DeletesAllRows, W::DeletesKubernetesResources, W::DestroysInfrastructure,
+        ];
+        let mut cases = vec![
+            AskCase::Money { cents: 1, limit_cents: None },
+            AskCase::CompanyMoney { cents: 1, limit_cents: None },
+            AskCase::NewCounterparty { who: "pat".into() },
+            AskCase::Irreversible { what: "x".into() },
+            AskCase::OutsideJob { capability: "web".into() },
+            AskCase::UntrustedInput { source: "email".into() },
+            AskCase::AskRule { rule_id: "r".into() },
+            AskCase::AskMode,
+            AskCase::Widens,
+            AskCase::RemovesEmployee,
+            AskCase::RemovesFolders { targets: vec![], whole_work: true, warning: None },
+            AskCase::CreatedExtras { capabilities: vec![] },
+            AskCase::UnconfirmedSend { effect_id: 1 },
+        ];
+        for reach in [OwnerReach::Screen, OwnerReach::Microphone, OwnerReach::Camera, OwnerReach::App { app: Some("Mail".into()) }, OwnerReach::App { app: None }, OwnerReach::Input] {
+            cases.push(AskCase::ReachesOwner { reach });
+        }
+        cases.extend(warnings.iter().map(|w| AskCase::RemovesFolders { targets: vec![], whole_work: false, warning: Some(*w) }));
+        for case in &cases {
+            let (key, values) = reason_key(case);
+            assert!(has(&key), "{key} is missing from en.json ({case:?})");
+            if let AskCase::ReachesOwner { reach: OwnerReach::App { app: Some(app) } } = case {
+                assert_eq!(values.get("app"), Some(app));
+            }
+            if let Some(warning) = warning_key(case) {
+                assert!(has(&warning), "{warning} is missing from en.json");
+            }
+        }
+    }
 
     /// What reached the owner and the employee.
     #[derive(Default)]
