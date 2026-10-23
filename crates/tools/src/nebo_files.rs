@@ -53,6 +53,9 @@ const OPEN: &[&str] = &[
     // --user`, `cargo install`, `go install`): the image points them here
     // so they persist with the bot's state.
     "toolchains",
+    // A cloud bot's `$HOME` (`/data/home/nebo`): the employee's own home,
+    // its shell profile and the tools' settings it keeps there.
+    "home",
 ];
 
 /// Where the installed plugins' packages live, relative to Nebo's folder.
@@ -290,29 +293,24 @@ impl NeboFiles {
 
     /// The first of Nebo's own files a command reaches, run from `cwd` (the
     /// process's folder when `None`), however it spells the path: the
-    /// folders it stands in, its words (an option's value included) and the
-    /// files it redirects, each taken from every folder it stands in
-    /// (`policy::located`: a subshell's `cd` is followed past its end), the
+    /// folder each of its commands runs in (`policy::located`, a move inside
+    /// a subshell ending with it), the words of each (an option's value
+    /// included) taken from that folder, the files its redirects name, the
     /// files its filename patterns match, and what a link it makes (`ln`,
-    /// `link`) leads to. Each meets the one test (`closes`), links followed.
-    /// The words can't say whether the command reads or writes, so a
-    /// plugin's skill is reached freely, but a hard link to one is refused:
-    /// it is a second name for the file that every fence misses. What only
-    /// running the command knows (`$X`, `$(…)`) is left to `confine`.
+    /// `link`) leads to. Each meets the one test (`closes`), links followed,
+    /// those the command makes before included. The words can't say whether
+    /// the command reads or writes, so a plugin's skill is reached freely,
+    /// but a hard link to one is refused: it is a second name for the file
+    /// that every fence misses. What only running the command knows (`$X`,
+    /// `$(…)`) is not seen here.
     pub fn reached_by(&self, cmd: &str, cwd: Option<&Path>) -> Option<String> {
         let start = lexical(&absolute(cwd.unwrap_or(Path::new(".")), None));
-        let located = crate::policy::located(cmd, Some(&start.to_string_lossy()));
-        let mut folders = vec![start];
-        for here in located.iter().filter_map(|(here, _)| here.as_deref()) {
-            let here = lexical(here);
-            if !folders.contains(&here) {
-                folders.push(here);
-            }
-        }
+        let placed = crate::policy::located(cmd, Some(&start.to_string_lossy()));
+        let known = |here: &Option<PathBuf>| here.as_deref().map(lexical);
         // The links the command makes, each refused when it leads to one of
         // Nebo's own files or (a symbolic one) to a folder above one; a path
         // through one made earlier in the command goes on from where it leads.
-        let links: Vec<Link> = located.iter().flat_map(|(_, sub)| links(sub.words(), &folders)).collect();
+        let links: Vec<Link> = placed.iter().flat_map(|p| links(p.sub.words(), known(&p.here).as_slice())).collect();
         for link in &links {
             let access = if link.symbolic { Access::Read } else { Access::Write };
             if through(&link.to, &links).iter().any(|to| self.closes(to, None, access) || (link.symbolic && self.above(to))) {
@@ -320,20 +318,32 @@ impl NeboFiles {
             }
         }
         let reaches = |path: &Path| through(path, &links).iter().any(|p| self.closes(p, None, Access::Read));
-        if let Some(folder) = folders.iter().find(|f| reaches(f)) {
-            return Some(folder.to_string_lossy().into_owned());
-        }
-        for (_, sub) in &located {
-            for word in sub.words().iter().chain(sub.redirects()).flatten() {
-                let found = path_words(word)
-                    .into_iter()
-                    .find(|w| folders.iter().filter_map(|f| crate::policy::reached(Some(f.as_path()), w)).any(|p| reaches(&p)));
-                if let Some(named) = found {
-                    return Some(named.to_string());
+        let from = |folders: &[PathBuf], word: &str| {
+            path_words(word)
+                .into_iter()
+                .find(|w| folders.iter().filter_map(|f| crate::policy::reached(Some(f.as_path()), w)).any(|p| reaches(&p)))
+                .map(str::to_string)
+        };
+        for p in &placed {
+            let here: Vec<PathBuf> = known(&p.here).into_iter().collect();
+            // A redirect on a subshell around the command is taken from
+            // where that subshell was entered.
+            let around: Vec<PathBuf> = here.iter().cloned().chain(p.outer.iter().filter_map(known)).collect();
+            if let Some(folder) = around.iter().find(|f| reaches(f)) {
+                return Some(folder.to_string_lossy().into_owned());
+            }
+            for word in p.sub.words().iter().flatten() {
+                if let Some(named) = from(&here, word) {
+                    return Some(named);
                 }
             }
-            for pattern in sub.patterns() {
-                if let Some(found) = folders.iter().find_map(|f| self.matched(pattern, f)) {
+            for target in p.sub.redirects().iter().flatten() {
+                if let Some(named) = from(&around, target) {
+                    return Some(named);
+                }
+            }
+            for pattern in p.sub.patterns() {
+                if let Some(found) = around.iter().find_map(|f| self.matched(pattern, f)) {
                     return Some(found);
                 }
             }
@@ -356,8 +366,7 @@ impl NeboFiles {
             if self.closes(&written, None, Access::Read) {
                 return Some(written.to_string_lossy().into_owned());
             }
-            let Ok(found) = glob::glob(&anchored) else { continue };
-            if let Some(hit) = found.flatten().find(|p| self.closes(p, None, Access::Read)) {
+            if let Some(hit) = expand(&anchored).into_iter().find(|p| self.closes(p, None, Access::Read)) {
                 return Some(hit.to_string_lossy().into_owned());
             }
         }
@@ -482,6 +491,44 @@ fn through(path: &Path, links: &[Link]) -> Vec<PathBuf> {
         i += 1;
     }
     out
+}
+
+/// How many folder entries one pattern may look through. A pattern that
+/// needs more (`/*/*/*`) is left as written: the check never walks the
+/// disk.
+const MAX_PATTERN_ENTRIES: usize = 20_000;
+
+/// The paths the absolute pattern `pattern` (`glob` syntax) matches, one
+/// part at a time; nothing when that takes more than
+/// `MAX_PATTERN_ENTRIES` entries.
+fn expand(pattern: &str) -> Vec<PathBuf> {
+    let mut parts = pattern.split(|c| c == '/' || (cfg!(windows) && c == '\\'));
+    let first = parts.next().unwrap_or_default();
+    let mut found = vec![PathBuf::from(format!("{first}/"))];
+    let mut budget = MAX_PATTERN_ENTRIES;
+    for part in parts.filter(|p| !p.is_empty()) {
+        if !part.contains(['*', '?', '[']) {
+            found.iter_mut().for_each(|p| p.push(part));
+            continue;
+        }
+        let Ok(matcher) = glob::Pattern::new(part) else { return Vec::new() };
+        let mut next = Vec::new();
+        for dir in &found {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            for entry in entries.flatten() {
+                if budget == 0 {
+                    return Vec::new();
+                }
+                budget -= 1;
+                if matcher.matches(&entry.file_name().to_string_lossy()) {
+                    next.push(entry.path());
+                }
+            }
+        }
+        found = next;
+    }
+    found.retain(|p| p.symlink_metadata().is_ok());
+    found
 }
 
 /// The ways one word of a command may name a path: the word, an option's
@@ -837,6 +884,25 @@ mod tests {
             assert!(!fence.closes(&root.join(open), None, Write), "{open} must be open");
         }
         assert!(!fence.closes(Path::new("/etc/hosts"), None, Write), "outside the folder is not the fence's");
+        assert!(!fence.closes(&root.join("home/nebo/.zshrc"), None, Write), "a cloud bot's home is the employee's");
+    }
+
+    /// A pattern is matched one part at a time, and one that needs more
+    /// entries than `MAX_PATTERN_ENTRIES` is left as written.
+    #[test]
+    fn a_pattern_never_walks_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let many = dir.path().join("many");
+        std::fs::create_dir_all(dir.path().join("few/a")).unwrap();
+        std::fs::write(dir.path().join("few/a/x.md"), "").unwrap();
+        std::fs::create_dir_all(&many).unwrap();
+        for n in 0..=MAX_PATTERN_ENTRIES {
+            std::fs::write(many.join(n.to_string()), "").unwrap();
+        }
+        let base = glob::Pattern::escape(&dir.path().to_string_lossy());
+        assert_eq!(expand(&format!("{base}/few/*/*.md")), [dir.path().join("few/a/x.md")]);
+        assert!(expand(&format!("{base}/few/*/none")).is_empty());
+        assert!(expand(&format!("{base}/many/*")).is_empty(), "past the limit");
     }
 
     /// `use_skill` hands the model a plugin skill's folder ("This skill's

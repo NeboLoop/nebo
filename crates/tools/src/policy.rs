@@ -16,6 +16,10 @@ pub struct Subcommand {
     redirects: Vec<Option<String>>,
     /// Its filename patterns (`syntax::ShellCommand::patterns`).
     patterns: Vec<String>,
+    /// The subshells it runs in, outermost first: each the script's depth
+    /// (`bash -c` nests one) and where it starts in that script. A script a
+    /// shell runs from a string is a subshell of its own.
+    scopes: Vec<(usize, usize)>,
 }
 
 /// Shells whose `-c` argument is itself a script.
@@ -55,12 +59,14 @@ impl Subcommand {
 
     /// A command that runs nothing.
     fn none() -> Self {
-        Subcommand { assigns: false, words: Vec::new(), writes: false, redirects: Vec::new(), patterns: Vec::new() }
+        Subcommand { assigns: false, words: Vec::new(), writes: false, redirects: Vec::new(), patterns: Vec::new(), scopes: Vec::new() }
     }
 
-    fn of(command: syntax::ShellCommand) -> Self {
-        let syntax::ShellCommand { assigns, words, writes, redirects, patterns } = command;
-        Subcommand { assigns, words, writes, redirects, patterns }
+    /// The command `command` of a script at `depth`, run inside `scope`.
+    fn of(command: syntax::ShellCommand, depth: usize, scope: &[(usize, usize)]) -> Self {
+        let syntax::ShellCommand { assigns, words, writes, redirects, patterns, scopes } = command;
+        let scopes = scope.iter().copied().chain(scopes.into_iter().map(|at| (depth, at))).collect();
+        Subcommand { assigns, words, writes, redirects, patterns, scopes }
     }
 
     /// The command's words, the program first: quoting removed,
@@ -136,24 +142,30 @@ impl Subcommand {
 /// which no command rule covers.
 pub fn subcommands(cmd: &str) -> Vec<Subcommand> {
     let mut out = Vec::new();
-    collect_subcommands(cmd, 0, &mut out);
+    collect_subcommands(cmd, 0, &[], &mut out);
     if out.is_empty() {
         out.push(Subcommand::none());
     }
     out
 }
 
-fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
+fn collect_subcommands(script: &str, depth: usize, scope: &[(usize, usize)], out: &mut Vec<Subcommand>) {
     let parsed = if depth < MAX_SCRIPT_DEPTH { syntax::shell_commands(script) } else { None };
     let Some(commands) = parsed else {
         out.push(Subcommand::unknown());
         return;
     };
     for command in commands {
-        let mut sub = Subcommand::of(command);
+        let mut sub = Subcommand::of(command, depth, scope);
         unwrap_wrappers(&mut sub);
         match inline_script(&sub.words) {
-            Some(Some(inner)) => collect_subcommands(&inner, depth + 1, out),
+            Some(Some(inner)) => {
+                // The inner script runs in a shell of its own: a subshell
+                // no other command shares.
+                let mut inner_scope = sub.scopes.clone();
+                inner_scope.push((depth + 1, usize::MAX - out.len()));
+                collect_subcommands(&inner, depth + 1, &inner_scope, out)
+            }
             Some(None) => out.push(Subcommand::unknown()),
             None => {}
         }
@@ -168,7 +180,7 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
 /// anything but a simple command.
 pub fn exit_command(cmd: &str) -> Option<(Subcommand, Option<String>)> {
     let (command, operator) = syntax::shell_exit_command(cmd)?;
-    let mut sub = Subcommand::of(command);
+    let mut sub = Subcommand::of(command, 0, &[]);
     unwrap_wrappers(&mut sub);
     Some((sub, operator))
 }
@@ -286,17 +298,46 @@ pub fn is_read_only(cmd: &str) -> bool {
     })
 }
 
+/// One command of a shell call, where it runs.
+pub struct Placed {
+    /// The folder it runs in: `None` once a move goes where only running
+    /// the command knows.
+    pub here: Option<std::path::PathBuf>,
+    /// The folders the subshells around it were entered from, outermost
+    /// first: where a redirect on one of them is taken from.
+    pub outer: Vec<Option<std::path::PathBuf>>,
+    pub sub: Subcommand,
+}
+
 /// Every command a shell call runs ([`subcommands`]), each with the folder
 /// it runs in: `cwd` (an empty path, the run's own folder, when `None`),
 /// followed through the call's `cd`, `pushd` and `popd`; `None` once one
 /// goes where only running the command knows (`cd "$DIR"`, `cd -`). A move
-/// inside a subshell is followed past the subshell's end.
-pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<(Option<std::path::PathBuf>, Subcommand)> {
+/// inside a subshell (`( … )`, `$( … )`, a pipeline's stage, `bash -c`)
+/// ends with it.
+pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
     use std::path::PathBuf;
+    /// What a subshell restores when it ends: the folder and the `pushd`
+    /// stack it was entered with.
+    struct Entered {
+        scope: (usize, usize),
+        here: Option<PathBuf>,
+        pushed: Vec<Option<PathBuf>>,
+    }
     let mut here: Option<PathBuf> = Some(cwd.map(types::pathres::expand).unwrap_or_default());
     let mut pushed: Vec<Option<PathBuf>> = Vec::new();
+    let mut entered: Vec<Entered> = Vec::new();
     let mut out = Vec::new();
     for sub in subcommands(cmd) {
+        let shared = entered.iter().zip(&sub.scopes).take_while(|(e, s)| e.scope == **s).count();
+        while entered.len() > shared {
+            let left = entered.pop().expect("deeper than shared");
+            here = left.here;
+            pushed = left.pushed;
+        }
+        for scope in &sub.scopes[shared..] {
+            entered.push(Entered { scope: *scope, here: here.clone(), pushed: pushed.clone() });
+        }
         let before = here.clone();
         if let Some(Some(program)) = sub.words.first() {
             // The folder named, past `cd`'s options (`-P`, `-L`, `--`).
@@ -324,7 +365,7 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<(Option<std::path::PathBuf>,
                 _ => {}
             }
         }
-        out.push((before, sub));
+        out.push(Placed { here: before, outer: entered.iter().map(|e| e.here.clone()).collect(), sub });
     }
     out
 }
@@ -383,7 +424,7 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         out
     };
 
-    for (here, sub) in located(cmd, cwd) {
+    for Placed { here, sub, .. } in located(cmd, cwd) {
         let Some(Some(program)) = sub.words.first() else { continue };
         let args = &sub.words[1..];
         match program.as_str() {
@@ -1074,13 +1115,18 @@ mod tests {
     #[test]
     fn commands_are_located_where_they_run() {
         let folders = |cmd: &str| -> Vec<Option<String>> {
-            located(cmd, Some("/w")).into_iter().map(|(here, _)| here.map(|h| h.to_string_lossy().into_owned())).collect()
+            located(cmd, Some("/w")).into_iter().map(|p| p.here.map(|h| h.to_string_lossy().into_owned())).collect()
         };
         let at = |p: &str| Some(p.to_string());
         assert_eq!(folders("cd -P a && ls"), vec![at("/w"), at("/w/a")]);
         assert_eq!(folders("pushd a && pushd /b && popd && ls"), vec![at("/w"), at("/w/a"), at("/b"), at("/w/a")]);
         assert_eq!(folders("cd \"$D\" && ls && cd /x && ls"), vec![at("/w"), None, None, at("/x")]);
         assert_eq!(folders("cd - && ls"), vec![at("/w"), None]);
+        // A move inside a subshell ends with it.
+        assert_eq!(folders("(cd a && ls) && ls"), vec![at("/w"), at("/w/a"), at("/w")]);
+        assert_eq!(folders("echo $(cd a) && ls"), vec![at("/w"), at("/w"), at("/w")]);
+        assert_eq!(folders("cd a | ls && ls"), vec![at("/w"), at("/w"), at("/w")]);
+        assert_eq!(folders("bash -c 'cd a && ls' && ls"), vec![at("/w"), at("/w/a"), at("/w"), at("/w")]);
         let subs = subcommands("cat < in.txt > out/*.log 2>&1 && cat {a,b} x*");
         assert_eq!(subs[0].redirects(), [Some("in.txt".to_string()), None]);
         assert_eq!(subs[0].patterns(), ["out/*.log"]);

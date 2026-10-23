@@ -522,6 +522,10 @@ pub struct ShellCommand {
     /// reader to expand. A pattern that also holds a variable or a command
     /// substitution is left out: only running the script knows it.
     pub patterns: Vec<String>,
+    /// The subshells it runs in, outermost first, each by the byte it starts
+    /// at: `( … )`, `$( … )`, `<( … )`, and each stage of a pipeline. A
+    /// `cd` inside one ends with it.
+    pub scopes: Vec<usize>,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -601,7 +605,18 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         writes |= redirects_to_a_file(n, script);
         around = n.parent();
     }
-    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes, redirects: Vec::new(), patterns: Vec::new() };
+    let mut command =
+        ShellCommand { assigns: false, words: Vec::new(), writes, redirects: Vec::new(), patterns: Vec::new(), scopes: Vec::new() };
+    let mut around = Some(node);
+    while let Some(n) = around {
+        let stage = n.parent().is_some_and(|p| p.kind() == "pipeline");
+        if (stage || matches!(n.kind(), "subshell" | "command_substitution" | "process_substitution"))
+            && command.scopes.first() != Some(&n.start_byte())
+        {
+            command.scopes.insert(0, n.start_byte());
+        }
+        around = n.parent();
+    }
     let mut around = Some(node);
     while let Some(n) = around {
         for target in redirect_targets(n, script) {

@@ -934,7 +934,7 @@ mod tests {
         refused("grep -r secret ../nebo-home", None);
         // A `cd` earlier in the command, a subshell's included.
         refused("cd ../nebo-home/files && cat ../settings.json", None);
-        refused("(cd notes) && tail ../../logs/nebo.log", Some(&workspace));
+        refused("(cd ../nebo-home/files && cat ../settings.json)", None);
         refused("cd -P .. && sqlite3 data/nebo.db .dump", Some(&workspace));
         refused("pushd notes && popd && cat ../settings.json", Some(&workspace));
         // The call's own folder inside the closed part.
@@ -975,6 +975,19 @@ mod tests {
         refused("ln -sf ../../nebo-home/logs sub", None);
         refused("ln -s -t sub ../../nebo-home/settings.json", None);
         refused("cd sub && ln -s ../../nebo-home/settings.json", None);
+        // The workspace sits beside Nebo's folder (`~/NeboAI`, `~/Library/
+        // Application Support/Nebo`): a link made there with a target
+        // relative to it.
+        let library = dir.path().join("Library/Application Support/Nebo");
+        std::fs::create_dir_all(library.join("sessions/s9/verify")).unwrap();
+        std::fs::create_dir_all(dir.path().join("NeboAI")).unwrap();
+        let mac = NeboFiles::at(&library, &[], &library.join("sessions/s1"), false);
+        let at_home = Run { fence: Some(&mac), cwd: Some(dir.path()), cloud: false };
+        let r = check_shell_safeguard(
+            &serde_json::json!({ "command": "cd NeboAI && ln -sf \"../Library/Application Support/Nebo/sessions/s9/verify/report.json\" x" }),
+            &at_home,
+        );
+        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "a link from the workspace into Nebo's folder: {r:?}");
         // A hard link to a Nebo file, a plugin's skill (read freely, never
         // changed) included.
         refused("ln ../nebo-home/settings.json copy.json", None);
@@ -1001,6 +1014,9 @@ mod tests {
             "find . -name '*.md' | xargs grep hi",
             "cat ../nebo-home/files/notes/today.md",
             "echo hi > ../nebo-home/files/notes/today.md",
+            // A move inside a subshell ends with it: `ls ..` runs in `proj`.
+            "(cd ../nebo-home/files) && ls ..",
+            "echo $(cd ../nebo-home/files) && ls ..",
         ] {
             let r = check(ok, None);
             assert!(r.is_none(), "{ok:?} must be allowed: {r:?}");
