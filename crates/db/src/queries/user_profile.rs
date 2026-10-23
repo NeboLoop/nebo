@@ -384,4 +384,47 @@ mod tests {
         assert_eq!(ids(&teams, RosterOrder::arrange(&order.teams, None, &teams)), ["month-end", "launch", "new-team"]);
         assert_eq!(ids(&teams, RosterOrder::arrange(&[], None, &teams)), ["new-team", "launch", "month-end"]);
     }
+
+    /// Never ordered, the lists are A to Z. A drag keeps the owner's order
+    /// until he resets it; a pin sent alone leaves it be; "Sort A to Z"
+    /// (an empty list) puts that list back to A to Z. A new hire goes in A to
+    /// Z among the rows the order does not name. The same rows and answers
+    /// are in the phone's roster_order_test.dart, so the two agree.
+    #[test]
+    fn a_drag_is_kept_until_sort_a_to_z() {
+        use serde_json::json;
+        let store = temp_store();
+        let people = [("video", "Video Editor"), ("assistant", "Jetson"), ("camera", "Camera Expert"), ("books", "Bookkeeper"), ("copy", "Copywriter")];
+        let stored = || store.get_user_preferences().unwrap().map(|p| p.roster_order).unwrap_or_default();
+        let save = |change: serde_json::Value| store.set_roster_order(&stored().changed(&change).unwrap()).unwrap();
+        let shown = |order: &RosterOrder| ids(&people, RosterOrder::arrange(&order.employees, Some("assistant"), &people));
+
+        // Default: A to Z, the primary first.
+        assert_eq!(shown(&stored()), ["assistant", "books", "camera", "copy", "video"]);
+
+        // A drag sets his order, and it is kept.
+        save(json!({"pinned": [], "employees": ["video", "copy", "books", "camera"]}));
+        assert_eq!(shown(&stored()), ["assistant", "video", "copy", "books", "camera"]);
+
+        // A pin sends only the pins: the order stays.
+        save(json!({"pinned": [{"kind": "team", "id": "sales"}]}));
+        assert_eq!(shown(&stored()), ["assistant", "video", "copy", "books", "camera"]);
+        assert_eq!(stored().pinned, [RosterItem { kind: RosterKind::Team, id: "sales".into() }]);
+
+        // New hires follow his order, A to Z among themselves.
+        let hired = [people.as_slice(), &[("zoe", "Zoe"), ("amy", "amy")]].concat();
+        assert_eq!(
+            ids(&hired, RosterOrder::arrange(&stored().employees, Some("assistant"), &hired)),
+            ["assistant", "video", "copy", "books", "camera", "amy", "zoe"],
+        );
+
+        // Sort A to Z: back to the default; the pins stay.
+        save(json!({"teams": [], "employees": []}));
+        assert_eq!(shown(&stored()), ["assistant", "books", "camera", "copy", "video"]);
+        assert_eq!(stored().teams, Vec::<String>::new());
+        assert_eq!(stored().pinned.len(), 1);
+
+        // Not an object: refused, nothing changes.
+        assert!(stored().changed(&json!(["video"])).is_err());
+    }
 }
