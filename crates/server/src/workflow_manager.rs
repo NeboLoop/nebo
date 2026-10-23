@@ -1011,6 +1011,21 @@ impl WorkflowManager for WorkflowManagerImpl {
                         }
                         info!(workflow = %wf_id, run_id = %run_id_clone, "workflow completed");
                     }
+                    // The owner's spending limit stopped it: the walker
+                    // recorded the run `stopped` with the work kept. Not a
+                    // failure.
+                    Err(e @ workflow::WorkflowError::SpendCapReached { .. }) => {
+                        hub.broadcast(
+                            "workflow_run_stopped",
+                            serde_json::json!({ "workflowId": wf_id, "runId": run_id_clone, "reason": e.to_string() }),
+                        );
+                        info!(workflow = %wf_id, run_id = %run_id_clone, "workflow stopped at the owner's spending limit");
+                    }
+                    // The owner cancelled it (`cancel_run` recorded and
+                    // announced it). Not a failure.
+                    Err(workflow::WorkflowError::Cancelled) => {
+                        info!(workflow = %wf_id, run_id = %run_id_clone, "workflow cancelled");
+                    }
                     Err(e) => {
                         let end = RunEnd::of(&e);
                         let err_msg = end.message().to_string();
@@ -1946,6 +1961,34 @@ impl WorkflowManager for WorkflowManagerImpl {
                         );
                         info!(role = %agent_id_owned, run_id = %run_id_clone, %operation, "inline workflow awaiting approval");
                     }
+                    // The owner's spending limit stopped it: the walker
+                    // recorded the run `stopped` with the work kept. The
+                    // owner's own rule, not a failure to learn from.
+                    Err(e @ workflow::WorkflowError::SpendCapReached { .. }) => {
+                        let why = e.to_string();
+                        record_run_outcome(&store, &agent_id_owned, &binding_name, "stopped", &why);
+                        post_automation_message(
+                            &store,
+                            &hub,
+                            &chat_session,
+                            &format!("**Automation stopped** — {} ({}): {}", binding_name, trigger, why),
+                        );
+                        hub.broadcast(
+                            "workflow_run_stopped",
+                            serde_json::json!({
+                                "agentId": agent_id_owned,
+                                "runId": run_id_clone,
+                                "bindingName": binding_name,
+                                "reason": why,
+                            }),
+                        );
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow stopped at the owner's spending limit");
+                    }
+                    // The owner cancelled it (`cancel_run` recorded and
+                    // announced it). An owner action, not an outcome.
+                    Err(workflow::WorkflowError::Cancelled) => {
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow cancelled");
+                    }
                     Err(e) => {
                         let end = RunEnd::of(&e);
                         let err_msg = end.message().to_string();
@@ -2008,17 +2051,10 @@ impl WorkflowManager for WorkflowManagerImpl {
                             }),
                         );
                         // Outcome history: exits are informative ("nothing to
-                        // do today"), cancellations are owner actions, not
-                        // outcomes worth remembering.
+                        // do today") and returned above, before any failure
+                        // handling.
                         match &e {
-                            workflow::WorkflowError::Cancelled => {}
-                            // Exits returned above, before any failure handling.
                             workflow::WorkflowError::Exited(_) => {}
-                            // The owner's limit stopped it — the owner's own
-                            // rule, not a failure to learn from.
-                            workflow::WorkflowError::SpendCapReached { .. } => {
-                                record_run_outcome(&store, &agent_id_owned, &binding_name, "stopped", &err_msg);
-                            }
                             _ => {
                                 record_run_outcome(&store, &agent_id_owned, &binding_name, "failed", &err_msg);
                                 // An engine limit is the workflow's shape,
@@ -2501,22 +2537,14 @@ fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: 
 }
 
 /// The step (`None`: the run as a whole) and the owner's words, when a run
-/// ended at one of the engine's limits: a step out of model turns, the run
-/// out of model turns, or the run over its token budget. These are platform
+/// ended at one of the engine's limits: a step out of model turns, or the
+/// run out of model turns. These are platform
 /// conditions of the workflow's shape, never an employee lesson
 /// ([`crate::workflow_audit::record_run_limit`]).
 pub(crate) fn run_limit(e: &workflow::WorkflowError) -> Option<(Option<String>, String)> {
     match e {
         workflow::WorkflowError::MaxIterations { activity_id, .. } => Some((Some(activity_id.clone()), e.to_string())),
         workflow::WorkflowError::RunMaxIterations(_) => Some((None, e.to_string())),
-        workflow::WorkflowError::BudgetExceeded { activity_id, used, limit } => Some((
-            // The engine names the whole run "workflow".
-            (activity_id != "workflow").then(|| activity_id.clone()),
-            format!(
-                "A run used {used} output tokens, over the {limit} this workflow's budget allows (budget.total_per_run). \
-                 Raise the budget, or split the work into smaller steps or separate workflows."
-            ),
-        )),
         _ => None,
     }
 }
@@ -2550,7 +2578,7 @@ async fn review_failed_workflow_run(
     const REVIEW_SYSTEM: &str = "You review a FAILED scheduled workflow run and decide whether there is \
         ONE durable lesson worth saving for this agent. Most failures teach nothing durable — transient \
         network errors, provider hiccups, rate limits, one-off bad data: answer null for those. A step or run \
-        that ran out of model turns or over its token budget is the workflow's shape, which the owner fixes \
+        that ran out of model turns is the workflow's shape, which the owner fixes \
         in the workflow, not a lesson: answer null for that too. A lesson \
         is durable only if it would change how the NEXT run should behave: a tool quirk, a required \
         format, a wrong assumption baked into the steps. Never store secrets, credentials, tokens, or \
@@ -3929,7 +3957,7 @@ mod list_tests {
         }
     }
 
-    fn manager(store: Arc<db::Store>) -> super::WorkflowManagerImpl {
+    fn manager(store: Arc<db::Store>, workflow_loop: Arc<dyn workflow::ActivityLoop>) -> super::WorkflowManagerImpl {
         super::WorkflowManagerImpl::new(
             store.clone(),
             Arc::new(tokio::sync::RwLock::new(Vec::new())),
@@ -3940,7 +3968,7 @@ mod list_tests {
             config::Config::default(),
             None,
             None,
-            Arc::new(NoLoop),
+            workflow_loop,
         )
     }
 
@@ -3954,7 +3982,7 @@ mod list_tests {
     async fn a_parked_run_can_be_cancelled() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
-        let mgr = manager(store.clone());
+        let mgr = manager(store.clone(), Arc::new(NoLoop));
         store.create_workflow_run("run-p", &types::keyparser::agent_workflow_id("emp"), "schedule", Some("scan"), Some("{}"), None, Some("{}")).unwrap();
         store.update_workflow_run("run-p", Some("running"), Some("run"), None, None, None).unwrap();
         store.create_workflow_suspension("run-p", "emp", "scan", "run", "", Some(0), "[]", "{}", "find_tools", "loading tools").unwrap();
@@ -3983,7 +4011,7 @@ mod list_tests {
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
         store.create_agent("bd-1", None, "Billing Desk 40458bec", "Billing.", "You bill.", "{}", None, None).unwrap();
         store.create_agent("fd-1", None, "Front Desk", "Calls.", "You answer.", "{}", None, None).unwrap();
-        let mgr = manager(store.clone());
+        let mgr = manager(store.clone(), Arc::new(NoLoop));
         for name in ["invoice-customer", "record-customer-payment"] {
             mgr.create("bd-1", name, STEPS, SaveOptions::default()).await.unwrap();
         }
@@ -4016,12 +4044,95 @@ mod list_tests {
     async fn cancel_all_runs_stops_every_running_workflow() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
-        let mgr = manager(store);
+        let mgr = manager(store, Arc::new(NoLoop));
         let (a, b) = (tokio_util::sync::CancellationToken::new(), tokio_util::sync::CancellationToken::new());
         mgr.active_runs.lock().unwrap().insert("run-a".into(), a.clone());
         mgr.active_runs.lock().unwrap().insert("run-b".into(), b.clone());
         assert_eq!(mgr.cancel_all_runs().await, 2);
         assert!(a.is_cancelled() && b.is_cancelled(), "every run's turns stop");
+    }
+
+    /// A loop whose every turn reaches the owner's spending limit, or, with
+    /// `wait_for_cancel`, waits until the run is cancelled.
+    struct Ends {
+        wait_for_cancel: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl workflow::ActivityLoop for Ends {
+        async fn run_turn(&self, turn: workflow::LoopTurn<'_>) -> Result<workflow::LoopOutcome, workflow::WorkflowError> {
+            if self.wait_for_cancel {
+                if let Some(cancel) = &turn.cancel {
+                    cancel.cancelled().await;
+                }
+                return Err(workflow::WorkflowError::Cancelled);
+            }
+            Err(workflow::WorkflowError::SpendCapReached {
+                activity_id: turn.activity.id.clone(),
+                spent_cents: 52,
+                cap_cents: 50,
+                partial: "PARTIAL: 3 of 5 invoices posted".into(),
+            })
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
+        }
+        fn cleanup(&self, _run_id: &str) {}
+        fn context_chars(&self, _agent_id: &str, _level: Option<types::packs::Effort>) -> usize {
+            800_000
+        }
+    }
+
+    /// A configured provider no turn reaches: the test's loop answers them.
+    struct Unused;
+
+    #[async_trait::async_trait]
+    impl ai::Provider for Unused {
+        fn id(&self) -> &str {
+            "unused"
+        }
+        async fn stream(&self, _req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            unreachable!("the test's loop takes every turn")
+        }
+    }
+
+    /// Start workflow `wf` through the manager and wait for its task to end.
+    async fn run_to_end(mgr: &super::WorkflowManagerImpl, wf: &str, cancel: bool) -> String {
+        mgr.providers.write().await.push(Arc::new(Unused));
+        let run_id = mgr.run(wf, serde_json::json!({}), "manual", None, None).await.unwrap();
+        if cancel {
+            mgr.cancel_run(&run_id).await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while mgr.active_runs.lock().unwrap().contains_key(&run_id) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the run ends");
+        run_id
+    }
+
+    /// Through the manager, a run the owner's spending limit stops stays
+    /// `stopped` with its work kept, and a run the owner cancels stays
+    /// `cancelled` with his reason: neither is repainted failed.
+    #[tokio::test]
+    async fn a_stopped_or_cancelled_run_is_never_repainted_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let def = r#"{"version":"1.0","id":"sweep","name":"Sweep","activities":[{"id":"post","intent":"post the invoices"}]}"#;
+        store.create_workflow("sweep", None, "Sweep", "1.0", def, None, None).unwrap();
+
+        let mgr = manager(store.clone(), Arc::new(Ends { wait_for_cancel: false }));
+        let run = store.get_workflow_run(&run_to_end(&mgr, "sweep", false).await).unwrap().unwrap();
+        assert_eq!(run.status, "stopped");
+        assert!(run.error.as_deref().is_some_and(|e| e.starts_with("Stopped at your limit")), "{:?}", run.error);
+        assert!(run.output.as_deref().is_some_and(|o| o.contains("PARTIAL: 3 of 5 invoices posted")), "{:?}", run.output);
+
+        let mgr = manager(store.clone(), Arc::new(Ends { wait_for_cancel: true }));
+        let run = store.get_workflow_run(&run_to_end(&mgr, "sweep", true).await).unwrap().unwrap();
+        assert_eq!((run.status.as_str(), run.error.as_deref()), ("cancelled", Some("cancelled by user")));
+        assert!(run.completed_at.is_some(), "a cancelled run is closed");
     }
 
     /// A declared skill brings its plugin's tool and its allowed-tools to
