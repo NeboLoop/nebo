@@ -5960,6 +5960,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
+ "url",
  "windows-sys 0.61.2",
 ]
 
@@ -6257,6 +6258,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "windows-sys 0.61.2",
+ "zbus",
  "zip 8.6.0",
 ]
 

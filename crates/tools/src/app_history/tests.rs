@@ -42,6 +42,7 @@ fn app(store: &db::Store, root: &Path, id: &str, name: &str) -> PathBuf {
             None,
         )
         .unwrap();
+    store.set_agent_built_here(id, true).unwrap();
     dir
 }
 

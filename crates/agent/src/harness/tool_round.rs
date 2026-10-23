@@ -323,6 +323,7 @@ impl RunToolScope<'_> {
             user_id: memory_user_id.clone(),
             trusted_plugin_env: false,
             whole_result: false,
+            output_lines: None,
             context_room,
             handoff_depth,
             grant: Some(grant.clone()),

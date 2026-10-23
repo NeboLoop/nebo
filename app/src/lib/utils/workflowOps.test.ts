@@ -22,6 +22,38 @@ function base(): Record<string, WorkflowConfig> {
 }
 
 describe('applyOps', () => {
+	it('draws a draft in array order as its chain before adding a branch', () => {
+		const workflows = base();
+		delete workflows.wf.connections;
+		const result = applyOps(workflows, [
+			{
+				op: 'add_activity',
+				workflow: 'wf',
+				activity: { id: 'gate', type: 'condition', params: { expression: 'true' } },
+				after: 'a',
+			},
+		]);
+		expect(result.applied).toHaveLength(1);
+		const wf = result.workflows.wf;
+		expect(wf.activities?.map((a) => a.id)).toEqual(['a', 'gate', 'b']);
+		expect(wf.connections).toContainEqual({ from: '__trigger__', to: 'a' });
+		expect(wf.connections).toContainEqual({ from: 'a', to: 'gate' });
+		expect(wf.connections).toContainEqual({ from: 'gate', to: 'b' });
+	});
+
+	it('draws a draft in array order as its chain when a step becomes a branch', () => {
+		const workflows = base();
+		delete workflows.wf.connections;
+		const result = applyOps(workflows, [
+			{ op: 'update_activity', workflow: 'wf', id: 'b', set: { type: 'loop' } },
+		]);
+		expect(result.applied).toHaveLength(1);
+		expect(result.workflows.wf.connections).toEqual([
+			{ from: '__trigger__', to: 'a' },
+			{ from: 'a', to: 'b' },
+		]);
+	});
+
 	it('adds an activity and splices the chain', () => {
 		const result = applyOps(base(), [
 			{

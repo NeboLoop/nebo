@@ -4541,5 +4541,30 @@
 		"tellIt": "Katakan apa yang harus dilakukan",
 		"sending": "Mengirim…",
 		"sendFailed": "Jawabanmu tidak terkirim."
+	},
+	"appPermissions": {
+		"title": "{name} ingin melakukan lebih banyak",
+		"intro": "Setujui hanya jika Anda memercayai aplikasi ini. Anda bisa mengubahnya nanti di pengaturan aplikasi.",
+		"origin": "Aplikasi ini tidak dibuat di sini. Orang di luar perusahaan Anda yang membuatnya.",
+		"wantsFiles": "{name} ingin melihat file di {target}",
+		"wantsWeb": "{name} ingin berbicara dengan {target}",
+		"wantsWebAny": "{name} ingin berbicara dengan situs web mana pun",
+		"wantsHelper": "{name} ingin meminta bantuan {target}",
+		"wantsHelperAny": "{name} ingin meminta bantuan karyawan Anda yang mana pun",
+		"wantsPlugin": "{name} ingin memakai {target}",
+		"canFiles": "Melihat file di {target}",
+		"canWeb": "Berbicara dengan {target}",
+		"canWebAny": "Berbicara dengan situs web mana pun",
+		"canHelper": "Meminta bantuan {target}",
+		"canHelperAny": "Meminta bantuan karyawan Anda yang mana pun",
+		"canPlugin": "Memakai {target}",
+		"allow": "Izinkan",
+		"deny": "Jangan izinkan",
+		"off": "Mati",
+		"notNow": "Nanti saja",
+		"sectionTitle": "Yang bisa dilakukan aplikasi ini",
+		"sectionHint": "Aplikasi ini dari marketplace. Ia hanya bisa melakukan yang Anda izinkan.",
+		"ownHint": "Anda membuat aplikasi ini di sini, jadi ia bisa melakukan yang dimintanya.",
+		"notAnswered": "Belum dijawab"
 	}
 }

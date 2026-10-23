@@ -110,6 +110,13 @@ pub struct AgentLoader {
     /// When the last full scan began. A change older than that is loaded
     /// already: the watcher skips the rescan its event would start.
     scanned_at: Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
+    /// Held from a scan's start until its result is in the cache, by every
+    /// writer of it (`load_all`, `refresh_one`, the watcher's rescan): a
+    /// scan that began earlier never lands over one that began later and
+    /// saw newer files (an app written while the watcher was still reading
+    /// the folder would leave the cache without it, or without its
+    /// manifest).
+    scan: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AgentLoader {
@@ -121,6 +128,7 @@ impl AgentLoader {
             agents: Arc::new(RwLock::new(HashMap::new())),
             license_keys: Arc::new(RwLock::new(HashMap::new())),
             scanned_at: Arc::new(std::sync::Mutex::new(None)),
+            scan: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -142,6 +150,7 @@ impl AgentLoader {
     /// Load all agents from embedded bundled, installed, and user directories.
     /// Loading order: embedded → installed → user (user overrides by name).
     pub async fn load_all(&self) -> usize {
+        let _scan = self.scan.lock().await;
         mark_scan(&self.scanned_at);
         let mut loaded = HashMap::new();
 
@@ -193,6 +202,7 @@ impl AgentLoader {
     /// takes its place. What this cannot see (a package shadowed by the one
     /// that left) the watcher's own rescan of the same change restores.
     pub async fn refresh_one(&self, gone: &[PathBuf], arrived: Option<&Path>) {
+        let _scan = self.scan.lock().await;
         let inside = |p: &Path| gone.iter().any(|g| p.starts_with(g));
         let fresh = match arrived {
             Some(dir) => match load_from_dir(dir, AgentSource::User) {
@@ -262,6 +272,7 @@ impl AgentLoader {
         let agents = self.agents.clone();
         let license_keys = self.license_keys.clone();
         let scanned_at = self.scanned_at.clone();
+        let scan = self.scan.clone();
         let bundled = self.bundled;
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgentFsEvent>(32);
 
@@ -371,6 +382,7 @@ impl AgentLoader {
                 // older than that scan (the kernel stamps files from a
                 // coarse clock), so it read as already loaded and the
                 // employee written before the watch was never reported.
+                let scanning = scan.lock().await;
                 let scan_began = *scanned_at.lock().unwrap_or_else(|e| e.into_inner());
                 if !first_look && scan_began.is_some_and(|began| crate::reader::changed_before(&paths, began)) {
                     debug!("agents changes already loaded; no rescan");
@@ -410,24 +422,25 @@ impl AgentLoader {
                     }
                 }
 
-                // Decide every event under the read guard, then RELEASE it
-                // before sending: the receiver finalizes each Added agent,
-                // and finalize reloads this loader — which needs the write
-                // lock. Sending on the bounded channel while still holding
-                // the read guard deadlocks the moment a burst fills it (a
-                // collection install, a .napp bundle): sender awaits a
-                // drain, receiver awaits the write, neither yields.
+                // Decide every event and land the scan, then RELEASE the
+                // cache and the scan lock before sending: the receiver
+                // finalizes each Added agent, and finalize reloads this
+                // loader — which needs both. Sending on the bounded channel
+                // while still holding either deadlocks the moment a burst
+                // fills it (a collection install, a .napp bundle): sender
+                // awaits a drain, receiver awaits the lock, neither yields.
+                let count = loaded.len();
                 let events = {
-                    let old = agents.read().await;
-                    diff_scans(&old, &loaded)
+                    let mut cached = agents.write().await;
+                    let events = diff_scans(&cached, &loaded);
+                    *cached = loaded;
+                    events
                 };
+                drop(scanning);
+                info!(count, "reloaded agents after filesystem change");
                 for event in events {
                     let _ = event_tx.send(event).await;
                 }
-
-                let count = loaded.len();
-                *agents.write().await = loaded;
-                info!(count, "reloaded agents after filesystem change");
             }
         });
 

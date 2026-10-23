@@ -4541,5 +4541,30 @@
 		"tellIt": "Powiedz, co ma zrobić",
 		"sending": "Wysyłanie…",
 		"sendFailed": "Twoja odpowiedź nie została wysłana."
+	},
+	"appPermissions": {
+		"title": "{name} chce zrobić więcej",
+		"intro": "Zgódź się tylko, jeśli ufasz tej aplikacji. Możesz to później zmienić w jej ustawieniach.",
+		"origin": "Ta aplikacja nie powstała tutaj. Zrobił ją ktoś spoza twojej firmy.",
+		"wantsFiles": "{name} chce zobaczyć pliki w {target}",
+		"wantsWeb": "{name} chce rozmawiać z {target}",
+		"wantsWebAny": "{name} chce rozmawiać z dowolną stroną",
+		"wantsHelper": "{name} chce poprosić {target} o pomoc",
+		"wantsHelperAny": "{name} chce prosić o pomoc dowolnego z Twoich pracowników",
+		"wantsPlugin": "{name} chce używać {target}",
+		"canFiles": "Widzieć pliki w {target}",
+		"canWeb": "Rozmawiać z {target}",
+		"canWebAny": "Rozmawiać z dowolną stroną",
+		"canHelper": "Prosić {target} o pomoc",
+		"canHelperAny": "Prosić o pomoc dowolnego z Twoich pracowników",
+		"canPlugin": "Używać {target}",
+		"allow": "Zezwól",
+		"deny": "Nie zezwalaj",
+		"off": "Wył.",
+		"notNow": "Nie teraz",
+		"sectionTitle": "Co może ta aplikacja",
+		"sectionHint": "Ta aplikacja pochodzi z marketplace. Może tylko to, na co pozwolisz.",
+		"ownHint": "Ta aplikacja powstała tutaj, więc może robić to, o co prosi.",
+		"notAnswered": "Bez odpowiedzi"
 	}
 }

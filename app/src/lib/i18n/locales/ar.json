@@ -4541,5 +4541,30 @@
 		"tellIt": "أخبره بما يفعل",
 		"sending": "جارٍ الإرسال…",
 		"sendFailed": "لم تُرسل إجابتك."
+	},
+	"appPermissions": {
+		"title": "{name} يريد أن يفعل المزيد",
+		"intro": "وافق فقط إذا كنت تثق بهذا التطبيق. يمكنك تغيير رأيك لاحقًا من إعدادات التطبيق.",
+		"origin": "لم يُصنع هذا التطبيق هنا. صنعه شخص من خارج شركتك.",
+		"wantsFiles": "{name} يريد رؤية الملفات في {target}",
+		"wantsWeb": "{name} يريد التواصل مع {target}",
+		"wantsWebAny": "{name} يريد التواصل مع أي موقع",
+		"wantsHelper": "{name} يريد طلب المساعدة من {target}",
+		"wantsHelperAny": "{name} يريد طلب المساعدة من أي من موظفيك",
+		"wantsPlugin": "{name} يريد استخدام {target}",
+		"canFiles": "رؤية الملفات في {target}",
+		"canWeb": "التواصل مع {target}",
+		"canWebAny": "التواصل مع أي موقع",
+		"canHelper": "طلب المساعدة من {target}",
+		"canHelperAny": "طلب المساعدة من أي من موظفيك",
+		"canPlugin": "استخدام {target}",
+		"allow": "السماح",
+		"deny": "عدم السماح",
+		"off": "إيقاف",
+		"notNow": "ليس الآن",
+		"sectionTitle": "ما يمكن لهذا التطبيق فعله",
+		"sectionHint": "هذا التطبيق من المتجر. لا يمكنه إلا ما تسمح به.",
+		"ownHint": "أنشأت هذا التطبيق هنا، لذا يمكنه فعل ما يطلبه.",
+		"notAnswered": "بدون رد"
 	}
 }

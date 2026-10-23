@@ -4541,5 +4541,30 @@
 		"tellIt": "告訴它怎麼做",
 		"sending": "正在傳送…",
 		"sendFailed": "你的回答沒有傳送出去。"
+	},
+	"appPermissions": {
+		"title": "{name} 想做更多事",
+		"intro": "只有信任這個應用程式時才允許。之後可以在應用程式設定中更改。",
+		"origin": "這個應用程式不是在這裡製作的，由你公司以外的人製作。",
+		"wantsFiles": "{name} 想查看 {target} 中的檔案",
+		"wantsWeb": "{name} 想與 {target} 通訊",
+		"wantsWebAny": "{name} 想與任何網站通訊",
+		"wantsHelper": "{name} 想請 {target} 幫忙",
+		"wantsHelperAny": "{name} 想請你的任何員工幫忙",
+		"wantsPlugin": "{name} 想使用 {target}",
+		"canFiles": "查看 {target} 中的檔案",
+		"canWeb": "與 {target} 通訊",
+		"canWebAny": "與任何網站通訊",
+		"canHelper": "請 {target} 幫忙",
+		"canHelperAny": "請你的任何員工幫忙",
+		"canPlugin": "使用 {target}",
+		"allow": "允許",
+		"deny": "不允許",
+		"off": "關閉",
+		"notNow": "以後再說",
+		"sectionTitle": "這個應用程式可以做什麼",
+		"sectionHint": "這個應用程式來自市集，只能做你允許的事。",
+		"ownHint": "這個應用程式是在這裡建立的，所以可以做它請求的事。",
+		"notAnswered": "未回答"
 	}
 }

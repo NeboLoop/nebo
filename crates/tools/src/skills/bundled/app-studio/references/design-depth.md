@@ -1,7 +1,9 @@
 # Design Depth (the studio method)
 
 For a game, a showcase, a landing app or anything the owner will show other
-people, run these phases on top of Steps 0 to 4. A plain internal tool (a
+people, run these phases on top of Steps 0 to 4. Step 1 comes first: the
+create makes the app folder and its result names it, and every phase below
+writes into that folder. A plain internal tool (a
 tracker, a form) skips this section. Read each reference with
 `read_skill_file(name: "app-studio", path: "references/<file>")` when its
 phase starts, not before. A small edit to an app that already went through
@@ -11,7 +13,7 @@ rebuild, Verify, gate.
 | # | Phase | Leaves | Reference |
 |---|-------|--------|-----------|
 | 0 | Intake: ONE batched question round (app or game; animated or still, recommend animated; their brand or free rein). No answer: animated, free rein, say so in a line. | the answers | |
-| 1 | Brief: `brief.md` in the app folder, six variety axes in front-matter, concept spine, locked palette (hex) and type pair, screen, asset and CTA plans. Differs from every other app's brief on 4 of 6 axes. | `brief.md` | `brief.md`, `design-recipe.md`, `wow-catalog.md` |
+| 1 | Brief: `brief.md` in the app folder the create's result names, six variety axes in front-matter, concept spine, locked palette (hex) and type pair, screen, asset and CTA plans. Differs from every other app's brief on 4 of 6 axes. | `brief.md` | `brief.md`, `design-recipe.md`, `wow-catalog.md` |
 | 2 | Boards: one generated image per screen into `boards/`, each looked at once, template-looking ones redone (two redos max). | `ui/boards/*.png` | `boards-and-assets.md` |
 | 3 | Assets: every image, film and model submitted at once with the locked hexes; owner's assets win. | `ui/assets/*` | `boards-and-assets.md`, `games.md` for a game |
 | 4 | Build each screen to its board (Step 3A or 3B). The board wins over habit. | the page | `design-recipe.md`, `kit.md` |

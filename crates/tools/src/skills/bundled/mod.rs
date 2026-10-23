@@ -60,6 +60,7 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/vite-build.md", include_str!("app-studio/references/vite-build.md")),
     ("app-studio", "references/when-it-breaks.md", include_str!("app-studio/references/when-it-breaks.md")),
     ("app-studio", "references/sidecars.md", include_str!("app-studio/references/sidecars.md")),
+    ("app-studio", "references/the-page.md", include_str!("app-studio/references/the-page.md")),
     ("app-studio", "references/design-depth.md", include_str!("app-studio/references/design-depth.md")),
     ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
     ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),
@@ -250,7 +251,7 @@ mod bundled_skill_tests {
         let bundle = std::fs::read_to_string(&bundle)
             .unwrap_or_else(|e| panic!("the served SDK bundle must be readable at {}: {e}", bundle.display()));
         for name in [
-            "nebo", "identity", "storage", "agents", "janus", "decide", "share", "surfaces", "chat", "a2ui",
+            "nebo", "identity", "storage", "agents", "janus", "decide", "share", "files", "plugins", "surfaces", "chat", "a2ui",
             "neboFetch", "NeboWebSocket", "NeboSDK", "NeboSurfaces", "NeboA2UI", "getAppId",
             "getBaseUrl", "setAppId", "setBaseUrl",
         ] {
@@ -292,6 +293,18 @@ mod bundled_skill_tests {
         .expect("sdk-more.md");
         assert!(more.contains("`share({name, content})"), "the SDK reference names share");
         assert!(bundle.contains("/share`"), "the bundle must post to the app's share route");
+        // The owner's files: the page reads them through the app's own file
+        // route, under the folders its manifest grants, never by a hand-built
+        // address.
+        assert!(more.contains("`files.url(path)"), "the SDK reference names files.url");
+        assert!(more.contains("filesystem:read:"), "the SDK reference names the grant");
+        assert!(content.contains("`filesystem:read:<folder>`"), "the skill lists the grant with the permissions");
+        assert!(bundle.contains("/files/"), "the bundle must address the app's file route");
+        // Plugins: the page runs a granted plugin through the app's own
+        // plugin route, the same runner as the employee's tool.
+        assert!(more.contains("`plugins.run(slug, command"), "the SDK reference names plugins.run");
+        assert!(content.contains("`plugin:<slug>`"), "the skill lists the grant with the permissions");
+        assert!(bundle.contains("/plugins/"), "the bundle must address the app's plugin route");
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");
@@ -349,6 +362,63 @@ mod bundled_skill_tests {
             crate::agent_tool::PersonaTool::APP_SDK_SCRIPT.contains(r#"src="../../../sdk/nebo.global.js""#),
             "what create/update_employee tell the employee matches the skill"
         );
+    }
+
+    /// A page has several addresses, each with its own prefix (and its pass),
+    /// so it makes every call to Nebo through the SDK and reaches only its
+    /// own app; the
+    /// app's own employee holds the app tools, and another employee hands it
+    /// the work. Live 2026-10-21: an employee built a complex app for hours
+    /// on hand-made `/api/v1/...` addresses that worked only in the desktop
+    /// window, and asked the owner for the install key.
+    #[test]
+    fn app_studio_teaches_where_a_page_runs_and_who_does_what() {
+        let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        for address in ["neboapp://<id>/", "/t/<bot>/k/<pass>/apps/<id>/ui/", "/k/<pass>/apps/<id>/ui/"] {
+            assert!(content.contains(address), "the skill names the address {address}");
+        }
+        assert!(content.contains("Never write an `/api/v1/...` or `api/v1/...` address yourself"));
+        assert!(content.contains("A page reaches only its own app"));
+        assert!(content.contains("assign_task(to:"), "another employee hands the app's work to its employee");
+        assert!(content.contains("install key"), "nobody asks the owner for the install key");
+        // How an app is checked, and never by finding a key (live 2026-10-22:
+        // an employee's browser landed on the sign-in and it searched Nebo's
+        // folder for the install key).
+        for way in ["app_reload(check: true)", "app_screenshot", "app_console", "browser_open(url: \"http://127.0.0.1:27895/apps/<id>/ui/index.html\")"] {
+            assert!(content.contains(way), "the skill checks an app with {way}");
+        }
+        assert!(content.contains("Never search for keys or credentials"));
+        // What a confined page does instead of reaching past its app.
+        let (_, _, page) = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|(k, path, _)| *k == "app-studio" && *path == "references/the-page.md")
+            .expect("the page reference ships");
+        assert!(content.contains("references/the-page.md"), "the skill points to it");
+        for way in ["files.url(", "plugins.run(", "chat.mount", "filesystem:read:<folder>", "plugin:<slug>", "only once the owner"] {
+            assert!(page.contains(way), "the skill teaches {way}");
+        }
+    }
+
+    /// The sidecar the skill teaches is the one Nebo launches: every
+    /// variable `napp::sandbox::sanitize_env` sets is named, the per-launch
+    /// token too, and never the SDKs' old `NEBO_APP_DATA`, which Nebo no
+    /// longer sets.
+    #[test]
+    fn app_studio_names_the_sidecar_environment_nebo_sets() {
+        let (_, _, sidecars) = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|(k, path, _)| *k == "app-studio" && *path == "references/sidecars.md")
+            .expect("the sidecar reference ships");
+        let env = napp::sandbox::sanitize_env("app-1", "App", "1.0.0", "/app", "/data", 27895);
+        for (key, _) in env.iter().filter(|(k, _)| k.starts_with("NEBO_")) {
+            assert!(sidecars.contains(&format!("`{key}`")), "sidecars.md names `{key}`");
+        }
+        assert!(sidecars.contains("`NEBO_APP_TOKEN`"), "the per-launch token");
+        assert!(sidecars.contains("`NEBO_SIDECAR_TOKEN`"), "the token Nebo's calls carry");
+        assert!(!sidecars.contains("NEBO_APP_SOCK"), "no socket path any more: loopback");
+        assert!(sidecars.contains("NEBO_DATA_DIR"), "where a sidecar writes");
+        assert!(!sidecars.contains("`NEBO_APP_DATA`"), "an old name Nebo no longer sets");
+        assert!(sidecars.contains("trim_start_matches('/')"), "a tool's path keeps its slash; a page's does not");
     }
 
     /// Every reference the skill points to ships with it, and its gate takes

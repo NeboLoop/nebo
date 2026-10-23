@@ -183,7 +183,7 @@ waiting on a viewport trigger. If you add Lenis and GSAP for the rest of
 the page, do not attach a second timeline to the film: this controller owns
 its time.
 
-## When there is no encoder: WebP sequence on a canvas
+## When there is no encoder, a WebP sequence on a canvas
 
 If `generate_media` reports the film was not re-encoded for scrubbing
 (no ffmpeg on the bot), draw it as a frame sequence instead (split one

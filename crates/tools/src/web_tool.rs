@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use types::public_net::{is_local_name, is_public_ip};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ResourceKind, ToolResult};
 
@@ -194,11 +195,11 @@ impl WebCore {
             .build()
             .expect("reqwest web client builder is infallible with these options");
         // Never auto-follows redirects — each hop gets the SSRF check in
-        // fetch_checked.
-        let bare_client = tls::http_client()
+        // fetch_checked — and connects only to the public addresses it
+        // resolves (`checked_client`).
+        let bare_client = checked_client()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(USER_AGENT)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest web client builder is infallible with these options");
         Self {
@@ -314,85 +315,6 @@ impl WebCore {
         }
     }
 
-    /// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
-    /// redirects are followed manually (limit 5, matching the previous auto
-    /// policy) so a public URL can't redirect into a private address unchecked.
-    async fn fetch_checked(
-        &self,
-        method: reqwest::Method,
-        url: &str,
-        mut headers: reqwest::header::HeaderMap,
-        mut body: Option<String>,
-    ) -> Result<reqwest::Response, String> {
-        let mut method = method;
-        let mut current = check_url_allowed(url).await?;
-
-        // Initial request + up to 5 redirect follows.
-        for _ in 0..=5 {
-            let mut req = self
-                .bare_client
-                .request(method.clone(), current.clone())
-                .headers(headers.clone());
-            if let Some(ref b) = body {
-                req = req.body(b.clone());
-            }
-            let resp = req.send().await.map_err(|e| {
-                format!(
-                    "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
-                    current, e
-                )
-            })?;
-
-            if !resp.status().is_redirection() {
-                return Ok(resp);
-            }
-            // Redirect without a usable Location — return it as-is, like reqwest does.
-            let Some(location) = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-            else {
-                return Ok(resp);
-            };
-            let Some((next_method, next_url, drop_body)) =
-                next_hop(resp.status(), &method, resp.url(), &location)
-            else {
-                return Ok(resp);
-            };
-            let next = check_url_allowed(next_url.as_str()).await?;
-
-            // Mirror reqwest's redirect hygiene: credentials never cross hosts,
-            // and body-describing headers go away with the body.
-            let cross_host = next.host_str() != current.host_str()
-                || next.port_or_known_default() != current.port_or_known_default();
-            if cross_host {
-                for h in [
-                    reqwest::header::AUTHORIZATION,
-                    reqwest::header::COOKIE,
-                    reqwest::header::PROXY_AUTHORIZATION,
-                    reqwest::header::WWW_AUTHENTICATE,
-                ] {
-                    headers.remove(&h);
-                }
-            }
-            if drop_body {
-                body = None;
-                for h in [
-                    reqwest::header::CONTENT_TYPE,
-                    reqwest::header::CONTENT_LENGTH,
-                    reqwest::header::CONTENT_ENCODING,
-                    reqwest::header::TRANSFER_ENCODING,
-                ] {
-                    headers.remove(&h);
-                }
-            }
-            method = next_method;
-            current = next;
-        }
-        Err(format!("Too many redirects for {} (limit 5)", url))
-    }
-
     /// One HTTP request to a model-supplied URL. HTML comes back as its
     /// visible text; any other body as-is, windowed by `offset` past 50 KB.
     /// `whole`: a program reads the answer (`ToolContext::whole_result`), so
@@ -418,7 +340,7 @@ impl WebCore {
 
         let body = input.get("body").and_then(|v| v.as_str()).map(String::from);
 
-        match self.fetch_checked(method, url, headers, body).await {
+        match fetch_checked(&self.bare_client, method, url, headers, body, |_| Ok(())).await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 let content_type = resp
@@ -1176,6 +1098,71 @@ impl WebCore {
         }
     }
 
+    /// Open one of this bot's own app pages (`page` under its `ui/`, from
+    /// [`own_app_page`]) for an employee to see it run, click, type and
+    /// play-test it: when the caller may work on the app (the check
+    /// `app_screenshot` applies, `app_publish::permitted_app`), the page
+    /// opens the one way an app page opens in the bot's own browser
+    /// (`app_publish::AppPage`: behind a pass to that app alone, kept to the
+    /// app's page, watched for errors) in this session's tab, and every later
+    /// step of the session runs there (`browser::ActionExecutor::open_own_page`).
+    /// No answer names the pass. The pass dies [`APP_PAGE_PASS_IDLE`] after
+    /// the page last used it, and at once when the session leaves the page or
+    /// its tab closes. Never the owner's session or install key.
+    async fn open_app_page(&self, ctx: &ToolContext, app_id: &str, page: &str) -> ToolResult {
+        let Some(store) = self.store.as_deref() else {
+            return ToolResult::error("This bot's apps are not reachable from the browser here.");
+        };
+        let session_id = ctx.session_id.as_str();
+        if session_id.is_empty() {
+            return ToolResult::error("An app's page opens only in a session of its own.");
+        }
+        let app = match crate::app_publish::permitted_app(store, ctx, Some(app_id)) {
+            Ok(app) if app.id == app_id => app,
+            Ok(_) => return ToolResult::error(format!("There is no app with the id {app_id} on this bot.")),
+            Err(refused) => return ToolResult::error(refused),
+        };
+        let Some(executor) = self.browser.as_ref().and_then(|m| m.executor()) else {
+            return ToolResult::error(format!("Browser automation is not available here. {NO_BROWSER_NEXT}"));
+        };
+        // An app page the session was on closes first, the way it opened.
+        executor.leave_own_page(session_id).await;
+        let view = match crate::app_publish::AppPage::open(
+            &executor,
+            &app,
+            page,
+            None,
+            &[],
+            APP_PAGE_PASS_IDLE,
+            Some(session_id),
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(e) => return ToolResult::error(e),
+        };
+        let pass = view.pass().to_string();
+        if let Err(e) = executor.open_own_page(session_id, pass, Box::new(move || Box::pin(view.close()))).await {
+            return ToolResult::error(format!("The browser could not open {}: {e}", app.name));
+        }
+        ToolResult::ok(format!(
+            "Opened {}'s page (http://127.0.0.1:{}/apps/{}/ui/{page}) in this computer's own browser. Click, type, \
+             read and run scripts on it as on any page; it stays on the app's own page.",
+            app.name,
+            napp::plugin::local_port(),
+            app.id
+        ))
+    }
+
+    /// Take the session off the app page [`Self::open_app_page`] opened: its
+    /// tab closes and its pass goes. False when it was on none.
+    async fn leave_app_page(&self, session_id: &str) -> bool {
+        match self.browser.as_ref().and_then(|m| m.executor()) {
+            Some(executor) => executor.leave_own_page(session_id).await,
+            None => false,
+        }
+    }
+
     /// One browser step: `action` is the extension's action and `input`
     /// carries its arguments in the extension's own names.
     async fn handle_browser(&self, action: &str, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
@@ -1197,6 +1184,13 @@ impl WebCore {
                 return ToolResult::error("Browser automation not configured.");
             }
         };
+
+        // A session on one of this bot's own app pages works it in the
+        // browser for this computer's own pages ([`Self::open_app_page`]):
+        // which browsing backend is connected, or chosen, is not its concern.
+        if action != "status" && executor.on_own_page(session_id).await {
+            return self.handle_browser_via_extension(&executor, action, input, Some(session_id)).await;
+        }
 
         // Status works even when disconnected
         if action == "status" {
@@ -2599,6 +2593,15 @@ impl DynTool for WebTool {
             let session_id = &ctx.session_id;
             let group_key = WebCore::session_group_key(&ctx.session_key);
 
+            // One of this bot's own app pages opens behind a pass to that app
+            // alone, in the browser for this computer's own pages: no site
+            // of the web, and never the owner's Chrome.
+            if matches!(self.kind, Kind::BrowserOpen | Kind::BrowserNewTab)
+                && let Some((app_id, page)) = str_field(&input, "url").and_then(own_app_page)
+            {
+                return self.core.open_app_page(ctx, &app_id, &page).await;
+            }
+
             // The extension shows this session's tab group while it works
             // (a search may run in the browser too); a tab left for the
             // owner is his, not Nebo's at work.
@@ -2633,7 +2636,17 @@ impl DynTool for WebTool {
                 Kind::BrowserExpect => self.core.handle_expect(&input, session_id, &group_key).await,
                 Kind::BrowserLeaveOpen => self.core.leave_open(&input, session_id).await,
                 kind => match kind.browser_step(&input) {
-                    Some((action, args)) => self.core.handle_browser(action, &args, session_id, &group_key).await,
+                    Some((action, args)) => {
+                        // Any other address takes the session off the app
+                        // page it was on.
+                        if leaves_app_page(action, &args)
+                            && self.core.leave_app_page(session_id).await
+                            && action == "close_tab"
+                        {
+                            return ToolResult::ok("Closed the app's page.");
+                        }
+                        self.core.handle_browser(action, &args, session_id, &group_key).await
+                    }
                     None => ToolResult::error(format!("{} is not a browser step.", kind.name())),
                 },
             }
@@ -3121,6 +3134,174 @@ fn private_url_error(url: &str) -> String {
     )
 }
 
+/// How long an employee's pass to an app page ([`WebCore::open_app_page`])
+/// outlives the page's last use of it: the page's requests and its socket
+/// keep it while the page runs.
+const APP_PAGE_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// One of this bot's own app pages a browser step asks for: `url` on this
+/// bot's server (`127.0.0.1`, `localhost` or `[::1]` at its port) at
+/// `/apps/<id>/ui[/…]`, with or without a credential before it
+/// (`/k/<credential>/`, which never carries over). The app's id, and the
+/// page under its `ui/` with its query and fragment (empty for the app's
+/// own entry page).
+fn own_app_page(url: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let local = match parsed.host()? {
+        url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    if !local || !matches!(parsed.scheme(), "http") || parsed.port_or_known_default() != Some(napp::plugin::local_port()) {
+        return None;
+    }
+    let path = parsed.path();
+    let path = match path.strip_prefix("/k/") {
+        Some(rest) => &rest[rest.find('/')?..],
+        None => path,
+    };
+    if !path.starts_with("/apps/") {
+        return None;
+    }
+    let app = napp::page_pass::app_of_path(path)?.to_string();
+    let under = path.strip_prefix(&format!("/apps/{app}/ui"))?.trim_start_matches('/');
+    let mut page = under.to_string();
+    if let Some(q) = parsed.query() {
+        page.push('?');
+        page.push_str(q);
+    }
+    if let Some(f) = parsed.fragment() {
+        page.push('#');
+        page.push_str(f);
+    }
+    Some((app, page))
+}
+
+/// Whether a browser step takes its session elsewhere than the app page it
+/// is on: an address of its own (`navigate`, `new_tab`, a batch with one),
+/// or closing the tab.
+fn leaves_app_page(action: &str, args: &serde_json::Value) -> bool {
+    match action {
+        "navigate" | "new_tab" | "close_tab" => true,
+        "browser_batch" => args["actions"]
+            .as_array()
+            .is_some_and(|steps| steps.iter().any(|s| matches!(s["action"].as_str(), Some("navigate" | "new_tab")))),
+        _ => false,
+    }
+}
+
+/// The client [`fetch_checked`] takes: it never follows a redirect itself,
+/// and it connects only to an address it resolved and found public
+/// ([`PublicOnly`]), so a name that answers public to the check and private
+/// to the connection (DNS rebinding) reaches nothing local.
+pub fn checked_client() -> reqwest::ClientBuilder {
+    tls::http_client()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(PublicOnly))
+}
+
+/// [`checked_client`]'s resolver: the system lookup, refused when ANY address
+/// it answers is not public ([`is_public_ip`]), the same rule
+/// [`check_url_allowed`] holds a name to.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs.is_empty() || addrs.iter().any(|a| !is_public_ip(a.ip())) {
+                return Err(format!("{host} resolves to a local or private network address, which is never fetched").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
+/// redirects are followed manually (limit 5, matching the previous auto
+/// policy) so a public URL can't redirect into a private address unchecked.
+/// `client` is a [`checked_client`]. `hop_allowed` is the
+/// caller's own rule on top, asked of every hop (an app's `network:`
+/// grant: a redirect never leaves the domains it was allowed).
+pub async fn fetch_checked(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    mut headers: reqwest::header::HeaderMap,
+    mut body: Option<String>,
+    hop_allowed: impl Fn(&url::Url) -> Result<(), String>,
+) -> Result<reqwest::Response, String> {
+    let mut method = method;
+    let mut current = check_url_allowed(url).await?;
+    hop_allowed(&current)?;
+
+    // Initial request + up to 5 redirect follows.
+    for _ in 0..=5 {
+        let mut req = client
+            .request(method.clone(), current.clone())
+            .headers(headers.clone());
+        if let Some(ref b) = body {
+            req = req.body(b.clone());
+        }
+        let resp = req.send().await.map_err(|e| {
+            format!(
+                "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
+                current, e
+            )
+        })?;
+
+        if !resp.status().is_redirection() {
+            return Ok(resp);
+        }
+        // Redirect without a usable Location — return it as-is, like reqwest does.
+        let Some(location) = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+        else {
+            return Ok(resp);
+        };
+        let Some((next_method, next_url, drop_body)) =
+            next_hop(resp.status(), &method, resp.url(), &location)
+        else {
+            return Ok(resp);
+        };
+        let next = check_url_allowed(next_url.as_str()).await?;
+        hop_allowed(&next)?;
+
+        // Mirror reqwest's redirect hygiene: credentials never cross hosts,
+        // and body-describing headers go away with the body.
+        let cross_host = next.host_str() != current.host_str()
+            || next.port_or_known_default() != current.port_or_known_default();
+        if cross_host {
+            for h in [
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::COOKIE,
+                reqwest::header::PROXY_AUTHORIZATION,
+                reqwest::header::WWW_AUTHENTICATE,
+            ] {
+                headers.remove(&h);
+            }
+        }
+        if drop_body {
+            body = None;
+            for h in [
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::CONTENT_LENGTH,
+                reqwest::header::CONTENT_ENCODING,
+                reqwest::header::TRANSFER_ENCODING,
+            ] {
+                headers.remove(&h);
+            }
+        }
+        method = next_method;
+        current = next;
+    }
+    Err(format!("Too many redirects for {} (limit 5)", url))
+}
+
 /// Canonical SSRF guard for model-supplied URLs: parse, require http/https,
 /// and classify the host. IP literals (including the WHATWG-normalized hex/
 /// decimal/short IPv4 forms and IPv4-mapped IPv6) are checked directly;
@@ -3149,9 +3330,7 @@ async fn check_url_allowed(raw: &str) -> Result<url::Url, String> {
         }
         Some(url::Host::Domain(domain)) => {
             let d = domain.trim_end_matches('.');
-            if d.eq_ignore_ascii_case("localhost")
-                || d.to_ascii_lowercase().ends_with(".localhost")
-            {
+            if is_local_name(d) {
                 return Err(private_url_error(raw));
             }
             let port = parsed.port_or_known_default().unwrap_or(80);
@@ -3169,34 +3348,6 @@ async fn check_url_allowed(raw: &str) -> Result<url::Url, String> {
             Ok(parsed)
         }
         Some(_) => Ok(parsed),
-    }
-}
-
-/// Whether an IP is publicly routable — the classification half of the SSRF
-/// guard, pure and unit-testable. Covers loopback, RFC1918, link-local,
-/// CGNAT, reserved v4 ranges, and the private/special IPv6 ranges.
-fn is_public_ip(ip: std::net::IpAddr) -> bool {
-    // Unwrap IPv4-mapped IPv6 (::ffff:a.b.c.d) into the v4 address.
-    match ip.to_canonical() {
-        std::net::IpAddr::V4(v4) => {
-            let o = v4.octets();
-            !(v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || o[0] == 0 // 0.0.0.0/8 "this network"
-                || (o[0] == 100 && (o[1] & 0xC0) == 64) // CGNAT 100.64.0.0/10
-                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
-                || o[0] >= 240) // 240.0.0.0/4 reserved
-        }
-        std::net::IpAddr::V6(v6) => {
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_unique_local()
-                || v6.is_unicast_link_local()
-                || v6.is_multicast())
-        }
     }
 }
 
@@ -3866,53 +4017,16 @@ link "Create account" [ref_5]"#;
         assert!(result.is_some(), "should detect Google OAuth login");
     }
 
-    #[test]
-    fn is_public_ip_blocks_private_and_special_ranges() {
-        let blocked: &[&str] = &[
-            "127.0.0.1",
-            "10.0.0.1",
-            "172.16.0.1",
-            "172.31.255.255",
-            "192.168.1.1",
-            "169.254.169.254",
-            "0.0.0.0",
-            "100.64.0.1",
-            "192.0.0.192",
-            "255.255.255.255",
-            "240.0.0.1",
-            "::1",
-            "::",
-            "fc00::1",
-            "fd12:3456::1",
-            "fe80::1",
-            "ff02::1",
-            "::ffff:127.0.0.1",
-            "::ffff:10.0.0.1",
-        ];
-        for ip in blocked {
-            let parsed: std::net::IpAddr = ip.parse().unwrap();
-            assert!(!is_public_ip(parsed), "{} should be blocked", ip);
-        }
+    /// The checked client's resolver refuses a name that answers a local
+    /// address: the address connected to is the one checked.
+    #[tokio::test]
+    async fn the_checked_client_never_connects_to_a_name_that_resolves_local() {
+        use reqwest::dns::Resolve;
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        let err = PublicOnly.resolve(name).await.err().expect("refused");
+        assert!(err.to_string().contains("local or private"), "{err}");
     }
 
-    #[test]
-    fn is_public_ip_allows_public_ranges() {
-        // 172.2.x.x and 172.200.x.x are regressions for the old substring
-        // check, which wrongly blocked them via the "://172.2" prefix.
-        let allowed: &[&str] = &[
-            "1.1.1.1",
-            "8.8.8.8",
-            "172.2.1.1",
-            "172.200.5.5",
-            "100.128.0.1",
-            "93.184.216.34",
-            "2606:4700::1111",
-        ];
-        for ip in allowed {
-            let parsed: std::net::IpAddr = ip.parse().unwrap();
-            assert!(is_public_ip(parsed), "{} should be allowed", ip);
-        }
-    }
 
     #[tokio::test]
     async fn check_url_allowed_blocks_private_literals_and_schemes() {
@@ -4506,5 +4620,65 @@ mod interface_tests {
         for name in names.iter().filter(|n| !NO_OLD_SHAPE.contains(n)) {
             assert!(web_rows.iter().any(|r| r.to == *name), "{name} has no old shape");
         }
+    }
+}
+
+#[cfg(test)]
+mod own_app_page_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// This bot's own app pages, however the address is written, and
+    /// nothing else: another port, another host, an API route or Nebo's
+    /// own page are browsing as before.
+    #[test]
+    fn an_own_app_page_is_found_by_its_address() {
+        let port = napp::plugin::local_port();
+        let page = |rest: &str| own_app_page(&format!("http://127.0.0.1:{port}{rest}"));
+        assert_eq!(page("/apps/a1/ui/index.html?play=1#top"), Some(("a1".into(), "index.html?play=1#top".into())));
+        assert_eq!(own_app_page(&format!("http://localhost:{port}/apps/a1/ui/")), Some(("a1".into(), "".into())));
+        assert_eq!(own_app_page(&format!("http://[::1]:{port}/apps/a1/ui")), Some(("a1".into(), "".into())));
+        // Loopback however it is written, and a user part, are this bot.
+        for host in ["127.1", "127.0.0.2", "x@127.0.0.1"] {
+            assert_eq!(
+                own_app_page(&format!("http://{host}:{port}/apps/a1/ui/index.html")),
+                Some(("a1".into(), "index.html".into())),
+                "{host}"
+            );
+        }
+        // A credential in front never carries over: a pass of its own is minted.
+        assert_eq!(page("/k/old-or-key/apps/a1/ui/index.html"), Some(("a1".into(), "index.html".into())));
+        // Climbing is resolved before the app is named: the other app's page,
+        // judged as that app.
+        assert_eq!(page("/apps/a1/ui/%2e%2e/%2e%2e/a2/ui/index.html"), Some(("a2".into(), "index.html".into())));
+        for other in [
+            format!("http://127.0.0.1:{}/apps/a1/ui/index.html", port.wrapping_add(1)),
+            format!("https://127.0.0.1:{port}/apps/a1/ui/index.html"),
+            format!("http://example.com:{port}/apps/a1/ui/index.html"),
+            format!("http://[::ffff:127.0.0.1]:{port}/apps/a1/ui/index.html"),
+            format!("http://0.0.0.0:{port}/apps/a1/ui/index.html"),
+            format!("http://127.0.0.1:{port}/k/a/k/b/apps/a1/ui/index.html"),
+            format!("http://127.0.0.1:{port}/api/v1/apps/a1/storage"),
+            format!("http://127.0.0.1:{port}/apps/a1/chat-embed"),
+            format!("http://127.0.0.1:{port}/agents"),
+            format!("http://127.0.0.1:{port}/k/x"),
+        ] {
+            assert_eq!(own_app_page(&other), None, "{other}");
+        }
+    }
+
+    /// Only a step that takes the session to an address of its own, or
+    /// closes the tab, leaves the app page; working the page stays on it.
+    #[test]
+    fn only_another_address_or_closing_leaves_the_app_page() {
+        for leaves in ["navigate", "new_tab", "close_tab"] {
+            assert!(leaves_app_page(leaves, &json!({})), "{leaves}");
+        }
+        for stays in ["click", "type", "read_page", "evaluate", "history"] {
+            assert!(!leaves_app_page(stays, &json!({})), "{stays}");
+        }
+        let batch = |action: &str| json!({ "actions": [{ "action": "click" }, { "action": action }] });
+        assert!(leaves_app_page("browser_batch", &batch("navigate")));
+        assert!(!leaves_app_page("browser_batch", &batch("type")));
     }
 }

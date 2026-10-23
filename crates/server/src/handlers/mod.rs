@@ -3,6 +3,7 @@ pub mod agents;
 pub mod asks;
 pub mod background;
 pub mod cases;
+pub mod app_plugins;
 pub mod apps;
 pub mod artifact_updates;
 pub mod auth;

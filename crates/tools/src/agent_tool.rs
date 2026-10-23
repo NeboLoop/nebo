@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::origin::ToolContext;
+use crate::origin::{Origin, ToolContext};
 use crate::plugin_tool::{CardAnswer, INSTALL_CARD_INSTALLED, TOOL_INSTALL_DOOR};
 use crate::registry::ToolResult;
 use db::Store;
@@ -647,6 +647,8 @@ impl PersonaTool {
                             None,
                         ) {
                             Ok(_) => {
+                                // Its folder is the owner's own (`user/agents/`).
+                                let _ = self.store.set_agent_built_here(&id, true);
                                 let agent_dir = self.agent_loader.user_dir().join(&agent_name);
                                 if agent_dir.exists() {
                                     let _ = self
@@ -1364,6 +1366,21 @@ impl PersonaTool {
         crate::needs::work_out_needs(&src, consent).await
     }
 
+    /// Whether an app made in this call counts as made on this bot
+    /// (`Store::set_agent_built_here`), so it holds what it asks for without
+    /// the owner's OK: only in the owner's or Nebo's own run (never an app's
+    /// page, a loop, an MCP client), by the primary employee or one that was
+    /// itself made here. An installed employee's app is an install.
+    fn builds_here(&self, ctx: &ToolContext) -> bool {
+        if !matches!(ctx.origin, Origin::User | Origin::System | Origin::Workflow) {
+            return false;
+        }
+        let creator = Self::creator_of(ctx);
+        creator.is_empty()
+            || creator == types::character::ASSISTANT
+            || self.store.get_agent(&creator).ok().flatten().is_some_and(|a| a.built_here == 1)
+    }
+
     /// The employee whose run this call is: the one creating or editing.
     fn creator_of(ctx: &ToolContext) -> String {
         match &ctx.grant {
@@ -1441,7 +1458,7 @@ impl PersonaTool {
             };
             let consented = consent.owner_consented(ctx, Some(draft_id));
             let id = uuid::Uuid::new_v4().to_string();
-            let created = self.handle_create(&drafted, &id).await;
+            let created = self.handle_create(&drafted, &id, self.builds_here(ctx)).await;
             if created.is_error {
                 return created;
             }
@@ -1525,16 +1542,16 @@ impl PersonaTool {
         let shapes_the_job = Self::JOB_FIELDS.iter().any(|k| !input[*k].is_null());
         let name = input["name"].as_str().unwrap_or("");
         let (Some(consent), true, false) = (consent, shapes_the_job, name.is_empty()) else {
-            return self.handle_update(input).await;
+            return self.handle_update(input, self.builds_here(ctx)).await;
         };
         let Some(agent) = self.find_agent_row(name) else {
-            return self.handle_update(input).await;
+            return self.handle_update(input, self.builds_here(ctx)).await;
         };
         let before = consent.job_of(&agent.id);
         let after = Self::work_out(consent.as_ref(), &agent.id, &agent.name, input).await;
         let new = crate::needs::added(&before, &after);
         if new.is_empty() {
-            return self.handle_update(input).await;
+            return self.handle_update(input, self.builds_here(ctx)).await;
         }
         if consent.owner_consented(ctx, None) {
             let job = crate::needs::JobGrant {
@@ -1571,7 +1588,7 @@ impl PersonaTool {
         input: &serde_json::Value,
         job: &crate::needs::JobGrant<'_>,
     ) -> ToolResult {
-        let updated = self.handle_update(input).await;
+        let updated = self.handle_update(input, self.builds_here(ctx)).await;
         if updated.is_error {
             return updated;
         }
@@ -1587,7 +1604,9 @@ impl PersonaTool {
 
     /// Create the employee `input` describes under `id`. Reached only
     /// through [`Self::create_with_consent`], with the drafted input.
-    async fn handle_create(&self, input: &serde_json::Value, id: &str) -> ToolResult {
+    /// `built_here`: whether an app this makes counts as made on this bot
+    /// ([`Self::builds_here`]).
+    async fn handle_create(&self, input: &serde_json::Value, id: &str, built_here: bool) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
@@ -1762,6 +1781,9 @@ impl PersonaTool {
             None,
         ) {
             Ok(_) => {
+                // Made here when its maker is the owner's own
+                // (`Self::builds_here`, `app_dev::is_own_app`).
+                let _ = self.store.set_agent_built_here(&id, built_here);
                 let _ = self
                     .store
                     .set_agent_napp_path(&id, &agent_dir.to_string_lossy());
@@ -1780,6 +1802,19 @@ impl PersonaTool {
         }
 
         let mut result = format!("Created employee '{}' (id: {})", name, id);
+        // The one folder it lives in, named exactly: a folder of that name
+        // already there (one made by hand, or a renamed employee's) means it
+        // got another, and saying so is the only way the next call finds it.
+        let folder = agent_dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        if folder == name {
+            result.push_str(&format!("\nIts folder: {}", agent_dir.display()));
+        } else {
+            result.push_str(&format!(
+                "\nIts folder: {}. A folder named '{name}' was already there, so it got '{folder}'; use this folder \
+                 for its files, never the other one.",
+                agent_dir.display()
+            ));
+        }
         if !step_notes.is_empty() {
             result.push_str(&format!("\nStep tools: {}.", step_notes.join("; ")));
         }
@@ -1939,7 +1974,9 @@ impl PersonaTool {
         Ok(())
     }
 
-    async fn handle_update(&self, input: &serde_json::Value) -> ToolResult {
+    /// `built_here`: whether an employee this turns into an app counts as
+    /// made on this bot ([`Self::builds_here`]).
+    async fn handle_update(&self, input: &serde_json::Value, built_here: bool) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
@@ -2110,6 +2147,8 @@ impl PersonaTool {
                     let _ = std::fs::remove_dir_all(&dir);
                     return ToolResult::error(format!("Failed to record the app's folder: {}", e));
                 }
+                // Its page is made here when its maker is the owner's own.
+                let _ = self.store.set_agent_built_here(agent_id, built_here);
                 changes.push(format!("gave '{}' its own folder at {}", current_name, dir.display()));
                 dir
             } else {
@@ -4193,10 +4232,67 @@ fn install_text_is_failure(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// An app made in a call counts as made here only when its maker is the
+    /// owner's own, in his or Nebo's own run: never from an app's page, and
+    /// never by an installed employee.
+    #[test]
+    fn an_app_is_made_here_only_by_the_owners_own() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let persona = super::PersonaTool::new(store.clone(), live, loader);
+        store.create_agent("mine", None, "Mine", "", "", "{}", None, None).unwrap();
+        store.set_agent_built_here("mine", true).unwrap();
+        store.create_agent("bought", None, "Bought", "", "", "{}", None, None).unwrap();
+        let ctx = |origin, seat: &str| crate::origin::ToolContext {
+            origin,
+            session_key: format!("agent:{seat}:web"),
+            ..Default::default()
+        };
+        use crate::origin::Origin;
+        assert!(persona.builds_here(&ctx(Origin::User, "mine")));
+        assert!(persona.builds_here(&ctx(Origin::User, types::character::ASSISTANT)));
+        assert!(!persona.builds_here(&ctx(Origin::User, "bought")), "an installed employee's app is an install");
+        assert!(!persona.builds_here(&ctx(Origin::App, "mine")), "never from an app's page");
+        assert!(!persona.builds_here(&ctx(Origin::Comm, "mine")), "never from a loop");
+    }
+
     /// A ceiling the builder gives — with the duties on create, or later on
     /// update — lands in agent.json and takes effect at once: each operation
     /// asks the owner. A ceiling value other than "approval" is refused and
     /// nothing is made.
+    /// The create names the one folder the employee lives in, and says so
+    /// plainly when a folder of its name was already there (one made by
+    /// hand first): live 2026-10-23, an app was made in "Football League 2"
+    /// while its brief sat in the hand-made "Football League".
+    #[tokio::test]
+    async fn the_create_names_the_folder_it_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let user = loader.user_dir().to_path_buf();
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let persona = super::PersonaTool::new(store.clone(), live, loader);
+
+        let made = persona.handle_create(&serde_json::json!({"name": "Scores", "description": "Keeps scores"}), "emp-s", true).await;
+        assert!(!made.is_error, "{}", made.content);
+        assert!(made.content.contains(&format!("Its folder: {}", user.join("Scores").display())), "{}", made.content);
+        assert!(!made.content.contains("already there"), "{}", made.content);
+
+        std::fs::create_dir_all(user.join("Football League")).unwrap();
+        std::fs::write(user.join("Football League/brief.md"), "# Brief\n").unwrap();
+        let made = persona
+            .handle_create(&serde_json::json!({"name": "Football League", "description": "Runs the league"}), "emp-fl", true)
+            .await;
+        assert!(!made.is_error, "{}", made.content);
+        let used = user.join("Football League 2");
+        assert!(made.content.contains(&format!("Its folder: {}", used.display())), "{}", made.content);
+        assert!(made.content.contains("A folder named 'Football League' was already there, so it got 'Football League 2'"), "{}", made.content);
+        assert_eq!(crate::team::resolve_agent(&store, "Football League 2").map(|a| a.id), Some("emp-fl".to_string()));
+    }
+
     #[tokio::test]
     async fn a_ceiling_the_builder_gives_takes_effect_on_create_and_update() {
         use std::sync::Arc;
@@ -4222,8 +4318,7 @@ mod tests {
         let refused = persona
             .handle_create(
                 &serde_json::json!({"name": "payables", "description": "Pays bills", "ceiling": {"ledger.payment.create": "always"}}),
-                "emp-bad",
-            )
+                "emp-bad", true)
             .await;
         assert!(refused.is_error, "{}", refused.content);
         assert!(store.get_agent("emp-bad").unwrap().is_none(), "nothing was made");
@@ -4236,8 +4331,7 @@ mod tests {
                     "automations": [{"name": "pay-run", "trigger": "manual", "steps": ["Pay the approved bills"]}],
                     "ceiling": {"ledger.payment.create": "approval"}
                 }),
-                "emp-1",
-            )
+                "emp-1", true)
             .await;
         assert!(!made.is_error, "{}", made.content);
         let row = store.get_agent("emp-1").unwrap().unwrap();
@@ -4249,7 +4343,7 @@ mod tests {
         assert_eq!(asks[0], crate::plugin_tool::port_suffix("ledger.payment.create"));
 
         let updated = persona
-            .handle_update(&serde_json::json!({"name": "payables", "ceiling": {"ledger.invoice.void": "approval"}}))
+            .handle_update(&serde_json::json!({"name": "payables", "ceiling": {"ledger.invoice.void": "approval"}}), true)
             .await;
         assert!(!updated.is_error, "{}", updated.content);
         let fm: serde_json::Value = serde_json::from_str(&store.get_agent("emp-1").unwrap().unwrap().frontmatter).unwrap();
@@ -4322,8 +4416,7 @@ mod tests {
                         "tools": ["mcp__hubspot__hubspot_search_deals", "message_owner"]
                     }]
                 }),
-                "emp-1",
-            )
+                "emp-1", true)
             .await;
         assert!(!made.is_error, "{}", made.content);
         assert!(made.content.contains("Step tools: evening-wrap/run also has write_file."), "{}", made.content);
@@ -4336,7 +4429,7 @@ mod tests {
             .handle_update(&serde_json::json!({
                 "name": "pipeline-watch",
                 "add_automations": [{"name": "morning-brief", "schedule": "0 7 * * *", "steps": ["Pull the deals with mcp__hubspot__hubspot_search_deals and brief the owner with message_owner."], "tools": ["mcp__hubspot__hubspot_search_deals"]}]
-            }))
+            }), true)
             .await;
         assert!(!added.is_error, "{}", added.content);
         assert_eq!(
@@ -4351,8 +4444,7 @@ mod tests {
                     "description": "Keeps the watchlist",
                     "automations": [{"name": "watch", "schedule": "0 * * * *", "steps": ["Read the list with recall(key 'watchlist/accounts')."], "tools": []}]
                 }),
-                "emp-2",
-            )
+                "emp-2", true)
             .await;
         assert!(refused.is_error, "{}", refused.content);
         assert!(

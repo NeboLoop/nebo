@@ -4541,5 +4541,30 @@
 		"tellIt": "Dis-lui quoi faire",
 		"sending": "Envoi…",
 		"sendFailed": "Ta réponse n'est pas partie."
+	},
+	"appPermissions": {
+		"title": "{name} veut en faire plus",
+		"intro": "Ne dis oui que si tu fais confiance à cette app. Tu pourras changer d'avis dans ses réglages.",
+		"origin": "Cette app n'a pas été créée ici. Quelqu'un hors de ton entreprise l'a créée.",
+		"wantsFiles": "{name} veut voir les fichiers de {target}",
+		"wantsWeb": "{name} veut parler à {target}",
+		"wantsWebAny": "{name} veut parler à n'importe quel site web",
+		"wantsHelper": "{name} veut demander de l'aide à {target}",
+		"wantsHelperAny": "{name} veut demander de l'aide à n'importe lequel de tes employés",
+		"wantsPlugin": "{name} veut utiliser {target}",
+		"canFiles": "Voir les fichiers de {target}",
+		"canWeb": "Parler à {target}",
+		"canWebAny": "Parler à n'importe quel site web",
+		"canHelper": "Demander de l'aide à {target}",
+		"canHelperAny": "Demander de l'aide à n'importe lequel de tes employés",
+		"canPlugin": "Utiliser {target}",
+		"allow": "Autoriser",
+		"deny": "Ne pas autoriser",
+		"off": "Non",
+		"notNow": "Pas maintenant",
+		"sectionTitle": "Ce que cette app peut faire",
+		"sectionHint": "Cette app vient du marketplace. Elle ne peut faire que ce que tu autorises.",
+		"ownHint": "Tu as créé cette app ici, elle peut donc faire ce qu'elle demande.",
+		"notAnswered": "Sans réponse"
 	}
 }

@@ -35,7 +35,12 @@ pub trait CommPlugin: Send + Sync {
 
     /// Lifecycle.
     async fn connect(&self, config: HashMap<String, String>) -> Result<(), CommError>;
-    async fn disconnect(&self) -> Result<(), CommError>;
+    /// Close the connection. `how` names why when the close says so on the
+    /// wire: `Some(Disconnect::Sleep)` closes with 1001 "sleep"
+    /// ([`reconnect::Disconnect::close_frame`]) and returns once that frame
+    /// is out, because the computer sleeps right after. `None` is every
+    /// other close the bot makes.
+    async fn disconnect(&self, how: Option<reconnect::Disconnect>) -> Result<(), CommError>;
     fn is_connected(&self) -> bool;
 
     /// Messaging.
