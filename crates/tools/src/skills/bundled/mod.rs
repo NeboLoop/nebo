@@ -268,8 +268,11 @@ mod bundled_skill_tests {
         assert!(content.contains("`storage.onChange(cb)"), "the skill names storage.onChange");
         // The calls the console's causes name for `nebo.storage`
         // (`app_console::STORAGE_CALLS`) are the bundle's own.
+        let start = bundle.find("async getItem(").expect("the bundle's storage object");
+        let storage = &bundle[start..];
+        let storage = &storage[..storage.find("onChange(").expect("storage.onChange") + "onChange(".len()];
         for call in crate::app_console::STORAGE_CALLS {
-            assert!(bundle.contains(&format!("{call}(")), "the bundle's storage has {call}");
+            assert!(storage.contains(&format!("{call}(")), "the bundle's storage object has {call}: {storage}");
         }
         assert!(content.contains("app_data(action:"), "the skill shows the employee's app_data tool");
         assert!(

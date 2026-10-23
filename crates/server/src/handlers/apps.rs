@@ -1255,16 +1255,18 @@ pub async fn send_devlog(
 /// brought, each once: the send never depends on a batch having landed.
 async fn keep_page_errors(state: &AppState, agent_id: &str, body: &[u8]) {
     let Ok(page) = serde_json::from_slice::<DevlogBatch>(body) else { return };
+    let errors: Vec<DevlogEntry> =
+        page.entries.into_iter().take(DEVLOG_MAX_BATCH).filter(|e| e.level == "error").collect();
+    let causes = devlog_causes(state, agent_id, &errors).await;
+    // What the ring holds is read after the causes, with no wait before the
+    // write: a batch that lands meanwhile is seen, and nothing is kept twice.
     let held = tools::app_console::recent(agent_id, None, tools::app_console::RING_CAPACITY);
-    let new: Vec<DevlogEntry> = page
-        .entries
-        .into_iter()
-        .take(DEVLOG_MAX_BATCH)
-        .filter(|e| e.level == "error")
-        .filter(|e| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
-        .collect();
-    let causes = devlog_causes(state, agent_id, &new).await;
-    keep_devlog(agent_id, &new, causes);
+    let (new, causes): (Vec<&DevlogEntry>, Vec<String>) = errors
+        .iter()
+        .zip(causes.into_iter().chain(std::iter::repeat(String::new())))
+        .filter(|(e, _)| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
+        .unzip();
+    keep_devlog(agent_id, new, causes);
 }
 
 /// POST /apps/{agent_id}/agents/invoke — run the app's agent and collect text.

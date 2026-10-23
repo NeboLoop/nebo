@@ -204,10 +204,14 @@ pub fn withheld_note(
     run_withheld: Option<&HashSet<String>>,
 ) -> Option<String> {
     let run_withheld = run_withheld?;
+    let asked = |w: &&str| TOOLS.contains(w) && run_withheld.contains(*w);
+    let words = || query.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+    if !words().any(|w| asked(&w)) {
+        return None;
+    }
     let pack_withheld = withheld(store, agent_id);
-    let named: Vec<&str> = query
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| run_withheld.contains(*w) && pack_withheld.iter().any(|t| t.as_str() == *w))
+    let named: Vec<&str> = words()
+        .filter(|w| asked(w) && pack_withheld.iter().any(|t| t.as_str() == *w))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();

@@ -117,14 +117,15 @@ pub struct Line<'a> {
     pub why: String,
 }
 
+/// Tests write a line as `(level, message, source, time_ms, view)`.
+#[cfg(test)]
 impl<'a> From<(&'a str, &'a str, &'a str, i64, &'a str)> for Line<'a> {
     fn from((level, message, source, time_ms, view): (&'a str, &'a str, &'a str, i64, &'a str)) -> Self {
         Line { level, message, source, time_ms, view, why: String::new() }
     }
 }
 
-/// Keep what an app's page sent: `(level, message, source, time_ms, view)`
-/// each, or a [`Line`] with its cause.
+/// Keep what an app's page sent, each line with its cause.
 pub fn record<'a, L: Into<Line<'a>>>(app_id: &str, entries: impl IntoIterator<Item = L>) -> usize {
     let mut added = Vec::new();
     for line in entries {

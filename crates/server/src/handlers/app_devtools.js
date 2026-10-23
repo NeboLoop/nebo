@@ -90,7 +90,8 @@
   }
   // The file a load of the page's own asked for, for the bot to read its
   // cause against ui/: relative to ui/, or the page's own path outside it
-  // from `/` (the prefix taken off); '' for another origin or Nebo's routes.
+  // from `/` (the prefix taken off); '' for another origin or Nebo's routes
+  // (`/api/`, `/ws/`), judged first: the desktop window's ui/ is its root.
   function fileOf(url) {
     var u;
     try {
@@ -99,10 +100,12 @@
       return '';
     }
     if (u.origin !== location.origin) return '';
+    var own = prefix && u.pathname.indexOf(prefix) === 0 ? u.pathname.slice(prefix.length) : u.pathname;
+    if (/^\/(api|ws)\//.test(own)) return '';
+    if (own === '/sdk/nebo.global.js') return own;
     var at = u.origin + u.pathname;
     if (at.indexOf(uiRoot) === 0) return decoded(at.slice(uiRoot.length));
-    if (/\/api\/v1\/apps\//.test(u.pathname)) return '';
-    return decoded(prefix && u.pathname.indexOf(prefix) === 0 ? u.pathname.slice(prefix.length) : u.pathname);
+    return decoded(own);
   }
 
   function push(level, message, source, extra) {

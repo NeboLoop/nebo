@@ -209,7 +209,7 @@ async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_
             (
                 "index.html",
                 "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./style.css\"></head>\
-                 <body><h1>Styled</h1></body></html>",
+                 <body><h1>Styled</h1><img src=\"../../../api/v1/apps/app-styled/no-such-route.png\"></body></html>",
             ),
             ("css/style.css", "h1 { color: teal }"),
         ],
@@ -241,4 +241,8 @@ async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_
         "both paths named: {}",
         styled.content
     );
+    // A failed load of one of Nebo's own routes is never read as a file
+    // of ui/.
+    assert!(styled.content.contains("no-such-route.png"), "{}", styled.content);
+    assert!(!styled.content.contains("asked for /api/"), "{}", styled.content);
 }
