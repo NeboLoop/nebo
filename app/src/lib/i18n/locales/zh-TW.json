@@ -1699,6 +1699,7 @@
 			"fromPlan": "來自你的方案",
 			"fromCredit": "來自儲值",
 			"loadMore": "載入更多",
+			"breakdownLink": "查看餘額的去向",
 			"phoneNumber": "電話號碼 {number}",
 			"phoneNumberPlain": "電話號碼",
 			"calls": "通話 · {minutes} 分鐘",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "雲端電腦",
 			"cloudComputerNamed": "雲端電腦 · {name}",
 			"memory": "記憶",
-			"media": "媒體"
+			"media": "媒體",
+			"email": "電子郵件"
 		}
 	},
 	"settingsFamily": {

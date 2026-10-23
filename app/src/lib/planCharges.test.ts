@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PlanChargeLine } from '$lib/api/neboComponents';
-import { chargeText, displayNumber, formatCents, formatChargeDate, hasMore, sourceKey } from './planCharges';
+import { chargeText, displayNumber, formatCents, formatChargeDate, hasMore } from './planCharges';
 
 const line = (over: Partial<PlanChargeLine>): PlanChargeLine => ({
 	id: '1', kind: 'memory', detail: '', quantity: 1, amountCents: 100, source: 'plan', refId: '', label: '', at: '2026-10-05T10:00:00Z',
@@ -20,21 +20,25 @@ describe('Charged to your plan', () => {
 		expect(chargeText(line({ kind: 'calls', quantity: 42 })).values).toEqual({ minutes: 42 });
 		expect(chargeText(line({ kind: 'texts', quantity: 120 })).values).toEqual({ count: 120 });
 		expect(chargeText(line({ kind: 'cloud_computer', detail: 'Ada' })).values).toEqual({ name: 'Ada' });
-		for (const kind of ['phone_number', 'calls', 'texts', 'texting_registration', 'texting_monthly', 'cloud_computer', 'memory', 'media']) {
+		for (const kind of ['phone_number', 'calls', 'texts', 'texting_registration', 'texting_monthly', 'cloud_bot', 'cloud_computer', 'memory', 'media', 'email']) {
 			const t = chargeText(line({ kind }));
 			expect(t.raw).toBeUndefined();
 			expect(has(t.key), t.key).toBe(true);
 		}
 	});
 
+	it('falls back to the hub’s label when a number or bot comes without detail', () => {
+		expect(chargeText(line({ kind: 'cloud_bot', label: 'Cloud computer · Ada' }))).toEqual({ key: '', raw: 'Cloud computer · Ada' });
+		expect(chargeText(line({ kind: 'phone_number', label: 'Phone number +15551234567' })).raw).toBe('Phone number +15551234567');
+		expect(chargeText(line({ kind: 'cloud_bot', label: '' }))).toEqual({ key: 'settingsUsage.charges.cloudComputer' });
+	});
+
 	it('shows the hub’s own words for a kind it does not know', () => {
 		expect(chargeText(line({ kind: 'storage', label: 'Storage · 10 GB' }))).toEqual({ key: '', raw: 'Storage · 10 GB' });
 	});
 
-	it('says where the money came from', () => {
-		expect(sourceKey(line({ source: 'plan' }))).toBe('settingsUsage.charges.fromPlan');
-		expect(sourceKey(line({ source: 'credit' }))).toBe('settingsUsage.charges.fromCredit');
-		expect(has('settingsUsage.charges.fromPlan') && has('settingsUsage.charges.fromCredit')).toBe(true);
+	it('links to the web breakdown in words every locale has', () => {
+		expect(has('settingsUsage.charges.breakdownLink')).toBe(true);
 	});
 
 	it('formats dollars and dates, and knows when there is more', () => {

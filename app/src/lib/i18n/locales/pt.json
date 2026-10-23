@@ -1699,6 +1699,7 @@
 			"fromPlan": "Do seu plano",
 			"fromCredit": "De carregamentos",
 			"loadMore": "Carregar mais",
+			"breakdownLink": "Veja para onde foi o seu saldo",
 			"phoneNumber": "Número de telefone {number}",
 			"phoneNumberPlain": "Número de telefone",
 			"calls": "Chamadas · {minutes} min",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "Computador na nuvem",
 			"cloudComputerNamed": "Computador na nuvem · {name}",
 			"memory": "Memória",
-			"media": "Multimédia"
+			"media": "Multimédia",
+			"email": "E-mail"
 		}
 	},
 	"settingsFamily": {

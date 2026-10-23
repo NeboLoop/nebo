@@ -1699,6 +1699,7 @@
 			"fromPlan": "আপনার প্ল্যান থেকে",
 			"fromCredit": "টপ-আপ থেকে",
 			"loadMore": "আরও লোড করুন",
+			"breakdownLink": "আপনার ব্যালেন্স কোথায় খরচ হলো দেখুন",
 			"phoneNumber": "ফোন নম্বর {number}",
 			"phoneNumberPlain": "ফোন নম্বর",
 			"calls": "কল · {minutes} মিনিট",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "ক্লাউড কম্পিউটার",
 			"cloudComputerNamed": "ক্লাউড কম্পিউটার · {name}",
 			"memory": "মেমরি",
-			"media": "মিডিয়া"
+			"media": "মিডিয়া",
+			"email": "ইমেইল"
 		}
 	},
 	"settingsFamily": {

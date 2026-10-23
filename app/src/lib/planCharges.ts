@@ -1,5 +1,5 @@
-// "Charged to your plan": what the plan's pool (or purchased credit) paid for
-// this month, in dollars. Only AI work is a percentage of the plan; it is
+// "Charged to your plan": what the balance (the one ledger) paid for this
+// month, in dollars. Only AI work is a percentage of the plan; it is
 // never a line here, and the plan's internal rate is never shown.
 import type { PlanChargeLine } from '$lib/api/neboComponents';
 
@@ -17,12 +17,18 @@ export function displayNumber(e164: string): string {
 	return m ? `(${m[1]}) ${m[2]}-${m[3]}` : e164.trim();
 }
 
+/** No detail (the hub sent "" for a while after one billing): the hub's label still names the number or bot. */
+function named(line: PlanChargeLine, plainKey: string): ChargeText {
+	const label = (line.label ?? '').trim();
+	return label ? { key: '', raw: label } : { key: plainKey };
+}
+
 export function chargeText(line: PlanChargeLine): ChargeText {
 	const k = 'settingsUsage.charges.';
 	const detail = (line.detail ?? '').trim();
 	switch (line.kind) {
 		case 'phone_number':
-			return detail ? { key: k + 'phoneNumber', values: { number: displayNumber(detail) } } : { key: k + 'phoneNumberPlain' };
+			return detail ? { key: k + 'phoneNumber', values: { number: displayNumber(detail) } } : named(line, k + 'phoneNumberPlain');
 		case 'calls':
 			return { key: k + 'calls', values: { minutes: line.quantity } };
 		case 'texts':
@@ -31,20 +37,18 @@ export function chargeText(line: PlanChargeLine): ChargeText {
 			return { key: k + 'textingRegistration' };
 		case 'texting_monthly':
 			return { key: k + 'textingMonthly' };
-		case 'cloud_computer':
-			return detail ? { key: k + 'cloudComputerNamed', values: { name: detail } } : { key: k + 'cloudComputer' };
+		case 'cloud_bot':
+		case 'cloud_computer': // ponytail: pre-one-billing name, drop once no hub sends it
+			return detail ? { key: k + 'cloudComputerNamed', values: { name: detail } } : named(line, k + 'cloudComputer');
 		case 'memory':
 			return { key: k + 'memory' };
 		case 'media':
 			return { key: k + 'media' };
+		case 'email':
+			return { key: k + 'email' };
 		default:
 			return { key: '', raw: line.label || line.kind };
 	}
-}
-
-/** Where the money came from: the plan's pool, or credit the customer bought. */
-export function sourceKey(line: PlanChargeLine): string {
-	return line.source === 'credit' ? 'settingsUsage.charges.fromCredit' : 'settingsUsage.charges.fromPlan';
 }
 
 /** Cents as dollars, in the reader's locale. */

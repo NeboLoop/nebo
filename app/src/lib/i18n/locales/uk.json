@@ -1699,6 +1699,7 @@
 			"fromPlan": "З вашого плану",
 			"fromCredit": "З поповнень",
 			"loadMore": "Завантажити ще",
+			"breakdownLink": "Переглянути, на що пішов баланс",
 			"phoneNumber": "Номер телефону {number}",
 			"phoneNumberPlain": "Номер телефону",
 			"calls": "Дзвінки · {minutes} хв",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "Хмарний комп'ютер",
 			"cloudComputerNamed": "Хмарний комп'ютер · {name}",
 			"memory": "Пам'ять",
-			"media": "Медіа"
+			"media": "Медіа",
+			"email": "Електронна пошта"
 		}
 	},
 	"settingsFamily": {

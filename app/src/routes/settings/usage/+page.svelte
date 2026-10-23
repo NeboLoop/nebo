@@ -6,7 +6,7 @@
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import * as api from '$lib/api/nebo';
   import type { AccountStatusResponse, NeboAIBillingSubscriptionResponse, PlanChargeLine } from '$lib/api/neboComponents';
-  import { chargeText, sourceKey, formatCents, formatChargeDate, hasMore } from '$lib/planCharges';
+  import { chargeText, formatCents, formatChargeDate, hasMore } from '$lib/planCharges';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
 
@@ -277,7 +277,7 @@
       </div>
     </section>
 
-    <!-- Charged to your plan: dollar lines drawn from the plan, then credit -->
+    <!-- Charged to your plan: dollar lines drawn from the balance; the full breakdown is on the web -->
     <section>
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settingsUsage.charges.title')}</h3>
@@ -299,7 +299,7 @@
               <li class="flex items-center justify-between gap-4 py-2.5">
                 <div class="min-w-0">
                   <p class="text-sm text-base-content truncate">{chargeTitle(line)}</p>
-                  <p class="text-xs text-base-content/50">{formatChargeDate(line.at, $locale)} · {$t(sourceKey(line))}</p>
+                  <p class="text-xs text-base-content/50">{formatChargeDate(line.at, $locale)}</p>
                 </div>
                 <span class="text-sm font-medium text-base-content font-mono tabular-nums shrink-0">{formatCents(line.amountCents, $locale)}</span>
               </li>
@@ -315,6 +315,7 @@
             <p class="text-xs text-base-content/70 mt-2">{$t('settingsUsage.charges.loadFailed')}</p>
           {/if}
         {/if}
+        <button type="button" onclick={openWebBilling} class="text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none mt-3">{$t('settingsUsage.charges.breakdownLink')}</button>
       </div>
     </section>
 

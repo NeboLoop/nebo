@@ -1699,6 +1699,7 @@
 			"fromPlan": "来自你的套餐",
 			"fromCredit": "来自充值",
 			"loadMore": "加载更多",
+			"breakdownLink": "查看余额的去向",
 			"phoneNumber": "电话号码 {number}",
 			"phoneNumberPlain": "电话号码",
 			"calls": "通话 · {minutes} 分钟",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "云电脑",
 			"cloudComputerNamed": "云电脑 · {name}",
 			"memory": "记忆",
-			"media": "媒体"
+			"media": "媒体",
+			"email": "电子邮件"
 		}
 	},
 	"settingsFamily": {

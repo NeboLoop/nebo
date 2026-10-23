@@ -1699,6 +1699,7 @@
 			"fromPlan": "Từ gói của bạn",
 			"fromCredit": "Từ khoản nạp thêm",
 			"loadMore": "Tải thêm",
+			"breakdownLink": "Xem số dư của bạn đã dùng vào đâu",
 			"phoneNumber": "Số điện thoại {number}",
 			"phoneNumberPlain": "Số điện thoại",
 			"calls": "Cuộc gọi · {minutes} phút",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "Máy tính đám mây",
 			"cloudComputerNamed": "Máy tính đám mây · {name}",
 			"memory": "Bộ nhớ",
-			"media": "Phương tiện"
+			"media": "Phương tiện",
+			"email": "Email"
 		}
 	},
 	"settingsFamily": {

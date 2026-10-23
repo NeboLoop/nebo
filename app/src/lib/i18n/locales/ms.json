@@ -1699,6 +1699,7 @@
 			"fromPlan": "Daripada pelan anda",
 			"fromCredit": "Daripada tambah nilai",
 			"loadMore": "Muatkan lagi",
+			"breakdownLink": "Lihat ke mana baki anda digunakan",
 			"phoneNumber": "Nombor telefon {number}",
 			"phoneNumberPlain": "Nombor telefon",
 			"calls": "Panggilan · {minutes} min",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "Komputer awan",
 			"cloudComputerNamed": "Komputer awan · {name}",
 			"memory": "Memori",
-			"media": "Media"
+			"media": "Media",
+			"email": "E-mel"
 		}
 	},
 	"settingsFamily": {

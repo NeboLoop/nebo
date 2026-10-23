@@ -1699,6 +1699,7 @@
 			"fromPlan": "Dari paket Anda",
 			"fromCredit": "Dari isi ulang",
 			"loadMore": "Muat lainnya",
+			"breakdownLink": "Lihat ke mana saldo Anda terpakai",
 			"phoneNumber": "Nomor telepon {number}",
 			"phoneNumberPlain": "Nomor telepon",
 			"calls": "Panggilan · {minutes} mnt",
@@ -1708,7 +1709,8 @@
 			"cloudComputer": "Komputer cloud",
 			"cloudComputerNamed": "Komputer cloud · {name}",
 			"memory": "Memori",
-			"media": "Media"
+			"media": "Media",
+			"email": "Email"
 		}
 	},
 	"settingsFamily": {
