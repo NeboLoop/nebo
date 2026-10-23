@@ -374,6 +374,7 @@ async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_
         }
         store.create_agent(id, None, name, "An app", "", "", None, None).unwrap();
         store.set_agent_app_fields(id, true, Some(ui.to_str().unwrap()), None, None).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
     };
     app(
         "app-league",
