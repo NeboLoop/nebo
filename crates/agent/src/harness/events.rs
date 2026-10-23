@@ -545,9 +545,10 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             "unfinished_message",
             format!(
                 "The owner's message stops mid-sentence (it ends \"…{tail}\"), the way dictation does when it cuts \
-                 out, so more is likely coming. Unless what they want is already clear, don't start the work or spend \
-                 on anything (generating media, paid calls) yet: say in one short sentence that it looks cut off, and \
-                 wait for the rest."
+                 out. When what they want is clear from what they wrote, act on it: a missing final word or \
+                 period is not a reason to wait. Only when the meaning itself is missing, don't start the work or \
+                 spend on anything (generating media, paid calls) yet: say in one short sentence that it looks cut \
+                 off, and wait for the rest."
             ),
         ),
         TurnEvent::UnfinishedMessage { tail, continues: true } => (

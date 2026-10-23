@@ -64,6 +64,11 @@ struct Inner {
     send_tx: Option<mpsc::Sender<Vec<u8>>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     api: Option<Arc<NeboAIApi>>,
+    /// Why `disconnect` is closing the current connection, read by its write
+    /// loop for the close frame it sends last.
+    closing: Arc<std::sync::Mutex<Option<crate::reconnect::Disconnect>>>,
+    /// The current connection's write loop.
+    writer: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// NeboAI WebSocket CommPlugin.
@@ -136,6 +141,8 @@ impl NeboAIPlugin {
                 send_tx: None,
                 cancel: None,
                 api: None,
+                closing: Default::default(),
+                writer: None,
             }),
             handler: std::sync::RwLock::new(None),
             bot_id: RwLock::new(String::new()),
@@ -490,10 +497,11 @@ impl NeboAIPlugin {
     }
 
 
-    /// Queue a raw encoded frame for sending.
+    /// Queue a raw encoded frame for sending. The sender is taken out of
+    /// the lock first: a full queue (a stalled socket) must never keep
+    /// `disconnect` from the lock.
     async fn queue_send(&self, data: Vec<u8>) -> Result<(), CommError> {
-        let inner = self.inner.read().await;
-        let tx = inner.send_tx.as_ref().ok_or(CommError::NotConnected)?;
+        let tx = self.inner.read().await.send_tx.clone().ok_or(CommError::NotConnected)?;
         tx.send(data)
             .await
             .map_err(|_| CommError::NotConnected)
@@ -616,7 +624,7 @@ impl CommPlugin for NeboAIPlugin {
         // continues sending pings even after its send channel closes), creating
         // duplicate WebSocket connections to the gateway.
         if self.is_connected() {
-            self.disconnect().await.ok();
+            self.disconnect(None).await.ok();
         } else {
             // Even if is_connected() returns false, clean up any stale state
             // (e.g., cancelled token, dead send channel) so the new connection
@@ -836,11 +844,13 @@ impl CommPlugin for NeboAIPlugin {
             *maps = ConvMaps::default();
         }
 
+        let closing = Arc::new(std::sync::Mutex::new(None));
         {
             let mut inner = self.inner.write().await;
             inner.send_tx = Some(send_tx.clone());
             inner.cancel = Some(cancel.clone());
             inner.api = Some(api);
+            inner.closing = closing.clone();
         }
         self.connected_since.store(unix_ms(), Ordering::SeqCst);
         self.connected.store(true, Ordering::SeqCst);
@@ -890,9 +900,10 @@ impl CommPlugin for NeboAIPlugin {
         // Spawn write loop
         let write_cancel = cancel.clone();
         let devlog_for_write = self.devlog.read().await.clone();
-        tokio::spawn(async move {
-            write_loop(write, send_rx, write_cancel, devlog_for_write).await;
+        let writer = tokio::spawn(async move {
+            write_loop(write, send_rx, write_cancel, closing, devlog_for_write).await;
         });
+        self.inner.write().await.writer = Some(writer);
 
         // Spawn join processor — writes to self.conv_maps (shared with query methods)
         let maps_for_task = self.conv_maps.clone();
@@ -919,16 +930,31 @@ impl CommPlugin for NeboAIPlugin {
         Ok(())
     }
 
-    async fn disconnect(&self) -> Result<(), CommError> {
+    async fn disconnect(&self, how: Option<crate::reconnect::Disconnect>) -> Result<(), CommError> {
         if let Some(ref dl) = *self.devlog.read().await {
             dl.event("DISCONNECT");
         }
         self.connected.store(false, Ordering::SeqCst);
-        let mut inner = self.inner.write().await;
-        if let Some(cancel) = inner.cancel.take() {
-            cancel.cancel();
+        let writer = {
+            let mut inner = self.inner.write().await;
+            *inner.closing.lock().unwrap_or_else(|e| e.into_inner()) = how;
+            if let Some(cancel) = inner.cancel.take() {
+                cancel.cancel();
+            }
+            inner.send_tx = None;
+            inner.writer.take()
+        };
+        // A close that names its reason must be on the wire before the
+        // caller goes on: the computer sleeps right after it. A write loop
+        // stuck on a full socket never gets to it: it is stopped at the
+        // limit, so the caller is never held through the sleep.
+        if how.and_then(crate::reconnect::Disconnect::close_frame).is_some()
+            && let Some(mut writer) = writer
+            && tokio::time::timeout(crate::reconnect::SLEEP_CLOSE_LIMIT, &mut writer).await.is_err()
+        {
+            writer.abort();
+            warn!("neboai: the sleep close did not go out in time");
         }
-        inner.send_tx = None;
         info!("neboai disconnected");
         Ok(())
     }
@@ -1951,6 +1977,7 @@ async fn write_loop(
     mut write: SplitSink<WsStream, WsMessage>,
     mut send_rx: mpsc::Receiver<Vec<u8>>,
     cancel: tokio_util::sync::CancellationToken,
+    closing: Arc<std::sync::Mutex<Option<crate::reconnect::Disconnect>>>,
     devlog: Option<DevLog>,
 ) {
     let lease = crate::lease::process();
@@ -2037,7 +2064,9 @@ async fn write_loop(
         }
     }
     // A drained process hands its lease back before it goes, so the next
-    // process need not wait out the TTL.
+    // process need not wait out the TTL. A computer going to sleep keeps
+    // it: this same process comes back on wake, and the lease lapses on its
+    // TTL meanwhile if it sleeps long.
     if let Some(frame) = lease_release_frame(lease) {
         let sent = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -2051,10 +2080,20 @@ async fn write_loop(
         }
     }
     // Send WebSocket Close frame so the gateway drops this connection immediately
-    // (rather than waiting for its keepalive timeout to expire).
+    // (rather than waiting for its keepalive timeout to expire). A close for
+    // sleep says so (1001 "sleep"): the hub shows the bot offline at once.
+    let frame = closing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .and_then(crate::reconnect::Disconnect::close_frame)
+        .map(|(code, reason)| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            code: code.into(),
+            reason: reason.into(),
+        });
     let close_result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        write.send(WsMessage::Close(None)),
+        write.send(WsMessage::Close(frame)),
     )
     .await;
     if let Some(ref dl) = devlog {
@@ -2321,7 +2360,7 @@ mod tests {
             Some(uuid_from_bytes(&chat_conv)),
             "the JOIN result maps the stream it names"
         );
-        plugin.disconnect().await.unwrap();
+        plugin.disconnect(None).await.unwrap();
     }
 
     /// The comms close code is read in every build: a hub drain (1012) is
@@ -2371,6 +2410,107 @@ mod tests {
         assert_eq!(ended_with(Some(CloseCode::Normal)).await, Disconnect::Dropped);
         assert_eq!(ended_with(Some(CloseCode::Error)).await, Disconnect::Dropped);
         assert_eq!(ended_with(None).await, Disconnect::Cut);
+    }
+
+    /// Closing for sleep sends 1001 "sleep", so the hub shows the bot
+    /// offline before the computer sleeps; any other close the bot makes
+    /// stays a bare close frame.
+    #[tokio::test]
+    async fn closing_for_sleep_sends_1001() {
+        // A hub that grants the connection and reports the close frame it
+        // gets (code, reason), or None for a bare one.
+        async fn close_seen(how: Option<crate::reconnect::Disconnect>) -> Option<(u16, String)> {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (seen_tx, seen) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let _ = ws.next().await; // CONNECT
+                ws.send(server_frame(frame::TYPE_AUTH_OK, [0; 16], 0, serde_json::json!({"ok": true})))
+                    .await
+                    .unwrap();
+                while let Some(Ok(msg)) = ws.next().await {
+                    if let WsMessage::Close(frame) = msg {
+                        let _ = seen_tx.send(frame.map(|f| (u16::from(f.code), f.reason.to_string())));
+                        break;
+                    }
+                }
+            });
+            let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+            let config = HashMap::from([
+                ("gateway".to_string(), format!("ws://{addr}/ws")),
+                ("bot_id".to_string(), "bot-under-test".to_string()),
+                ("token".to_string(), "test-token".to_string()),
+                ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+            ]);
+            plugin.connect(config).await.unwrap();
+            plugin.disconnect(how).await.unwrap();
+            tokio::task::spawn_blocking(move || seen.recv_timeout(std::time::Duration::from_secs(5)))
+                .await
+                .unwrap()
+                .expect("a close frame")
+        }
+
+        assert_eq!(
+            close_seen(Some(crate::reconnect::Disconnect::Sleep)).await,
+            Some((1001, "sleep".to_string()))
+        );
+        assert_eq!(close_seen(None).await, None);
+    }
+
+    /// A hub that stopped reading, with the send queue full and senders
+    /// waiting behind it: closing for sleep still returns within its limit,
+    /// so the watcher is never stuck through the sleep, and the senders are
+    /// let go.
+    #[tokio::test]
+    async fn closing_for_sleep_returns_in_time_when_the_socket_is_stalled() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _ = ws.next().await; // CONNECT
+            ws.send(server_frame(frame::TYPE_AUTH_OK, [0; 16], 0, serde_json::json!({"ok": true})))
+                .await
+                .unwrap();
+            // Then read nothing more, holding the socket open.
+            futures::future::pending::<()>().await;
+        });
+        let plugin = Arc::new(NeboAIPlugin::new(Arc::new(MemOffsets::default())));
+        let config = HashMap::from([
+            ("gateway".to_string(), format!("ws://{addr}/ws")),
+            ("bot_id".to_string(), "bot-under-test".to_string()),
+            ("token".to_string(), "test-token".to_string()),
+            ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+        ]);
+        plugin.connect(config).await.unwrap();
+
+        // More than the queue holds, each larger than the socket takes.
+        let flood = {
+            let plugin = plugin.clone();
+            tokio::spawn(async move {
+                for _ in 0..400 {
+                    if plugin.queue_send(vec![0u8; 256 * 1024]).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(!flood.is_finished(), "the queue is full and a sender waits");
+
+        let limit = crate::reconnect::SLEEP_CLOSE_LIMIT;
+        let started = std::time::Instant::now();
+        tokio::time::timeout(limit * 2, plugin.disconnect(Some(crate::reconnect::Disconnect::Sleep)))
+            .await
+            .expect("the sleep close returns")
+            .unwrap();
+        assert!(started.elapsed() < limit + std::time::Duration::from_millis(500), "{:?}", started.elapsed());
+        tokio::time::timeout(std::time::Duration::from_secs(2), flood)
+            .await
+            .expect("the waiting senders are let go")
+            .unwrap();
     }
 
     /// The hub's refusal of a removed bot is `Revoked`; any other refusal
@@ -2534,7 +2674,7 @@ mod tests {
                 "a followed redirect is not a disconnect"
             );
             assert_eq!(seen.load(Ordering::SeqCst), 0, "nothing reaches the owner");
-            plugin.disconnect().await.ok();
+            plugin.disconnect(None).await.ok();
         }
     }
 
@@ -2556,7 +2696,7 @@ mod tests {
         plugin.connect(cell_config(&old_url)).await.unwrap();
         assert_eq!(old.load(Ordering::SeqCst), 1, "the old cell is not dialed again");
         assert_eq!(home.load(Ordering::SeqCst), 1);
-        plugin.disconnect().await.ok();
+        plugin.disconnect(None).await.ok();
     }
 
     /// Cells that keep pointing at each other are followed twice, then the
@@ -2684,7 +2824,7 @@ mod tests {
                 let spaced = connects[n + 1].1 - connects[n].1;
                 assert!(spaced >= waits[n], "dial {} came {spaced:?} after the last, before its {:?} wait", n + 1, waits[n]);
             }
-            plugin.disconnect().await.ok();
+            plugin.disconnect(None).await.ok();
         }
 
         // Read by the reason code: busy, a refused token, anything else.

@@ -6099,10 +6099,12 @@ dependencies = [
  "futures",
  "hex",
  "hkdf",
+ "hmac",
  "libc",
  "nebo-comm",
  "nebo-command",
  "nebo-config",
+ "nebo-proto",
  "nebo-tls",
  "nebo-types",
  "notify",
@@ -6119,8 +6121,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonic",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6196,7 +6200,6 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
- "hyper-util",
  "json5 0.4.1",
  "jsonwebtoken",
  "libc",
@@ -6254,6 +6257,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "windows-sys 0.61.2",
+ "zbus",
  "zip 8.6.0",
 ]
 

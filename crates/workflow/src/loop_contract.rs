@@ -78,8 +78,6 @@ pub struct LoopOutcome {
     pub text: String,
     /// Input+output tokens this turn-loop consumed (run totals).
     pub total_tokens: u32,
-    /// Output tokens only (run reporting).
-    pub output_tokens: u32,
     /// The turn read outside text (web, mail, channel, document, phone or a
     /// coworker relaying them): the engine-stamped provenance of the run was
     /// not empty. Its text is then raw tool output, which the step evaluator

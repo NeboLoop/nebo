@@ -3,6 +3,7 @@
   import { t } from 'svelte-i18n';
   import { devMode, appDeveloperMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
+  import { vars } from '$lib/actions/vars';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
@@ -63,7 +64,8 @@
   import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
-  import { verifications, trackConversation, onMessage, inProgress } from '$lib/stores/verifications';
+  import { verifications, trackConversation, onMessage, inProgress, askOf, answerWaiting, loopQuestion as loopQuestionOf } from '$lib/stores/verifications';
+  import type { VerificationView } from '$lib/api/neboComponents';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
   import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
   import { backgroundNotices, belongsTo } from '$lib/stores/background';
@@ -130,7 +132,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; shape?: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, focusMessageId = '', readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -160,6 +162,9 @@
     /** Starter text for the composer (prefill, don't send). */
     composerPrefill?: string;
     onprefilled?: () => void;
+    /** The message this conversation was opened at (an Inbox item's
+     *  `?message=`): scrolled into view and marked once it has rendered. */
+    focusMessageId?: string;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -1060,6 +1065,9 @@
 
   // Scroll state
   let messagesContainer = $state<HTMLDivElement | null>(null);
+  /** The floating area's height (its fade, the goal and notices, the
+   *  composer): the room the scroller leaves at its end. */
+  let floatHeight = $state(0);
   let messagesContent = $state<HTMLDivElement | null>(null);
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
@@ -1097,7 +1105,11 @@
       return 0;
     }
     const usedByTurn = content.getBoundingClientRect().bottom - target.getBoundingClientRect().top;
-    const room = Math.max(0, Math.round(scroller.clientHeight - usedByTurn - TURN_TOP_PAD * 2));
+    // What can be seen is the scroller less what floats over its end (the
+    // composer and its fade): the reply never streams behind the composer.
+    const fade = parseFloat(getComputedStyle(scroller).getPropertyValue('--chat-fade')) || 0;
+    const seen = scroller.clientHeight - floatHeight - fade;
+    const room = Math.max(0, Math.round(seen - usedByTurn - TURN_TOP_PAD * 2));
     turnSpacerHeight = room;
     return room;
   }
@@ -1265,6 +1277,7 @@
           requestAnimationFrame(() => {
             scrollingProgrammatically = false;
             programmaticUntil = 0;
+            revealFocused();
           });
           return;
         }
@@ -1272,6 +1285,30 @@
       };
       requestAnimationFrame(pin);
     }
+  });
+
+  // The message the conversation was opened at: brought into view once,
+  // after the opening scroll has settled at the end, and again when another
+  // one is asked for while the conversation is open. Follow stays on only
+  // when it sits at the end anyway.
+  let revealedMessageId = '';
+  function revealFocused() {
+    const id = focusMessageId;
+    const scroller = messagesContainer;
+    if (!id || id === revealedMessageId || !scroller || !messagesContent) return;
+    const el = messagesContent.querySelector<HTMLElement>(`[data-message-ids~="${CSS.escape(id)}"]`);
+    if (!el) return;
+    revealedMessageId = id;
+    scrollingProgrammatically = true;
+    scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - TURN_TOP_PAD;
+    lastScrollTop = scroller.scrollTop;
+    autoScrollEnabled = distanceFromBottom(scroller) <= NEAR_BOTTOM_PX;
+    requestAnimationFrame(() => { scrollingProgrammatically = false; });
+  }
+  $effect(() => {
+    void focusMessageId;
+    void groupedMessages.length;
+    if (initialScrollDone) requestAnimationFrame(revealFocused);
   });
 
   // Follow ("sticky") is an INTENT bit:
@@ -1390,6 +1427,17 @@
     autoScrollEnabled = true;
     showScrollButton = false;
     (onsend as ((t: string, f: typeof files, ...r: unknown[]) => void) | undefined)?.(text, files, ...rest);
+  }
+
+  /** Answer the question verification `v` waits on from its sheet, once,
+   *  and confirm the bot took it. */
+  async function answerVerification(v: VerificationView, value: string): Promise<boolean> {
+    const { listWaitingAsks } = await import('$lib/api/nebo');
+    return answerWaiting(
+      askOf(v)?.question,
+      (requestId) => onasksubmit?.(requestId, value),
+      async () => (await listWaitingAsks())?.asks ?? [],
+    );
   }
 
   // Dropzone state
@@ -1529,6 +1577,14 @@
   // A question waits on the owner's words: the composer is where he
   // answers it.
   const answering = $derived(isLoading && messages.some((m) => m.type === 'ask' && m.response == null && !m.cancelled && takesWords(m.widgets)));
+  /** The open question the verify loop waits on in this conversation: the
+   *  ask whose question a waiting verification holds. The composer says it
+   *  is answering it; what he types goes as his message, and the bot reads it
+   *  against the question (`handlers::asks`), the one way words answer. */
+  const loopQuestion = $derived.by(() => {
+    const m = loopQuestionOf(messages, $verifications, chatSessionKey);
+    return m?.type === 'ask' ? m : null;
+  });
   /** The working line's words: the running call's, else the turn's status. */
   const workingLine = $derived(runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working'));
 
@@ -1589,7 +1645,7 @@
 >
   <!-- Dropzone overlay -->
   {#if isDragging}
-    <div class="absolute inset-0 z-30 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
+    <div class="absolute inset-0 z-40 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
       <div class="text-primary font-medium text-sm">{$t('chat.dropFilesHere')}</div>
     </div>
   {/if}
@@ -1791,13 +1847,17 @@
   {/if}
 
 
+  <!-- The conversation fills the column; the composer floats over its end
+       (chat-floating), the messages fading out behind it. Its measured
+       height (`--chat-float`) is the room the scroller leaves at its end. -->
+  <div class="chat-stage" use:vars={{ '--chat-float': floatHeight }}>
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
-    <div class="flex-1 flex items-center justify-center p-6">
+    <div class="flex-1 flex items-center justify-center p-6 chat-under-float">
       <span class="loading loading-spinner loading-md text-base-content/70"></span>
     </div>
   {:else if !hasMessages && emptyTitle}
-    <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
+    <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6 chat-under-float">
       {#if emptyIcon}
         <div class="w-12 h-12 rounded-box flex items-center justify-center font-mono text-xl font-semibold bg-primary text-primary-content">{emptyIcon}</div>
         <div class="text-base font-semibold">{emptyTitle}</div>
@@ -1810,10 +1870,10 @@
       {#if emptyActions}{@render emptyActions()}{/if}
     </div>
   {:else}
-  <div class="flex-1 relative min-h-0">
+  <div class="chat-scroll-frame">
     <!-- Scroll to bottom button -->
     {#if showScrollButton}
-      <div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
+      <div class="chat-scroll-button">
         <button
           type="button"
           onclick={scrollToBottom}
@@ -1824,7 +1884,7 @@
         </button>
       </div>
     {/if}
-  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="chat-scroller h-full overflow-y-auto p-[18px_24px]">
+  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="chat-scroller h-full overflow-y-auto">
   <div bind:this={messagesContent} class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
     {#if isLoadingMore}
       <div class="flex justify-center py-3">
@@ -2297,7 +2357,8 @@
           {@const blocks = blocksOf(segs, keyId, isTurnEnd)}
           {@const answer = turnText(blocks)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
-          <div class="max-w-[640px] mt-3">
+          {@const segIds = segs.flatMap((sg) => (sg.id ? [sg.id] : []))}
+          <div class="max-w-[640px] mt-3 {focusMessageId && segIds.includes(focusMessageId) ? 'chat-turn-focus' : ''}" data-message-ids={segIds.join(' ')}>
             {#if msg.delegateAgentName}
               {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
               <div class="flex items-center gap-1.5 mb-1">
@@ -2376,7 +2437,7 @@
             </div>
           {/if}
           {#each segs.flatMap((sg) => (sg.id ? onMessage($verifications, sg.id) : [])) as v (v.id)}
-            <VerifiedBadge verification={v} />
+            <VerifiedBadge verification={v} onanswer={answerVerification} />
           {/each}
           <!-- Inline artifact cards for this message (populated by agent tool results) -->
           {#each artifacts.filter(a => segs.some((sg) => sg.id === a.messageId)) as artifact}
@@ -2450,8 +2511,8 @@
         {$t(`background.notice.${n.kind}`, { values: { what: n.task.title || $t('background.heartbeat') } })}
       </div>
     {/each}
-    <!-- A conversation with a composer shows its working line above the
-         composer (BackgroundStatus); one watched from outside shows it here. -->
+    <!-- A conversation with a composer shows its working line as its last
+         row (BackgroundStatus, below); one watched from outside shows it here. -->
     {#if readOnly && isLoading && groupedMessages.length > 0}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2 min-w-0">
         <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
@@ -2466,6 +2527,12 @@
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
       </div>
     {/if}
+    <!-- The last row, after the newest message: the turn's working line,
+         the running tasks and the code work being checked. It scrolls with
+         the messages. -->
+    {#if !readOnly}
+      <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} onanswer={answerVerification} />
+    {/if}
   </div>
   <!-- Reserved room for the streaming reply — see turnSpacerHeight. Outside the
        observed content wrapper so spacer changes don't re-fire the observer. -->
@@ -2476,6 +2543,7 @@
   </div>
   {/if}
 
+  <div class="chat-floating" bind:clientHeight={floatHeight}>
   <!-- Agreed goal: what the work continues toward until a check confirms it -->
   {#if goal}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
@@ -2588,13 +2656,12 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
-    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} />
     <ChatComposer
       {agentName}
       {agentId}
       {threadId}
       {sessionId}
-      placeholder={answering ? $t('chat.typeYourAnswer') : placeholder}
+      placeholder={loopQuestion ? $t('verify.answering', { values: { question: loopQuestion.prompt.trim() } }) : answering ? $t('chat.typeYourAnswer') : placeholder}
       {allAgents}
       onsend={handleSend}
       {onstop}
@@ -2607,6 +2674,8 @@
     />
   </div>
   {/if}
+  </div>
+  </div>
 </div>
 
 <!-- Resize handle + Creations panel -->

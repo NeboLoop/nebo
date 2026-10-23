@@ -232,7 +232,7 @@ Nebo is a Rust workspace — one binary, no runtime dependencies beyond SQLite.
 
 Nebo has a sandboxed app platform. Developers build `.napp` packages that extend Nebo with new tools, channels, and integrations.
 
-- **Sandboxed** — apps run in isolated directories with gRPC over Unix sockets
+- **Sandboxed** — apps run in isolated directories and serve gRPC on loopback, answering only Nebo's per-launch token
 - **Deny-by-default permissions** — apps only access what their manifest declares
 - **Signed** — ED25519 signature verification for every app binary and manifest
 - **Compiled-only** — only native binaries accepted (Go, Rust, C, Zig). No interpreted languages.

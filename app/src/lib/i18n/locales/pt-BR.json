@@ -4464,7 +4464,7 @@
 			"needs_decision": "Precisa da sua decisão: {items}",
 			"stopped_by_owner": "Interrompido por você; problemas em aberto: {open, plural, other {#}}",
 			"stalled": "Parou de avançar; problemas em aberto: {open, plural, other {#}}",
-			"no_checks": "Nenhum teste ou build pôde rodar",
+			"no_checks": "Nada provou que funciona: o projeto não tem build, verificação de tipos nem testes para rodar",
 			"landed_unreviewed": "Integrado sem passar na revisão, por sua escolha",
 			"edits_in_way": "Ainda não integrado: suas edições ainda estão no caminho",
 			"kept_own_edits": "Não integrado: você manteve suas próprias edições, e a mudança espera na cópia dela",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} s"
-		}
+		},
+		"answering": "Respondendo: {question}",
+		"tellIt": "Diga o que fazer",
+		"sending": "Enviando…",
+		"sendFailed": "Sua resposta não foi enviada."
+	},
+	"appPermissions": {
+		"title": "{name} quer fazer mais",
+		"intro": "Só diga sim se você confia neste app. Você pode mudar de ideia depois nas configurações do app.",
+		"origin": "Este app não foi feito aqui. Alguém de fora da sua empresa o criou.",
+		"wantsFiles": "{name} quer ver os arquivos em {target}",
+		"wantsWeb": "{name} quer falar com {target}",
+		"wantsWebAny": "{name} quer falar com qualquer site",
+		"wantsHelper": "{name} quer pedir ajuda a {target}",
+		"wantsHelperAny": "{name} quer pedir ajuda a qualquer um dos seus funcionários",
+		"wantsPlugin": "{name} quer usar {target}",
+		"canFiles": "Ver os arquivos em {target}",
+		"canWeb": "Falar com {target}",
+		"canWebAny": "Falar com qualquer site",
+		"canHelper": "Pedir ajuda a {target}",
+		"canHelperAny": "Pedir ajuda a qualquer um dos seus funcionários",
+		"canPlugin": "Usar {target}",
+		"allow": "Permitir",
+		"deny": "Não permitir",
+		"off": "Não",
+		"notNow": "Agora não",
+		"sectionTitle": "O que este app pode fazer",
+		"sectionHint": "Este app veio do marketplace. Ele só pode fazer o que você permitir.",
+		"ownHint": "Você criou este app aqui, então ele pode fazer o que pede.",
+		"notAnswered": "Sem resposta"
 	}
 }

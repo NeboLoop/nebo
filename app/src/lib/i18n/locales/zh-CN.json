@@ -4464,7 +4464,7 @@
 			"needs_decision": "需要你的决定：{items}",
 			"stopped_by_owner": "已由你停止，未解决的问题：{open, plural, other {# 个}}",
 			"stalled": "不再有进展，未解决的问题：{open, plural, other {# 个}}",
-			"no_checks": "没有可运行的测试或构建",
+			"no_checks": "没有任何检查证明它能正常工作：该项目没有可运行的构建、类型检查或测试",
 			"landed_unreviewed": "未通过审查，按你的选择已并入",
 			"edits_in_way": "尚未并入：你的编辑仍有冲突",
 			"kept_own_edits": "未并入：你保留了自己的编辑，此更改在其副本中等待",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m}分{s}秒"
-		}
+		},
+		"answering": "正在回答：{question}",
+		"tellIt": "告诉它怎么做",
+		"sending": "正在发送…",
+		"sendFailed": "你的回答没有发送出去。"
+	},
+	"appPermissions": {
+		"title": "{name} 想做更多事",
+		"intro": "只有信任这个应用时才允许。之后可以在应用设置中更改。",
+		"origin": "这个应用不是在这里制作的，由你公司以外的人制作。",
+		"wantsFiles": "{name} 想查看 {target} 中的文件",
+		"wantsWeb": "{name} 想与 {target} 通信",
+		"wantsWebAny": "{name} 想与任何网站通信",
+		"wantsHelper": "{name} 想请 {target} 帮忙",
+		"wantsHelperAny": "{name} 想请你的任何员工帮忙",
+		"wantsPlugin": "{name} 想使用 {target}",
+		"canFiles": "查看 {target} 中的文件",
+		"canWeb": "与 {target} 通信",
+		"canWebAny": "与任何网站通信",
+		"canHelper": "请 {target} 帮忙",
+		"canHelperAny": "请你的任何员工帮忙",
+		"canPlugin": "使用 {target}",
+		"allow": "允许",
+		"deny": "不允许",
+		"off": "关闭",
+		"notNow": "以后再说",
+		"sectionTitle": "这个应用可以做什么",
+		"sectionHint": "这个应用来自应用市场，只能做你允许的事。",
+		"ownHint": "这个应用是在这里创建的，所以可以做它请求的事。",
+		"notAnswered": "未回答"
 	}
 }

@@ -74,7 +74,7 @@ impl CommPlugin for LoopbackPlugin {
         Ok(())
     }
 
-    async fn disconnect(&self) -> Result<(), CommError> {
+    async fn disconnect(&self, _how: Option<crate::reconnect::Disconnect>) -> Result<(), CommError> {
         let mut inner = self.inner.write().unwrap();
         inner.connected = false;
         inner.topics.clear();
@@ -161,7 +161,7 @@ mod tests {
         assert!(plugin.is_connected());
 
         plugin.subscribe("test-topic").await.unwrap();
-        plugin.disconnect().await.unwrap();
+        plugin.disconnect(None).await.unwrap();
         assert!(!plugin.is_connected());
     }
 

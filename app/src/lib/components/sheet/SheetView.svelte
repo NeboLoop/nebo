@@ -17,14 +17,14 @@
    *
    * Styling: static styling is Tailwind/DaisyUI classes. Per-cell geometry and
    * the file's own colours are data, set as CSS custom properties through the
-   * `vars` action (see lib/sheet/vars.ts for the documented exception).
+   * `vars` action (see lib/actions/vars.ts for the documented exception).
    */
   import { onDestroy, onMount, tick } from 'svelte';
   import { t } from 'svelte-i18n';
   import { SheetApiError, editSheet, getSheet, saveSheet } from '$lib/sheet/client';
   import { sheetFromFile } from '$lib/sheet/sheetjs';
   import { beginSave, endSave, setPendingSave } from '$lib/sheet/pending';
-  import { vars } from '$lib/sheet/vars';
+  import { vars } from '$lib/actions/vars';
   import {
     EditHistory,
     PAGE_ROWS,

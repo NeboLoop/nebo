@@ -57,11 +57,6 @@ impl Folder {
     }
 }
 
-/// Where Nebo keeps its working copies of projects (`worktree::copies_root`).
-pub fn copies_dir() -> Option<PathBuf> {
-    crate::worktree::copies_root().ok()
-}
-
 /// The code folder `path` is in, if any (see the module docs). `app_pages`
 /// are the page folders of the apps the caller may work on.
 pub fn code_folder(path: &Path, app_pages: &[PathBuf]) -> Option<Folder> {
@@ -69,7 +64,7 @@ pub fn code_folder(path: &Path, app_pages: &[PathBuf]) -> Option<Folder> {
     if let Some(pages) = app_pages.iter().find(|p| path.starts_with(p)) {
         return Some(Folder::AppPages(pages.clone()));
     }
-    if let Some(copies) = copies_dir()
+    if let Ok(copies) = crate::worktree::copies_root()
         && let Ok(rest) = path.strip_prefix(&copies)
     {
         // `<project>/<id>/...`: the copy is the two segments below.
@@ -171,7 +166,7 @@ mod tests {
             assert_eq!(code_folder(&home.join("files/notes.md"), &[]), None);
 
             // A working copy is the project it copies.
-            let copies = copies_dir().unwrap();
+            let copies = crate::worktree::copies_root().unwrap();
             let copy = copies.join("site/v-1");
             std::fs::create_dir_all(copy.join("src")).unwrap();
             assert_eq!(

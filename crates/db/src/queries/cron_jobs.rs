@@ -14,7 +14,7 @@ use types::NeboError;
 /// The job row plus its derived columns. Every read goes through this.
 const JOB_SELECT: &str = "SELECT j.id, j.name, j.schedule, j.command, j.task_type, j.message, j.deliver, j.instructions,
         j.enabled, j.created_at, j.agent_id, j.channel_ctx_json, j.overlap_policy,
-        j.created_by, j.created_by_run, j.created_in, j.reason,
+        j.created_by, j.created_by_run, j.created_in, j.created_in_chat, j.reason,
         (SELECT datetime(MAX(r.created_at), 'unixepoch') FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS last_run,
         (SELECT COUNT(*) FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS run_count,
         (SELECT r.error FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_error
@@ -122,17 +122,19 @@ impl Store {
         }
         conn.execute(
             "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy,
-                                    created_by, created_by_run, created_in, reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'), ?12, ?13, ?14, ?15)",
+                                    created_by, created_by_run, created_in, reason, created_in_chat)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'), ?12, ?13, ?14, ?15, ?16)",
             params![
                 name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json,
                 overlap.map(OverlapPolicy::as_str),
-                provenance.created_by.as_str(), provenance.run_id, provenance.session_key, provenance.reason
+                provenance.created_by.as_str(), provenance.run_id, provenance.session_key, provenance.reason,
+                provenance.chat_id
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         let id = conn.last_insert_rowid();
         drop(conn);
+        self.timers_changed();
         self.get_cron_job(id)?
             .ok_or_else(|| NeboError::Database("cron job vanished after insert".into()))
     }
@@ -160,8 +162,8 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy,
-                                    created_by, created_by_run, created_in, reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'), ?12, ?13, ?14, ?15)
+                                    created_by, created_by_run, created_in, reason, created_in_chat)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'), ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(name) DO UPDATE SET
                 schedule = excluded.schedule, command = excluded.command,
                 task_type = excluded.task_type, message = excluded.message,
@@ -172,10 +174,12 @@ impl Store {
             params![
                 name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json,
                 overlap.map(OverlapPolicy::as_str),
-                provenance.created_by.as_str(), provenance.run_id, provenance.session_key, provenance.reason
+                provenance.created_by.as_str(), provenance.run_id, provenance.session_key, provenance.reason,
+                provenance.chat_id
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        self.timers_changed();
         Ok(())
     }
 
@@ -199,6 +203,7 @@ impl Store {
             params![id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        self.timers_changed();
         Ok(())
     }
 
@@ -209,6 +214,9 @@ impl Store {
             params![id, enabled as i64],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        if enabled {
+            self.timers_changed();
+        }
         Ok(())
     }
 
@@ -223,6 +231,9 @@ impl Store {
                 params![id, old, new],
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        if changed == 1 {
+            self.timers_changed();
+        }
         Ok(changed == 1)
     }
 
@@ -233,6 +244,7 @@ impl Store {
             params![name],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        self.timers_changed();
         Ok(())
     }
 
@@ -383,6 +395,7 @@ fn row_to_cron_job(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
         created_by: row.get("created_by")?,
         created_by_run: row.get("created_by_run")?,
         created_in: row.get("created_in")?,
+        created_in_chat: row.get("created_in_chat")?,
         reason: row.get("reason")?,
     })
 }

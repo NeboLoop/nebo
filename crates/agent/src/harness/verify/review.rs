@@ -387,6 +387,7 @@ mod tests {
             passed: false,
             tail: "1 failed".into(),
             duration_ms: 9,
+            errors: Vec::new(),
         }];
         let b = brief(Lens::Billing, &input(&c, false, &[], &checks));
         assert!(b.contains(Lens::Billing.charter()));

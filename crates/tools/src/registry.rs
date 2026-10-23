@@ -1582,7 +1582,8 @@ impl Registry {
         // The developer pack for apps (deferred): offered to the owner's own
         // app for itself, and under App Developer mode to app employees and
         // their teammates (`app_dev::withheld`).
-        for tool in crate::app_dev::tools(store.clone(), broadcaster.clone()) {
+        let reload_browser = self.browser_manager.read().unwrap().clone();
+        for tool in crate::app_dev::tools(store.clone(), broadcaster.clone(), reload_browser) {
             self.register(tool).await;
         }
 

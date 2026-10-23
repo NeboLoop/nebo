@@ -4464,7 +4464,7 @@
 			"needs_decision": "결정이 필요합니다: {items}",
 			"stopped_by_owner": "직접 중단함, 열린 문제: {open, plural, other {#개}}",
 			"stalled": "진전이 멈춤, 열린 문제: {open, plural, other {#개}}",
-			"no_checks": "테스트나 빌드를 실행할 수 없었습니다",
+			"no_checks": "작동한다는 것을 확인할 방법이 없었습니다: 프로젝트에 실행할 빌드, 타입 검사, 테스트가 없습니다",
 			"landed_unreviewed": "검토를 통과하지 않고 선택에 따라 반영했습니다",
 			"edits_in_way": "아직 반영 안 됨: 편집 내용이 여전히 방해가 됩니다",
 			"kept_own_edits": "반영 안 됨: 직접 한 편집을 유지했고, 변경은 사본에서 기다립니다",
@@ -4536,6 +4536,35 @@
 		},
 		"time": {
 			"minutes": "{m}분 {s}초"
-		}
+		},
+		"answering": "답변 중: {question}",
+		"tellIt": "할 일 알려주기",
+		"sending": "보내는 중…",
+		"sendFailed": "답변을 보내지 못했어요."
+	},
+	"appPermissions": {
+		"title": "{name}이(가) 더 많은 일을 하려고 합니다",
+		"intro": "이 앱을 믿을 때만 허용하세요. 나중에 앱 설정에서 바꿀 수 있습니다.",
+		"origin": "이 앱은 여기서 만든 것이 아닙니다. 회사 밖의 누군가가 만들었습니다.",
+		"wantsFiles": "{name}이(가) {target}의 파일을 보려고 합니다",
+		"wantsWeb": "{name}이(가) {target}와(과) 통신하려고 합니다",
+		"wantsWebAny": "{name}이(가) 모든 웹사이트와 통신하려고 합니다",
+		"wantsHelper": "{name}이(가) {target}에게 도움을 요청하려고 합니다",
+		"wantsHelperAny": "{name}이(가) 모든 직원에게 도움을 요청하려고 합니다",
+		"wantsPlugin": "{name}이(가) {target}을(를) 사용하려고 합니다",
+		"canFiles": "{target}의 파일 보기",
+		"canWeb": "{target}와(과) 통신하기",
+		"canWebAny": "모든 웹사이트와 통신하기",
+		"canHelper": "{target}에게 도움 요청하기",
+		"canHelperAny": "모든 직원에게 도움 요청하기",
+		"canPlugin": "{target} 사용하기",
+		"allow": "허용",
+		"deny": "허용 안 함",
+		"off": "끔",
+		"notNow": "나중에",
+		"sectionTitle": "이 앱이 할 수 있는 일",
+		"sectionHint": "이 앱은 마켓플레이스에서 왔습니다. 허용한 일만 할 수 있습니다.",
+		"ownHint": "이 앱은 여기서 만들었으므로 요청한 일을 할 수 있습니다.",
+		"notAnswered": "답하지 않음"
 	}
 }

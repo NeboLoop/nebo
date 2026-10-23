@@ -8,6 +8,9 @@ pub struct Store {
     pool: DbPool,
     /// Where the database lives; the snapshot ring sits beside it.
     pub(crate) path: String,
+    /// Who is told when a timer may now be due sooner than they last read
+    /// (`on_timers_changed`): the engine, which sleeps until the earliest one.
+    timers_changed: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Store {
@@ -23,12 +26,29 @@ impl Store {
             migrate::run_migrations(&conn)?;
         }
 
-        let store = Self { pool, path: db_path.to_string() };
+        let store = Self { pool, path: db_path.to_string(), timers_changed: std::sync::OnceLock::new() };
         // The migrator's copies are backups too; one list, not a folder.
         if let Err(e) = store.adopt_pre_migration_copies() {
             tracing::warn!(error = %e, "could not adopt pre-migration copies into the backup ring");
         }
         Ok(store)
+    }
+
+    /// Call `wake` whenever a timer may now be due sooner than it was: a
+    /// schedule made, edited or switched on, or a timed event recorded. The
+    /// engine registers itself once and sleeps until the earliest timer
+    /// instead of polling for it.
+    pub fn on_timers_changed(&self, wake: impl Fn() + Send + Sync + 'static) {
+        if self.timers_changed.set(Box::new(wake)).is_err() {
+            tracing::warn!("a second timer listener was refused: the engine is the one");
+        }
+    }
+
+    /// Tell the engine a timer may be due sooner ([`Store::on_timers_changed`]).
+    pub(crate) fn timers_changed(&self) {
+        if let Some(wake) = self.timers_changed.get() {
+            wake();
+        }
     }
 
     /// Get a connection from the pool, waiting at most `pool::POOL_WAIT`.

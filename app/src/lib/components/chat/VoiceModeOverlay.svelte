@@ -127,7 +127,7 @@
 </script>
 
 <!-- Full-screen overlay -->
-<div class="fixed inset-0 z-50 bg-base-100 flex flex-col">
+<div class="fixed inset-0 z-[70] bg-base-100 flex flex-col">
 	<!-- Header -->
 	<div class="flex items-center justify-between px-6 py-4">
 		<div class="w-10"></div>

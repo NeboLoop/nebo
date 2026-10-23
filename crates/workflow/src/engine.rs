@@ -162,7 +162,7 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 ///   loop's control primitive, not a capability.
 /// - `emit_event`: the step's events are the workflow's output to whatever
 ///   listens (listed where the activity emits: `event_bus` present, terminal
-///   node on the graph path).
+///   node).
 /// - `message_owner`: the one way to report a need to the owner. Every
 ///   refusal an unattended step meets ("tell the owner instead") points at
 ///   it, so a step without it could only fail silently.
@@ -304,7 +304,6 @@ pub struct ResumeState {
     pub pending: ai::ToolCall,
 }
 
-#[allow(unused_assignments)] // circuit breaker state is future-proofed for Fallback::Skip
 pub async fn execute_workflow(
     def: &WorkflowDef,
     agent_id: &str,
@@ -366,380 +365,32 @@ pub async fn execute_workflow(
         emit_sources
     };
 
-    // Explicit connections → deterministic graph execution (forks parallel,
-    // joins barriered, condition/loop routing engine-evaluated). No
-    // connections → the sequential array-order path below, a chain: each
-    // activity's parent is the one before it.
-    if !def.connections.is_empty() {
-        return crate::graph::execute_graph(
-            def,
-            agent_id,
-            memory_user_id,
-            memory_writes_disabled,
-            &inputs,
-            store,
-            decide,
-            loop_impl,
-            resolved_tools,
-            &run_id,
-            cancel_token,
-            skill_content,
-            event_bus,
-            resolved_emit,
-            progress_tx,
-            checkpoint,
-            resume,
-        )
-        .await;
-    }
-
-    let mut total_tokens: u32 = 0;
-    // Output tokens only — what budget.total_per_run is enforced in (same
-    // semantics as the graph executor and the per-activity budgets). Input is
-    // dominated by fixed per-turn overhead (tool schemas, context) resent every
-    // call, so metering the run budget in input+output made small budgets trip
-    // on the first call regardless of how much work the model actually did.
-    // The run's record: every activity's result, in order.
-    let mut prior_context = String::new();
-    // What later activities read from: each result by activity id. An
-    // activity's parent is the one before it (`graph::step_context`).
-    let mut outputs: HashMap<String, String> = HashMap::new();
-    let activity_count = def.activities.len();
-    let budget = RunBudget::for_workflow(def, progress_tx.clone());
-
-    // Circuit breaker: abort if 3+ consecutive activities fail with the same error pattern
-    const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
-    let mut consecutive_failures: u32 = 0;
-    let mut last_failure_pattern: Option<String> = None;
-
-    for (idx, activity) in def.activities.iter().enumerate() {
-        let is_last = idx == activity_count - 1;
-        let activity_emit: &[String] = if is_last {
-            &resolved_emit
-        } else {
-            &[]
-        };
-        // Check for cancellation before each activity
-        if let Some(token) = cancel_token {
-            if token.is_cancelled() {
-                return Err(WorkflowError::Cancelled);
-            }
-        }
-
-        info!(
-            workflow = def.id.as_str(),
-            activity = activity.id.as_str(),
-            "executing activity"
-        );
-
-        // Send progress event
-        if let Some(ref tx) = progress_tx {
-            let _ = tx.send(WorkflowProgress::ActivityStarted {
-                activity_id: activity.id.clone(),
-                activity_index: idx,
-                total_activities: activity_count,
-            });
-        }
-
-        // Update current activity
-        if let Err(e) = store.update_workflow_run(
-            &run_id,
-            Some("running"),
-            Some(&activity.id),
-            None,
-            None,
-            None,
-        ) {
-            warn!(run_id = %run_id, error = %e, "failed to update workflow run status");
-        }
-
-        // What the step is handed of the run, fitted to its model.
-        let parents: Vec<String> = idx.checked_sub(1).map(|p| def.activities[p].id.clone()).into_iter().collect();
-        let step = crate::graph::step_context(
-            activity,
-            &parents,
-            crate::graph::StepData {
-                outputs: &outputs,
-                inputs: &inputs,
-                item: None,
-                item_source: None,
-                at: "",
-                budget: crate::graph::data_budget(loop_impl.context_chars(agent_id, activity.level)),
-            },
-        );
-
-        // Scope the toolset to what the activity actually uses (see
-        // scoped_activity_tools) — the full registry went out with EVERY LLM
-        // turn (~21k tokens of schemas) and invited small models to wander.
-        let mut activity_tools: Vec<&Box<dyn DynTool>> =
-            scoped_activity_tools(&step.activity, resolved_tools);
-
-        // Inject emit tool if event bus is available (always available, no declaration needed)
-        let emit_tool_box: Option<Box<dyn DynTool>> = event_bus.map(|bus| {
-            Box::new(tools::EmitTool::new(bus.clone()).with_producer(producer_slug(store, agent_id)))
-                as Box<dyn DynTool>
-        });
-        if let Some(ref emit) = emit_tool_box {
-            activity_tools.push(emit);
-        }
-
-        // Inject exit tool — always available, every activity can stop cleanly
-        let exit_tool_box: Box<dyn DynTool> = Box::new(tools::ExitTool::new());
-        activity_tools.push(&exit_tool_box);
-
-        let started_at = chrono::Utc::now().timestamp();
-
-        // Accumulates every token this activity consumes — successful turns,
-        // evaluator turns, failed retry attempts, and exit-path turns.
-        let mut activity_spent: u32 = 0;
-        // Output tokens only — the unit token budgets are enforced in.
-        let mut activity_spent_output: u32 = 0;
-
-        match execute_activity_with_retry(
-            &step.activity,
-            &step.prior,
-            memory_user_id,
-            memory_writes_disabled,
-            &step.inputs,
-            decide,
-            loop_impl,
-            &activity_tools,
-            skill_content,
-            activity_emit,
-            store,
-            agent_id,
-            &run_id,
-            def,
-            progress_tx.as_ref(),
-            &mut activity_spent,
-            &mut activity_spent_output,
-            checkpoint,
-            resume.as_ref().filter(|r| r.activity_id == activity.id),
-            "", // sequential engine has no loop nodes
-            cancel_token,
-            &budget,
-        )
-        .await
-        {
-            Ok((result_text, _tokens_used)) => {
-                total_tokens += activity_spent;
-                consecutive_failures = 0;
-                last_failure_pattern = None;
-
-                let completed_at = chrono::Utc::now().timestamp();
-                if let Err(e) = store.create_activity_result(
-                    &run_id,
-                    &activity.id,
-                    "",
-                    "completed",
-                    activity_spent as i64,
-                    1,
-                    None,
-                    started_at,
-                    Some(completed_at),
-                ) {
-                    warn!(run_id = %run_id, activity = %activity.id, error = %e, "failed to record activity result");
-                }
-                // Output content backs the resume fast-forward — a parked run
-                // never re-executes an activity whose result is recorded.
-                let _ = store.set_activity_result_content(&run_id, &activity.id, "", &result_text);
-
-                // n8n-style branch termination: empty output = no downstream execution.
-                // If the activity produced no output (even after tool-result synthesis),
-                // there is nothing to pass to the next activity — stop the branch.
-                if result_text.trim().is_empty() {
-                    info!(
-                        workflow = def.id.as_str(),
-                        activity = activity.id.as_str(),
-                        run_id = %run_id,
-                        "activity produced no output, terminating branch"
-                    );
-                    let _ = store.complete_workflow_run(
-                        &run_id,
-                        "completed",
-                        total_tokens as i64,
-                        None,
-                        Some(&activity.id),
-                        Some(&prior_context),
-                    );
-                    return Ok((run_id, prior_context));
-                }
-
-                prior_context.push_str(&format!(
-                    "\n[Activity '{}' result]: {}\n",
-                    activity.id, result_text
-                ));
-                outputs.insert(activity.id.clone(), result_text);
-            }
-            // A standing outcome (an exit, a terminal refusal) ends the run
-            // cleanly with its reason — never a failure.
-            Err(e) if let Some(reason) = e.standing_outcome() => {
-                // What the owner must supply, when the refusing tool named it:
-                // kept on the run as data for whoever tells the owner.
-                if let Some(need) = e.owner_need() {
-                    let _ = store.set_workflow_run_owner_need(&run_id, need);
-                }
-                total_tokens += activity_spent;
-                let completed_at = chrono::Utc::now().timestamp();
-                let _ = store.create_activity_result(
-                    &run_id,
-                    &activity.id,
-                    "",
-                    "exited",
-                    activity_spent as i64,
-                    1,
-                    Some(&reason),
-                    started_at,
-                    Some(completed_at),
-                );
-                let _ = store.complete_workflow_run(
-                    &run_id,
-                    "exited",
-                    total_tokens as i64,
-                    Some(&reason),
-                    Some(&activity.id),
-                    Some(&prior_context),
-                );
-                info!(workflow = def.id.as_str(), run_id = %run_id, reason = %reason, "workflow exited early");
-                return Ok((run_id, prior_context));
-            }
-            // A suspension is NOT a failure: the engine already parked the run
-            // as awaiting_approval and persisted the pending call. Propagate
-            // untouched — the failure bookkeeping below would overwrite the
-            // parked status and paint the run red.
-            Err(e @ WorkflowError::AwaitingApproval { .. }) => {
-                return Err(e);
-            }
-            // The owner's spending limit: the activity had its wrap-up turn,
-            // so it ends as STOPPED with what it reported, and the run says
-            // the limit was the owner's. Not a failure, nothing lost.
-            Err(e @ WorkflowError::SpendCapReached { .. }) => {
-                total_tokens += activity_spent;
-                let completed_at = chrono::Utc::now().timestamp();
-                let why = e.to_string();
-                let partial = match &e {
-                    WorkflowError::SpendCapReached { partial, .. } => partial.clone(),
-                    _ => String::new(),
-                };
-                let _ = store.create_activity_result(
-                    &run_id,
-                    &activity.id,
-                    "",
-                    "stopped",
-                    activity_spent as i64,
-                    1,
-                    Some(&why),
-                    started_at,
-                    Some(completed_at),
-                );
-                if !partial.trim().is_empty() {
-                    let _ = store.set_activity_result_content(&run_id, &activity.id, "", &partial);
-                    prior_context.push_str(&format!(
-                        "\n[Activity '{}' stopped at the owner's limit; what it reported]: {}\n",
-                        activity.id, partial
-                    ));
-                }
-                let _ = store.complete_workflow_run(
-                    &run_id,
-                    "stopped",
-                    total_tokens as i64,
-                    Some(&why),
-                    Some(&activity.id),
-                    Some(&prior_context),
-                );
-                info!(workflow = def.id.as_str(), run_id = %run_id, activity = %activity.id, "workflow stopped at the owner's spending limit");
-                return Err(e);
-            }
-            Err(e) => {
-                total_tokens += activity_spent;
-                let completed_at = chrono::Utc::now().timestamp();
-                let err_msg = e.to_string();
-                if let Err(db_err) = store.create_activity_result(
-                    &run_id,
-                    &activity.id,
-                    "",
-                    "failed",
-                    activity_spent as i64,
-                    activity.on_error.retry as i64,
-                    Some(&err_msg),
-                    started_at,
-                    Some(completed_at),
-                ) {
-                    warn!(run_id = %run_id, activity = %activity.id, error = %db_err, "failed to record activity failure");
-                }
-
-                // Circuit breaker: track consecutive failures with same pattern.
-                // Note: currently dead (abort-on-error policy returns below),
-                // but wired for future Fallback::Skip support.
-                let pattern = extract_error_pattern(&err_msg);
-                if last_failure_pattern.as_deref() == Some(pattern.as_str()) {
-                    consecutive_failures += 1;
-                } else {
-                    consecutive_failures = 1;
-                    last_failure_pattern = Some(pattern.clone());
-                }
-
-                if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD {
-                    let reason = format!(
-                        "{} consecutive activities failed with same error: {}",
-                        consecutive_failures, pattern
-                    );
-                    warn!(workflow = def.id.as_str(), run_id = %run_id, "{}", reason);
-                    if let Err(db_err) = store.complete_workflow_run(
-                        &run_id,
-                        "failed",
-                        total_tokens as i64,
-                        Some(&reason),
-                        Some(&activity.id),
-                        None,
-                    ) {
-                        warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as circuit-broken");
-                    }
-                    return Err(WorkflowError::CircuitBreak(reason));
-                }
-
-                // Always abort: downstream activities depend on prior results,
-                // so continuing after a failure produces garbage.
-                // Fallback::Skip is kept for future use (independent activities)
-                // but currently behaves the same as Abort.
-                if let Err(db_err) = store.complete_workflow_run(
-                    &run_id,
-                    "failed",
-                    total_tokens as i64,
-                    Some(&err_msg),
-                    Some(&activity.id),
-                    None,
-                ) {
-                    warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as failed");
-                }
-                return Err(e);
-            }
-        }
-
-        // `budget.total_per_run` is the package author's estimate (it feeds the
-        // listing's cost_estimate). It is never enforced: the only ceiling a
-        // run has is the owner's, checked inside the loop.
-    }
-
-    if let Err(e) = store.complete_workflow_run(
+    // One walker for every definition: a definition without connections is
+    // a chain (`WorkflowDef::as_graph`), each activity's parent the one
+    // before it. Forks run parallel, joins barrier, condition/loop routing
+    // is engine-evaluated, and every run-level rule (turn cap, the owner's
+    // spending limit, resume, checkpoints, progress, emit) lives there.
+    let graph = def.as_graph();
+    crate::graph::execute_graph(
+        &graph,
+        agent_id,
+        memory_user_id,
+        memory_writes_disabled,
+        &inputs,
+        store,
+        decide,
+        loop_impl,
+        resolved_tools,
         &run_id,
-        "completed",
-        total_tokens as i64,
-        None,
-        None,
-        Some(&prior_context),
-    ) {
-        warn!(run_id = %run_id, error = %e, "failed to mark workflow run as completed");
-    }
-
-    info!(
-        workflow = def.id.as_str(),
-        run_id = run_id.as_str(),
-        total_tokens,
-        "workflow completed"
-    );
-
-    Ok((run_id, prior_context))
+        cancel_token,
+        skill_content,
+        event_bus,
+        resolved_emit,
+        progress_tx,
+        checkpoint,
+        resume,
+    )
+    .await
 }
 
 /// Execute an activity with retry support.
@@ -764,7 +415,6 @@ pub(crate) async fn execute_activity_with_retry(
     workflow: &WorkflowDef,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
-    spent_output: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
     iteration: &str,
@@ -806,7 +456,6 @@ pub(crate) async fn execute_activity_with_retry(
             workflow,
             progress_tx,
             spent,
-            spent_output,
             checkpoint,
             resume,
             iteration,
@@ -820,13 +469,15 @@ pub(crate) async fn execute_activity_with_retry(
             // activity's tool side effects from scratch. Blocked is terminal
             // by definition (FRAMES): a retry hits the same wall. A suspension
             // (AwaitingApproval) must surface untouched — the run is parked
-            // for the owner, not failed.
+            // for the owner, not failed. The owner's spending limit stopped
+            // the activity with its report kept; a retry would spend past it.
             Err(
                 e @ (WorkflowError::Exited(_)
                 | WorkflowError::Cancelled
                 | WorkflowError::Blocked(..)
                 | WorkflowError::AwaitingApproval { .. }
-                | WorkflowError::RunMaxIterations(_)),
+                | WorkflowError::RunMaxIterations(_)
+                | WorkflowError::SpendCapReached { .. }),
             ) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -865,7 +516,6 @@ pub async fn execute_activity(
     workflow: &WorkflowDef,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
-    spent_output: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
     iteration: &str,
@@ -955,7 +605,6 @@ pub async fn execute_activity(
         };
         let out = budget.settle(granted, own, loop_impl.run_turn(turn).await, |o| o)?;
         *spent += out.total_tokens;
-        *spent_output += out.output_tokens;
         return Ok((out.text, out.total_tokens));
     }
 
@@ -1065,7 +714,6 @@ pub async fn execute_activity(
         let (step_result, step_tokens, step_tainted) = budget
             .settle(granted, own, loop_impl.run_turn(turn).await, |o| {
                 *spent += o.total_tokens;
-                *spent_output += o.output_tokens;
                 (o.text, o.total_tokens, o.tainted)
             })
         .map_err(|e| {
@@ -1364,12 +1012,6 @@ async fn evaluate_step(
 /// `spent` accumulates EVERY token consumed, including turns that later end
 /// in an error — error variants can't carry token counts, so callers read
 /// the accumulator to keep run totals truthful across exits/failures/retries.
-///
-/// `spent_output` accumulates output tokens only, across all of an activity's
-/// steps — the unit token budgets are enforced in. Input tokens are dominated
-/// by the fixed tool-schema overhead resent every turn (~30k), so an
-/// input-inclusive budget would fail on turn 1 regardless of the model's work.
-/// Budgets are opt-in: an activity with no declared budget (max 0) is uncapped.
 
 /// Build the instructions for a per-step activity (no steps section — steps come as user messages).
 #[allow(clippy::too_many_arguments)]
@@ -1794,23 +1436,6 @@ fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-/// Extract a normalized error pattern for circuit breaker comparison.
-///
-/// Takes the first segment before `:`, lowercased, max 60 chars.
-fn extract_error_pattern(err: &str) -> String {
-    let seg = err.split(':').next().unwrap_or(err);
-    let pattern = seg.trim().to_lowercase();
-    if pattern.len() > 60 {
-        let mut end = 60;
-        while !pattern.is_char_boundary(end) {
-            end -= 1;
-        }
-        pattern[..end].to_string()
-    } else {
-        pattern
-    }
-}
-
 #[cfg(test)]
 mod engine_tests {
     use super::*;
@@ -2186,7 +1811,7 @@ mod engine_tests {
                     turns: turn.max_iterations,
                 });
             }
-            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, output_tokens: 1, tainted: false, steps: self.want })
+            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, tainted: false, steps: self.want })
         }
         async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
@@ -2303,7 +1928,7 @@ mod engine_tests {
             if turn.step_index == Some(1) {
                 return Err((self.end)());
             }
-            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, output_tokens: 1, tainted: false, steps: 1 })
+            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, tainted: false, steps: 1 })
         }
         async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()

@@ -1,0 +1,7 @@
+id: sc145-a-timer-whose-turn-the-owner-stops-is-closed-and-never-asked-again
+name: "SC145 — A timer whose turn the owner stops is closed and never asked again"
+description: |
+  A one-shot that joined a busy turn the owner then stops: the stopped turn's end closes its follow-up unanswered. No Inbox item points at the half-said reply, nothing later in the conversation is taken for the answer, and a restart never asks the stopped timer again.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_timer_whose_turn_the_owner_stops_is_closed_and_never_asked_again
+conversation: []

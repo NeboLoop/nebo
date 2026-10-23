@@ -40,11 +40,11 @@ pub struct Entry {
 struct Rings {
     next: u64,
     apps: HashMap<String, VecDeque<Entry>>,
-    /// Each named view's errors, `(seq, message)`, kept apart from the
-    /// ring: a live check reads its view's errors whatever else was logged
-    /// meanwhile. Each app's newest [`VIEWS_KEPT`] views, [`VIEW_ERRORS`]
-    /// each.
-    views: HashMap<String, Vec<(u64, String)>>,
+    /// Each named view's errors and notes ([`is_note`]), `(seq, note,
+    /// message)`, kept apart from the ring: a live check reads its view's
+    /// lines whatever else was logged meanwhile. Each app's newest
+    /// [`VIEWS_KEPT`] views, [`VIEW_ERRORS`] each.
+    views: HashMap<String, Vec<(u64, bool, String)>>,
     /// Each app's views with errors kept, oldest first.
     view_order: HashMap<String, VecDeque<String>>,
 }
@@ -56,8 +56,17 @@ fn view_key(app_id: &str, view: &str) -> String {
 
 /// Views per app whose errors are kept apart, oldest out first.
 const VIEWS_KEPT: usize = 32;
-/// Errors kept per view.
+/// Errors (and notes) kept per view.
 const VIEW_ERRORS: usize = 50;
+
+/// Whether an entry is a note: a failure the page saw that is not the
+/// app's own (a request to another site, a file it loads from one, a load
+/// the security policy blocked there). The developer script sends those as
+/// `warn` from `network`, `resource` or `security`; a live check reports
+/// them and never counts them.
+fn is_note(e: &Entry) -> bool {
+    e.level == "warn" && matches!(e.source.as_str(), "network" | "resource" | "security")
+}
 
 fn rings() -> &'static Mutex<Rings> {
     static RINGS: OnceLock<Mutex<Rings>> = OnceLock::new();
@@ -102,7 +111,7 @@ pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a 
     }
     rings.next = seq;
     let count = added.len();
-    for e in added.iter().filter(|e| e.level == "error" && !e.view.is_empty()) {
+    for e in added.iter().filter(|e| (e.level == "error" || is_note(e)) && !e.view.is_empty()) {
         let key = view_key(app_id, &e.view);
         if !rings.views.contains_key(&key) {
             let order = rings.view_order.entry(app_id.to_string()).or_default();
@@ -114,7 +123,7 @@ pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a 
         }
         let errors = rings.views.entry(key).or_default();
         if errors.len() < VIEW_ERRORS {
-            errors.push((e.seq, e.message.clone()));
+            errors.push((e.seq, is_note(e), e.message.clone()));
         }
     }
     let ring = rings.apps.entry(app_id.to_string()).or_default();
@@ -143,11 +152,23 @@ pub fn mark() -> u64 {
     rings().lock().unwrap_or_else(|e| e.into_inner()).next
 }
 
-/// The errors view `view` of the app sent after `since` ([`mark`]),
-/// whatever else was logged meanwhile.
-pub fn view_errors(app_id: &str, since: u64, view: &str) -> Vec<String> {
+/// What one view of an app reported: its errors, and its notes
+/// (failures from other sites, never counted).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ViewLines {
+    pub errors: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+/// The errors and notes view `view` of the app sent after `since`
+/// ([`mark`]), whatever else was logged meanwhile.
+pub fn view_lines(app_id: &str, since: u64, view: &str) -> ViewLines {
     let rings = rings().lock().unwrap_or_else(|e| e.into_inner());
-    rings.views.get(&view_key(app_id, view)).map(|v| v.iter().filter(|(seq, _)| *seq > since).map(|(_, m)| m.clone()).collect()).unwrap_or_default()
+    let mut out = ViewLines::default();
+    for (_, note, message) in rings.views.get(&view_key(app_id, view)).into_iter().flatten().filter(|(seq, _, _)| *seq > since) {
+        if *note { &mut out.notes } else { &mut out.errors }.push(message.clone());
+    }
+    out
 }
 
 /// How many errors the app's ring holds.
@@ -309,11 +330,38 @@ mod tests {
                 ("error", "an owner's view, reloaded meanwhile", "error", 5, ""),
             ],
         );
-        let errors = view_errors(&id, mark, "live-1");
+        let errors = view_lines(&id, mark, "live-1").errors;
         assert_eq!(errors, ["GET /api/items → 500 Internal Server Error", "Blocked by the page's security policy (img-src): https://x"]);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<p>hi</p>").unwrap();
         assert_eq!(crate::app_dev::live_problem(dir.path(), errors.len()), Some("the page has console errors"));
+    }
+
+    /// Review 2026-10-21: a failure from another site (analytics, a CDN,
+    /// no network) is a note of the view, kept apart from its errors; the
+    /// app's own console warnings are neither.
+    #[test]
+    fn another_sites_failures_are_a_views_notes_never_its_errors() {
+        let id = app();
+        let mark = mark();
+        record(
+            &id,
+            [
+                ("error", "GET /api/items → 500 Internal Server Error", "network", 1, "live-n"),
+                ("warn", "GET https://stats.example/hit → network error (another site's, not counted)", "network", 2, "live-n"),
+                ("warn", "Failed to load https://cdn.example/font.css (another site's, not counted)", "resource", 3, "live-n"),
+                ("warn", "the cache is cold", "console", 4, "live-n"),
+            ],
+        );
+        let lines = view_lines(&id, mark, "live-n");
+        assert_eq!(lines.errors, ["GET /api/items → 500 Internal Server Error"]);
+        assert_eq!(
+            lines.notes,
+            [
+                "GET https://stats.example/hit → network error (another site's, not counted)",
+                "Failed to load https://cdn.example/font.css (another site's, not counted)"
+            ]
+        );
     }
 
     #[test]
@@ -367,7 +415,7 @@ mod tests {
         record(&id, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
         let frames: Vec<String> = (0..RING_CAPACITY).map(|i| format!("frame {i}")).collect();
         record(&id, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
-        assert_eq!(view_errors(&id, mark, "live-x"), ["Uncaught TypeError: boot failed"]);
+        assert_eq!(view_lines(&id, mark, "live-x").errors, ["Uncaught TypeError: boot failed"]);
     }
 
 
@@ -381,9 +429,9 @@ mod tests {
         for v in &views {
             record(&id, [("error", "boom", "error", 1, v.as_str())]);
         }
-        assert!(view_errors(&id, since, &views[0]).is_empty(), "the oldest view put away");
+        assert_eq!(view_lines(&id, since, &views[0]), ViewLines::default(), "the oldest view put away");
         for v in &views[1..] {
-            assert_eq!(view_errors(&id, since, v), ["boom"], "{v}");
+            assert_eq!(view_lines(&id, since, v).errors, ["boom"], "{v}");
         }
     }
 

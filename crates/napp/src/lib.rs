@@ -1,7 +1,7 @@
 pub mod agent;
 pub mod agent_loader;
 pub mod app_data;
-pub mod app_view;
+pub mod page_pass;
 pub mod child_guard;
 pub mod condition;
 pub mod hooks;
@@ -18,7 +18,7 @@ pub mod sandbox;
 pub mod sealed;
 pub mod signing;
 pub mod supervisor;
-#[cfg(all(unix, any(test, feature = "test-sidecar")))]
+#[cfg(any(test, feature = "test-sidecar"))]
 pub mod test_sidecar;
 #[cfg(any(test, feature = "test-signing"))]
 pub mod test_signing;

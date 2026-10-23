@@ -323,6 +323,7 @@ impl RunToolScope<'_> {
             user_id: memory_user_id.clone(),
             trusted_plugin_env: false,
             whole_result: false,
+            output_lines: None,
             context_room,
             handoff_depth,
             grant: Some(grant.clone()),
@@ -1225,6 +1226,8 @@ async fn run_call(
     // owner's: the call is pointed there, and its first change to a project
     // makes the copy. A copy that can't be made refuses the call.
     let mut work_note: Option<String> = None;
+    // What the call's routing watched for a deploy, judged once it ran.
+    let mut watched = Default::default();
     if refusal.is_none()
         && let Some(verify) = cx.verify
     {
@@ -1235,6 +1238,7 @@ async fn run_call(
                     target = tools.target(&tc.name, &tc.input).await;
                 }
                 work_note = routed.started;
+                watched = routed.watched;
             }
             Err(e) => refusal = Some(format!("{e}. Nothing was changed: code work happens only in its own copy.")),
         }
@@ -1344,9 +1348,9 @@ async fn run_call(
         result.content.push_str(&note);
     }
     if let Some(verify) = cx.verify
-        && let Some(note) = verify.after_call(scope.sessions.store()).await
+        && let Some(note) = verify.after_call(scope.sessions.store(), watched).await
     {
-        work_note = Some(note);
+        work_note = Some(work_note.map_or(note.clone(), |started| format!("{started}\n\n{note}")));
     }
     if let Some(note) = work_note {
         result.content.push_str("\n\n");

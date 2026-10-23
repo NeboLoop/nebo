@@ -40,7 +40,8 @@ fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, Nebo
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Conversations {
     /// Every conversation: the owner's, and the employee's threads with
-    /// colleagues and teams, each shown as what it is.
+    /// colleagues and teams, each shown as what it is. Never an app page's
+    /// (`Conversation::App`): that one is the app's, read in the app.
     #[default]
     All,
     /// The owner's own. Its latest thread, the thread a loop DM continues,
@@ -58,7 +59,7 @@ pub enum Conversations {
 impl Conversations {
     fn sql(self, session_name: &str) -> String {
         match self {
-            Conversations::All => format!("conversation_kind({session_name}) IS NOT NULL"),
+            Conversations::All => format!("conversation_kind({session_name}) IN ('owner', 'colleague', 'team')"),
             Conversations::Owners => format!("conversation_kind({session_name}) = 'owner'"),
             Conversations::Teammates => format!("conversation_kind({session_name}) IN ('colleague', 'team')"),
         }
@@ -718,6 +719,55 @@ impl Store {
             row_to_chat_message,
         )
         .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The newest prompt the platform wrote (a hidden row) into any of
+    /// session `session_name`'s conversations at or after `since` (unix
+    /// seconds) whose text begins with `prefix`.
+    pub fn last_hidden_prompt_in_session(&self, session_name: &str, prefix: &str, since: i64) -> Result<Option<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT m.* FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+             WHERE c.session_name = ?1 AND m.role = 'user' AND m.created_at >= ?3
+               AND COALESCE(json_extract(m.metadata, '$.hiddenPrompt'), 0) IN (1, 'true')
+               AND substr(m.content, 1, length(?2)) = ?2
+             ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1",
+            params![session_name, prefix, since],
+            row_to_chat_message,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The messages written into any of session `session_name`'s
+    /// conversations after message `message_id`, in the order they were
+    /// written (rowid: a voice reply is stored with the time it was said,
+    /// after the fact), with each one's rowid; at most `limit`.
+    pub fn session_messages_after(&self, session_name: &str, message_id: &str, limit: i64) -> Result<Vec<(i64, ChatMessage)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.rowid AS rid, m.* FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+                 WHERE c.session_name = ?1 AND m.rowid > (SELECT rowid FROM chat_messages WHERE id = ?2)
+                 ORDER BY m.rowid LIMIT ?3",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_name, message_id, limit], |r| Ok((r.get::<_, i64>("rid")?, row_to_chat_message(r)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The last message row (its rowid) written into any of session
+    /// `session_name`'s conversations.
+    pub fn session_last_message_rowid(&self, session_name: &str) -> Result<Option<i64>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT MAX(m.rowid) FROM chat_messages m JOIN chats c ON c.id = m.chat_id WHERE c.session_name = ?1",
+            params![session_name],
+            |r| r.get(0),
+        )
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 

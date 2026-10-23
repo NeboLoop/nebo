@@ -145,6 +145,25 @@ impl RosterOrder {
         }
     }
 
+    /// This order with each list [change] names replaced and the others
+    /// kept as they are: a pin sent alone never freezes the teams' or the
+    /// employees' order, and an empty list puts that list back to A to Z
+    /// (the phone's "Sort A to Z").
+    pub fn changed(self, change: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        let Some(change) = change.as_object() else {
+            return Err(<serde_json::Error as serde::de::Error>::custom("expected an object"));
+        };
+        let mut merged = serde_json::to_value(self)?;
+        if let Some(into) = merged.as_object_mut() {
+            for key in ["pinned", "teams", "employees"] {
+                if let Some(list) = change.get(key) {
+                    into.insert(key.to_string(), list.clone());
+                }
+            }
+        }
+        Ok(serde_json::from_value::<Self>(merged)?.normalized())
+    }
+
     /// Where a row sits in the Pinned list, or None when it is not pinned.
     /// [primary] (the primary employee's id) is always first; the rest keep
     /// the order they were pinned or dragged to. Positions are comparable
@@ -440,6 +459,9 @@ pub struct CronJob {
     pub created_by_run: Option<String>,
     /// The conversation (session key) it was made in, when it was.
     pub created_in: Option<String>,
+    /// The owner's own conversation (chat id) it was asked for in, when an
+    /// employee made it in one: where a one-shot's answer goes.
+    pub created_in_chat: Option<String>,
     /// Why it exists, in a few words.
     pub reason: String,
 }
@@ -487,19 +509,29 @@ pub struct ScheduleProvenance {
     pub created_by: ScheduleCreator,
     pub run_id: Option<String>,
     pub session_key: Option<String>,
+    /// The owner's own conversation (chat id) it was asked for in.
+    pub chat_id: Option<String>,
     pub reason: String,
 }
 
 impl ScheduleProvenance {
     /// Made by `created_by` for `reason`, outside any run.
     pub fn new(created_by: ScheduleCreator, reason: impl Into<String>) -> Self {
-        Self { created_by, run_id: None, session_key: None, reason: reason.into() }
+        Self { created_by, run_id: None, session_key: None, chat_id: None, reason: reason.into() }
     }
 
     /// Made by the run `run_id` in the conversation `session_key`.
     pub fn in_run(mut self, run_id: Option<&str>, session_key: &str) -> Self {
         self.run_id = run_id.filter(|r| !r.is_empty()).map(str::to_string);
         self.session_key = Some(session_key).filter(|k| !k.is_empty()).map(str::to_string);
+        self
+    }
+
+    /// Asked for in the owner's own conversation `chat_id` (not a helper's,
+    /// a colleague's, a call's or an outside app's run): a one-shot answers
+    /// there when it fires.
+    pub fn asked_in_chat(mut self, chat_id: &str) -> Self {
+        self.chat_id = Some(chat_id).filter(|c| !c.is_empty()).map(str::to_string);
         self
     }
 }
@@ -679,6 +711,8 @@ pub struct NewNotification<'a> {
     pub options: &'a [ItemOption],
     pub link_label: Option<&'a str>,
     pub reply_to: Option<&'a str>,
+    /// The session an employee's run posted it from; None for Nebo's own.
+    pub made_in: Option<&'a str>,
 }
 
 /// Which part of the Inbox a list reads.
@@ -1160,6 +1194,10 @@ pub struct Agent {
     /// they pick one. The roster sends the resolved shape, never this alone.
     #[serde(default)]
     pub shape: Option<String>,
+    /// 1 when the app was made on this bot, 0 when it was installed or
+    /// nothing says (`Store::set_agent_built_here`, `app_dev::is_own_app`).
+    #[serde(skip_serializing, default)]
+    pub built_here: i64,
 }
 
 fn default_input_values() -> String {
