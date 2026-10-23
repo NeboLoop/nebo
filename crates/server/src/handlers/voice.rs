@@ -2504,6 +2504,12 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         let _ = socket.send(Message::Text(msg.to_string().into())).await;
         return;
     }
+    // A call never opens an app page's conversation (`apps::is_app_chat`):
+    // it takes the employee's own instead.
+    if q.chat_id.as_deref().is_some_and(|c| super::apps::is_app_chat(&state.store, c)) {
+        warn!(chat = ?q.chat_id, "voice: an app page's conversation is not one the owner calls into");
+        q.chat_id = None;
+    }
     if team.is_none() && q.chat_id.as_deref().unwrap_or_default().is_empty() {
         let agent_id = q.agent_id.as_deref().unwrap_or_default();
         q.chat_id = Some(resolve_voice_chat(&state, agent_id, q.telephony.is_some()).await);

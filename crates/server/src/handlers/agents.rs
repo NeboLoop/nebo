@@ -4170,6 +4170,14 @@ pub async fn chat_with_agent(
         message_id: None,
     };
 
+    // Never a turn in an app page's conversation: answered so, not
+    // "dispatched" (`chat_dispatch::owner_kept_out`, which run_chat holds).
+    if crate::chat_dispatch::owner_kept_out(&state, &config) {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(types::api::ErrorResponse { error: crate::chat_dispatch::KEPT_OUT.to_string() }),
+        ));
+    }
     crate::chat_dispatch::run_chat(&state, config).await;
 
     Ok(Json(serde_json::json!({
@@ -5125,7 +5133,7 @@ fn teammate_name(
 ) -> String {
     use types::keyparser::Conversation;
     let named = match conversation {
-        Conversation::Owner => None,
+        Conversation::Owner | Conversation::App => None,
         Conversation::Team { team_id, project_id } => {
             let team = state.store.get_team(team_id).ok().flatten().map(|t| t.name);
             match project_id.as_deref().and_then(|p| state.store.get_project(p).ok().flatten()) {
@@ -5226,6 +5234,10 @@ pub async fn activate_agent_chat(
     State(state): State<AppState>,
     Path((id, chat_id)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
+    // An app page's conversation is never opened as one of the owner's.
+    if super::apps::is_app_chat(&state.store, &chat_id) {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
     let session_key = types::keyparser::build_agent_session_key(&id, "web");
 
     let session_id = state

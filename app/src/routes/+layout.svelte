@@ -212,7 +212,7 @@
 
   // An app window's voice pill: a window too small for anything but itself.
   const isVoicePill = $derived(appPath($page.url.pathname).startsWith('/voice-pill'));
-  const isEmbed = $derived(appPath($page.url.pathname).startsWith('/chat-embed') || isVoicePill);
+  const isEmbed = $derived(isVoicePill);
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />

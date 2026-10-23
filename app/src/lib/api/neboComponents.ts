@@ -2418,6 +2418,14 @@ export interface GetChatHistoryByDayResponse {
 	messages: ChatMessage[]
 }
 
+export interface GetChatResponse {
+	sessionId: string
+	running: unknown
+	waiting: unknown
+	messages: unknown[]
+	hasMore: boolean
+}
+
 export interface GetCompanionChatResponse {
 	chat: Chat
 	messages: ChatMessage[]
@@ -2878,6 +2886,10 @@ export interface NeboAIPhoneAnswerResponse {
 	ok: boolean
 }
 
+export interface NewChatResponse {
+	sessionId: string
+}
+
 export interface OauthRelayResponse {
 	status: string
 	message: string
@@ -2926,6 +2938,11 @@ export interface PluginSetupRunResponse {
 	ok: boolean
 	output: unknown
 	outputFormat: unknown
+}
+
+export interface PostChatResponse {
+	sessionId: string
+	status: string
 }
 
 export interface ProcessAgentBindingsResponse {
@@ -3081,6 +3098,11 @@ export interface StartWorkflowChatResponse {
 
 export interface StatusResponse {
 	setupComplete: unknown
+}
+
+export interface StopChatResponse {
+	sessionId: string
+	stopped: unknown
 }
 
 export interface StopProjectWorkResponse {
@@ -3751,8 +3773,8 @@ export type WSServerEventType =
 	| "chat_withdrawn"
 	| "session_reset"
 	| "chat_complete"
-	| "chat_stream"
 	| "chat_error"
+	| "chat_stream"
 	| "chat_user_message"
 	| "session_compact"
 
@@ -3781,14 +3803,14 @@ export interface ChatCompleteEvent {
 	skipped: boolean
 }
 
+export interface ChatErrorEvent {
+	session_id: string
+	error: unknown
+}
+
 export interface ChatStreamEvent {
 	session_id: string
 	content: unknown
-}
-
-export interface ChatErrorEvent {
-	error: string
-	session_id: string
 }
 
 export interface ChatUserMessageEvent {

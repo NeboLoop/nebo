@@ -1,6 +1,7 @@
 /**
  * Canonical chat session-key templates — the ONE place that knows the
- * `agent:<id>:thread:<chatId>` and `agent:<id>:app[:<ctx>]` formats.
+ * `agent:<id>:thread:<chatId>` format. (An app's own conversation,
+ * `agent:<id>:app[:<thread>]`, is the server's: `handlers::apps::app_chat_key`.)
  * Build and parse keys here; never hand-assemble the templates inline.
  */
 
@@ -13,11 +14,6 @@
 export function threadKey(agentId: string, threadId: string): string {
 	if (threadId.startsWith(`agent:${agentId}:`)) return threadId;
 	return `agent:${agentId}:thread:${threadId}`;
-}
-
-/** Session key for an app-embedded chat: `agent:<agentId>:app[:<ctx>]`. */
-export function appKey(agentId: string, ctx?: string): string {
-	return `agent:${agentId}:app${ctx ? ':' + ctx : ''}`;
 }
 
 /** Session key of one of an employee's cases: `agent:<agentId>:case:<caseId>`
