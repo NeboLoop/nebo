@@ -513,6 +513,8 @@ fn expand(pattern: &str, budget: &mut usize) -> Vec<PathBuf> {
             continue;
         }
         let Ok(matcher) = glob::Pattern::new(part) else { return Vec::new() };
+        // A leading `*` doesn't match a dotfile, as the shell's glob doesn't.
+        let opts = glob::MatchOptions { require_literal_leading_dot: true, ..Default::default() };
         let mut next = Vec::new();
         for dir in &found {
             let Ok(entries) = std::fs::read_dir(dir) else { continue };
@@ -521,7 +523,7 @@ fn expand(pattern: &str, budget: &mut usize) -> Vec<PathBuf> {
                     return Vec::new();
                 }
                 *budget -= 1;
-                if matcher.matches(&entry.file_name().to_string_lossy()) {
+                if matcher.matches_with(&entry.file_name().to_string_lossy(), opts) {
                     next.push(entry.path());
                 }
             }

@@ -20,6 +20,9 @@ pub struct Subcommand {
     /// (`bash -c` nests one) and where it starts in that script. A script a
     /// shell runs from a string is a subshell of its own.
     scopes: Vec<(usize, usize)>,
+    /// The command after it runs only if it succeeds (`cmd && next`), so a
+    /// `cd` it carries is sure to have taken effect for what follows.
+    and_then: bool,
 }
 
 /// Shells whose `-c` argument is itself a script.
@@ -59,14 +62,22 @@ impl Subcommand {
 
     /// A command that runs nothing.
     fn none() -> Self {
-        Subcommand { assigns: false, words: Vec::new(), writes: false, redirects: Vec::new(), patterns: Vec::new(), scopes: Vec::new() }
+        Subcommand {
+            assigns: false,
+            words: Vec::new(),
+            writes: false,
+            redirects: Vec::new(),
+            patterns: Vec::new(),
+            scopes: Vec::new(),
+            and_then: false,
+        }
     }
 
     /// The command `command` of a script at `depth`, run inside `scope`.
     fn of(command: syntax::ShellCommand, depth: usize, scope: &[(usize, usize)]) -> Self {
-        let syntax::ShellCommand { assigns, words, writes, redirects, patterns, scopes } = command;
+        let syntax::ShellCommand { assigns, words, writes, redirects, patterns, scopes, and_then } = command;
         let scopes = scope.iter().copied().chain(scopes.into_iter().map(|at| (depth, at))).collect();
-        Subcommand { assigns, words, writes, redirects, patterns, scopes }
+        Subcommand { assigns, words, writes, redirects, patterns, scopes, and_then }
     }
 
     /// The command's words, the program first: quoting removed,
@@ -333,22 +344,21 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
         scope: (usize, usize),
         here: Option<PathBuf>,
         pushed: Vec<Option<PathBuf>>,
+        pushed_reach: Vec<Vec<PathBuf>>,
         reach: Vec<PathBuf>,
     }
-    let start = cwd.map(types::pathres::expand).unwrap_or_default();
+    let start = lexical(&cwd.map(types::pathres::expand).unwrap_or_default());
     let mut here: Option<PathBuf> = Some(start.clone());
     let mut pushed: Vec<Option<PathBuf>> = Vec::new();
+    // The reach each `pushd` saves, so `popd` brings it back.
+    let mut pushed_reach: Vec<Vec<PathBuf>> = Vec::new();
     // Every folder a command could still be standing in; folders only, so a
-    // relative path is checked, never dropped when the current folder is
-    // unknown. A `cd` adds its target and keeps what came before.
+    // relative path is always checked. A `cd` the shell is sure ran before
+    // the next command (`cd d && …`) replaces the set with where it lands;
+    // any other `cd` adds its target and keeps what came before, since it
+    // may have failed, run in the background, or sat in a branch that never
+    // ran. An unreadable move (`cd "$D"`, `cd -`) keeps the known folders.
     let mut reach: Vec<PathBuf> = vec![start];
-    let add = |reach: &mut Vec<PathBuf>, to: &Option<PathBuf>| {
-        if let Some(to) = to
-            && !reach.contains(to)
-        {
-            reach.push(to.clone());
-        }
-    };
     let mut entered: Vec<Entered> = Vec::new();
     let mut out = Vec::new();
     for sub in subcommands(cmd) {
@@ -357,10 +367,17 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             let left = entered.pop().expect("deeper than shared");
             here = left.here;
             pushed = left.pushed;
+            pushed_reach = left.pushed_reach;
             reach = left.reach;
         }
         for scope in &sub.scopes[shared..] {
-            entered.push(Entered { scope: *scope, here: here.clone(), pushed: pushed.clone(), reach: reach.clone() });
+            entered.push(Entered {
+                scope: *scope,
+                here: here.clone(),
+                pushed: pushed.clone(),
+                pushed_reach: pushed_reach.clone(),
+                reach: reach.clone(),
+            });
         }
         let before = here.clone();
         let before_reach = reach.clone();
@@ -378,21 +395,61 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
                 Some(Some(d)) if d != "-" && !d.starts_with(['+', '-']) => reached(here.as_deref(), d),
                 _ => None,
             };
+            // Where this move lands from each folder the shell could be in,
+            // or `None` when only running the command knows (`cd -`, `cd
+            // "$D"`).
+            let targets = |reach: &[PathBuf]| -> Option<Vec<PathBuf>> {
+                match named {
+                    None => Some(vec![lexical(&types::pathres::expand("~"))]),
+                    Some(Some(d)) if d != "-" && !d.starts_with(['+', '-']) => {
+                        Some(reach.iter().filter_map(|f| reached(Some(f), d)).map(|p| lexical(&p)).collect())
+                    }
+                    _ => None,
+                }
+            };
+            let step = |reach: &mut Vec<PathBuf>, and_then: bool| {
+                if let Some(set) = targets(reach) {
+                    if and_then {
+                        *reach = set;
+                    } else {
+                        for to in set {
+                            if !reach.contains(&to) {
+                                reach.push(to);
+                            }
+                        }
+                    }
+                    reach.truncate(MAX_REACH);
+                }
+            };
             match program.as_str() {
                 "cd" => {
-                    let to = moved(&here);
-                    add(&mut reach, &to);
-                    here = to;
+                    step(&mut reach, sub.and_then);
+                    here = moved(&here);
                 }
                 // `pushd` alone swaps the top two folders.
                 "pushd" if named.is_none() => here = None,
                 "pushd" => {
-                    let to = moved(&here);
-                    add(&mut reach, &to);
                     pushed.push(here.clone());
-                    here = to;
+                    pushed_reach.push(reach.clone());
+                    step(&mut reach, sub.and_then);
+                    here = moved(&here);
                 }
-                "popd" => here = if named.is_none() { pushed.pop().flatten() } else { None },
+                "popd" if named.is_none() => {
+                    here = pushed.pop().flatten();
+                    if let Some(restored) = pushed_reach.pop() {
+                        if sub.and_then {
+                            reach = restored;
+                        } else {
+                            for f in restored {
+                                if !reach.contains(&f) {
+                                    reach.push(f);
+                                }
+                            }
+                            reach.truncate(MAX_REACH);
+                        }
+                    }
+                }
+                "popd" => here = None,
                 _ => {}
             }
         }
@@ -402,6 +459,27 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             outer: entered.iter().map(|e| e.here.clone()).collect(),
             sub,
         });
+    }
+    out
+}
+
+/// At most this many folders one command may be checked from, so a long
+/// run of folder-changing commands can't make the check quadratic.
+const MAX_REACH: usize = 64;
+
+/// `path` with `.` and `..` worked out from the words alone, so folders
+/// that spell the same place dedup.
+fn lexical(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
     }
     out
 }
@@ -1172,9 +1250,12 @@ mod tests {
                 .map(|p| p.reach.iter().map(|f| f.to_string_lossy().into_owned()).collect())
                 .collect()
         };
-        assert_eq!(reach("cd a ; cat x"), vec![vec![s("/w")], vec![s("/w"), s("/w/a")]]);
+        assert_eq!(reach("cd a ; cat x"), vec![vec![s("/w")], vec![s("/w"), s("/w/a")]], "a ; cd keeps the folder before it");
         assert_eq!(reach("cd a & cat x"), vec![vec![s("/w")], vec![s("/w"), s("/w/a")]]);
+        assert_eq!(reach("cd a && cat x"), vec![vec![s("/w")], vec![s("/w/a")]], "a && cd is sure to have run");
+        assert_eq!(reach("cd a && cd b ; cat x"), vec![vec![s("/w")], vec![s("/w/a")], vec![s("/w/a"), s("/w/a/b")]]);
         assert_eq!(reach("cd \"$D\" ; cat x"), vec![vec![s("/w")], vec![s("/w")]], "an unknown move keeps the known folder");
+        assert_eq!(reach("cd d1 && cd .. && cat x"), vec![vec![s("/w")], vec![s("/w/d1")], vec![s("/w")]], "folders dedup lexically");
         // A subshell's `cd` is not in the reach of what follows it.
         assert_eq!(reach("(cd a) ; cat x"), vec![vec![s("/w")], vec![s("/w")]], "a subshell cd does not leak");
         let subs = subcommands("cat < in.txt > out/*.log 2>&1 && cat {a,b} x*");

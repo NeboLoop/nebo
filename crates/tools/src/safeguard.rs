@@ -1033,6 +1033,21 @@ mod tests {
             let r = check(ok, None);
             assert!(r.is_none(), "{ok:?} must be allowed: {r:?}");
         }
+        // A `&&` after a `cd` is sure the `cd` ran, so a later `..` is taken
+        // from where it lands, even when the call's folder is the workspace
+        // inside Nebo's folder. These climb back into the open workspace,
+        // never into a closed part, and must be allowed.
+        std::fs::create_dir_all(workspace.join("myrepo/web")).unwrap();
+        std::fs::write(workspace.join("myrepo/a.md"), "a").unwrap();
+        for ok in [
+            "cd myrepo/web && cat ../a.md",
+            "cd myrepo/web && cat ../../today.md",
+            "cd notes && echo hi > ../today.md",
+            "cd myrepo && pnpm --dir .. build",
+        ] {
+            let r = check(ok, None);
+            assert!(r.is_none(), "{ok:?} must be allowed: {r:?}");
+        }
         assert!(check("ls && cat today.md", Some(&workspace.join("notes"))).is_none(), "the workspace as the call's folder");
     }
 

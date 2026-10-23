@@ -526,6 +526,10 @@ pub struct ShellCommand {
     /// at: `( … )`, `$( … )`, `<( … )`, and each stage of a pipeline. A
     /// `cd` inside one ends with it.
     pub scopes: Vec<usize>,
+    /// The command right after it runs only if it succeeds: the operator
+    /// after it is `&&` (`cmd && next`). A later command can then be sure
+    /// this command's `cd` took effect.
+    pub and_then: bool,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -598,6 +602,28 @@ pub fn shell_exit_command(script: &str) -> Option<(ShellCommand, Option<String>)
     }
 }
 
+/// The operator right after the command `node` in its enclosing `&&`/`||`
+/// list or pipeline (`&&`, `||`, `|`, `|&`), or `None` when nothing runs
+/// after it or it ends with `;`, `&` or a newline (those are not `list`
+/// nodes). A command on the right of one list is followed by the operator
+/// after the whole list.
+fn op_after(node: Node, script: &str) -> Option<String> {
+    let parent = node.parent()?;
+    match parent.kind() {
+        "list" | "pipeline" => {
+            let left = parent.named_child(0)?;
+            if left.id() == node.id() {
+                let mut cursor = parent.walk();
+                parent.children(&mut cursor).find(|c| !c.is_named()).map(|c| node_text(c, script).to_string())
+            } else {
+                op_after(parent, script)
+            }
+        }
+        "redirected_statement" | "negated_command" => op_after(parent, script),
+        _ => None,
+    }
+}
+
 fn shell_command(node: Node, script: &str) -> ShellCommand {
     let mut writes = false;
     let mut around = Some(node);
@@ -605,8 +631,15 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         writes |= redirects_to_a_file(n, script);
         around = n.parent();
     }
-    let mut command =
-        ShellCommand { assigns: false, words: Vec::new(), writes, redirects: Vec::new(), patterns: Vec::new(), scopes: Vec::new() };
+    let mut command = ShellCommand {
+        assigns: false,
+        words: Vec::new(),
+        writes,
+        redirects: Vec::new(),
+        patterns: Vec::new(),
+        scopes: Vec::new(),
+        and_then: op_after(node, script).as_deref() == Some("&&"),
+    };
     let mut around = Some(node);
     while let Some(n) = around {
         let stage = n.parent().is_some_and(|p| p.kind() == "pipeline");
