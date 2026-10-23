@@ -2,8 +2,9 @@
 //! manifest asks for, as the owner decided them.
 //!
 //! Reading his files (`filesystem:`), talking to another website
-//! (`network:`) and asking another of his employees (`subagent:`) need his
-//! OK (`napp::manifest::needs_consent`):
+//! (`network:`), asking another of his employees (`subagent:`) and running
+//! one of his plugins (`plugin:`) need his OK
+//! (`napp::manifest::needs_consent`):
 //!
 //! - An app his own employees build on this Nebo (`create_employee`,
 //!   `update_employee`: `tools::app_dev::is_own_app`) holds what its
@@ -14,14 +15,15 @@
 //!   for something new is asked about again: nothing he answered covers it.
 //!
 //! Every check (`handlers::apps`: the web proxy, invoking an employee, the
-//! file route) reads [`granted`], and refuses what it does not cover.
+//! file route; `handlers::app_plugins`: running a plugin) reads
+//! [`granted`], and refuses what it does not cover.
 
 use crate::handlers::permissions::{AppPermission, AppPermissions};
 use crate::state::AppState;
 
 /// What the app asks for and whose it is.
 pub(crate) struct Asked {
-    permissions: Vec<String>,
+    pub(crate) permissions: Vec<String>,
     own: bool,
 }
 
@@ -51,18 +53,43 @@ fn held(asked: &Asked, answers: &[(String, bool)]) -> Vec<String> {
 /// app.
 pub(crate) async fn granted(state: &AppState, app_id: &str) -> Vec<String> {
     let Some(asked) = asked(state, app_id).await else { return Vec::new() };
-    let answers = state.store.app_permission_answers(app_id).unwrap_or_default();
-    held(&asked, &answers)
+    granted_of(state, app_id, &asked)
 }
 
-/// [`AppPermissions`] for an app; `employee_name` names a `subagent:` target.
-pub(crate) fn listing(asked: &Asked, answers: &[(String, bool)], employee_name: impl Fn(&str) -> Option<String>) -> AppPermissions {
+/// The permissions `asked` (app `app_id`'s requests) holds now.
+pub(crate) fn granted_of(state: &AppState, app_id: &str, asked: &Asked) -> Vec<String> {
+    let answers = state.store.app_permission_answers(app_id).unwrap_or_default();
+    held(asked, &answers)
+}
+
+/// What a request's target is called: an employee's name for a `subagent:`
+/// one, a plugin's for a `plugin:` one.
+pub(crate) trait Names {
+    fn employee(&self, id: &str) -> Option<String>;
+    fn plugin(&self, slug: &str) -> Option<String>;
+}
+
+/// [`Names`] from this Nebo's store and installed plugins.
+struct Installed<'a>(&'a AppState);
+
+impl Names for Installed<'_> {
+    fn employee(&self, id: &str) -> Option<String> {
+        self.0.store.get_agent(id).ok().flatten().map(|a| a.name)
+    }
+
+    fn plugin(&self, slug: &str) -> Option<String> {
+        self.0.plugin_store.get_manifest(slug).map(|m| m.name).filter(|n| !n.is_empty())
+    }
+}
+
+/// [`AppPermissions`] for an app, its targets named by `names`.
+pub(crate) fn listing(asked: &Asked, answers: &[(String, bool)], names: &impl Names) -> AppPermissions {
     let permissions = asked
         .permissions
         .iter()
         .filter(|p| napp::manifest::needs_consent(p))
         .map(|p| {
-            let (kind, target) = describe(p, &employee_name);
+            let (kind, target) = describe(p, names);
             let state = if asked.own {
                 "allowed"
             } else {
@@ -82,7 +109,7 @@ pub(crate) fn listing(asked: &Asked, answers: &[(String, bool)], employee_name: 
 pub(crate) async fn listing_for(state: &AppState, app_id: &str) -> Result<AppPermissions, types::NeboError> {
     let asked = asked(state, app_id).await.ok_or(types::NeboError::NotFound)?;
     let answers = state.store.app_permission_answers(app_id)?;
-    Ok(listing(&asked, &answers, |id| state.store.get_agent(id).ok().flatten().map(|a| a.name)))
+    Ok(listing(&asked, &answers, &Installed(state)))
 }
 
 /// Record the owner's answer to one of app `app_id`'s requests.
@@ -102,7 +129,7 @@ pub(crate) fn answerable(asked: &Asked, permission: &str) -> bool {
 }
 
 /// What a permission is about, in the owner's words.
-fn describe(perm: &str, employee_name: impl Fn(&str) -> Option<String>) -> (&'static str, String) {
+fn describe(perm: &str, names: &impl Names) -> (&'static str, String) {
     let any = |scope: &str| scope.is_empty() || scope == "*";
     if let Some(scope) = perm.strip_prefix("filesystem:") {
         let folder = napp::manifest::file_read_folder(perm).unwrap_or("");
@@ -117,8 +144,16 @@ fn describe(perm: &str, employee_name: impl Fn(&str) -> Option<String>) -> (&'st
     if let Some(scope) = perm.strip_prefix("network:") {
         return ("web", if any(scope) { String::new() } else { scope.to_string() });
     }
+    if let Some((slug, command)) = napp::manifest::plugin_grant(perm) {
+        let mut target = names.plugin(slug).unwrap_or_else(|| slug.to_string());
+        if let Some(command) = command {
+            target.push_str(" › ");
+            target.push_str(command);
+        }
+        return ("plugin", target);
+    }
     let scope = perm.strip_prefix("subagent:").unwrap_or("");
-    ("helper", if any(scope) { String::new() } else { employee_name(scope).unwrap_or_else(|| scope.to_string()) })
+    ("helper", if any(scope) { String::new() } else { names.employee(scope).unwrap_or_else(|| scope.to_string()) })
 }
 
 #[cfg(test)]
@@ -127,7 +162,16 @@ mod tests {
 
     fn asked(own: bool) -> Asked {
         Asked {
-            permissions: ["storage:readwrite", "filesystem:read:Media/Projects", "network:api.example.com", "network:*", "subagent:emp-1", "device:motion"]
+            permissions: [
+                "storage:readwrite",
+                "filesystem:read:Media/Projects",
+                "network:api.example.com",
+                "network:*",
+                "subagent:emp-1",
+                "device:motion",
+                "plugin:nebo-media",
+                "plugin:nebo-media:strip",
+            ]
                 .map(String::from)
                 .to_vec(),
             own,
@@ -139,7 +183,7 @@ mod tests {
     #[test]
     fn an_installed_app_holds_nothing_he_has_not_allowed() {
         let mine = held(&asked(true), &[]);
-        assert_eq!(mine.len(), 6);
+        assert_eq!(mine.len(), 8);
         let theirs = held(&asked(false), &[]);
         assert_eq!(theirs, vec!["storage:readwrite", "device:motion"]);
         let answers = [("filesystem:read:Media/Projects".to_string(), true), ("network:*".to_string(), false)];
@@ -147,6 +191,11 @@ mod tests {
         assert!(theirs.contains(&"filesystem:read:Media/Projects".to_string()));
         assert!(!napp::manifest::permission_covers(&theirs, "network:evil.example"), "refused stays refused");
         assert!(!napp::manifest::permission_covers(&theirs, "subagent:emp-1"), "unanswered is not held");
+        assert!(!napp::manifest::grants_plugin_command(&theirs, "nebo-media", Some("strip")), "an unanswered plugin is not held");
+        let plugin = [("plugin:nebo-media:strip".to_string(), true)];
+        let theirs = held(&asked(false), &plugin);
+        assert!(napp::manifest::grants_plugin_command(&theirs, "nebo-media", Some("strip")));
+        assert!(!napp::manifest::grants_plugin_command(&theirs, "nebo-media", Some("render")), "only the command he allowed");
         // An answer for something the manifest no longer asks for holds nothing.
         let stale = [("network:old.example".to_string(), true)];
         assert!(!napp::manifest::permission_covers(&held(&asked(false), &stale), "network:old.example"));
@@ -154,11 +203,23 @@ mod tests {
 
     #[test]
     fn the_listing_says_each_request_in_his_words() {
-        let names = |id: &str| (id == "emp-1").then(|| "Bookkeeper".to_string());
+        struct Fixed;
+        impl Names for Fixed {
+            fn employee(&self, id: &str) -> Option<String> {
+                (id == "emp-1").then(|| "Bookkeeper".to_string())
+            }
+            fn plugin(&self, slug: &str) -> Option<String> {
+                (slug == "nebo-media").then(|| "Nebo Media".to_string())
+            }
+        }
+        let names = &Fixed;
         let l = listing(&asked(false), &[("network:api.example.com".into(), false)], names);
         assert!(!l.own);
         let by = |p: &str| l.permissions.iter().find(|x| x.permission == p).unwrap().clone();
-        assert_eq!(l.permissions.len(), 4, "storage and motion need no OK");
+        assert_eq!(l.permissions.len(), 6, "storage and motion need no OK");
+        assert_eq!((by("plugin:nebo-media").kind.as_str(), by("plugin:nebo-media").target.as_str()), ("plugin", "Nebo Media"));
+        assert_eq!(by("plugin:nebo-media:strip").target, "Nebo Media › strip");
+        assert!(answerable(&asked(false), "plugin:nebo-media"));
         assert_eq!((by("filesystem:read:Media/Projects").kind.as_str(), by("filesystem:read:Media/Projects").target.as_str()), ("files", "NeboAI › Media › Projects"));
         assert_eq!(by("filesystem:read:Media/Projects").state, "asking");
         assert_eq!((by("network:api.example.com").target.as_str(), by("network:api.example.com").state.as_str()), ("api.example.com", "refused"));

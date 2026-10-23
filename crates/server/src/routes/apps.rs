@@ -1,7 +1,7 @@
 use axum::{Router, routing};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::handlers::apps;
+use crate::handlers::{app_plugins, apps};
 use crate::state::AppState;
 
 pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
@@ -51,6 +51,16 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
         .route(
             "/apps/{agent_id}/janus/decide",
             routing::post(apps::janus_decide),
+        )
+        // The app runs an installed plugin its manifest grants, through the
+        // employee tool's runner; long work as a job it reads.
+        .route(
+            "/apps/{agent_id}/plugins/{slug}/run",
+            routing::post(app_plugins::run),
+        )
+        .route(
+            "/apps/{agent_id}/plugins/jobs/{job}",
+            routing::get(app_plugins::job),
         )
         .route("/apps/{agent_id}/storage", routing::get(apps::list_storage))
         .route(

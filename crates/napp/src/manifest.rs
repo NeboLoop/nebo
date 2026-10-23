@@ -372,6 +372,7 @@ const VALID_PERMISSION_PREFIXES: &[&str] = &[
     "user:",
     "hook:",
     "device:",
+    "plugin:",
 ];
 
 /// The permission that lets an app's page read one folder of the owner's
@@ -406,10 +407,38 @@ pub fn permission_covers(granted: &[String], perm: &str) -> bool {
 
 /// The permissions an app installed from the marketplace or shared through
 /// a loop holds only once the owner allows them: reading his files, talking
-/// to another website, asking another of his employees. An app his own
-/// employees build here holds them as its manifest asks.
+/// to another website, asking another of his employees, running one of his
+/// plugins. An app his own employees build here holds them as its manifest
+/// asks.
 pub fn needs_consent(perm: &str) -> bool {
-    ["filesystem:", "network:", "subagent:"].iter().any(|p| perm.starts_with(p))
+    ["filesystem:", "network:", "subagent:", "plugin:"].iter().any(|p| perm.starts_with(p))
+}
+
+/// An app's grant to run an installed plugin directly, with no AI in the
+/// middle: `plugin:<slug>` grants every command of the plugin `slug`, and
+/// `plugin:<slug>:<command>` only the commands whose first word is
+/// `<command>` (`plugin:nebo-media:strip`). Returns the slug and the
+/// command, `None` for any other permission and for a malformed grant (an
+/// empty or wildcard slug, a command of more than one word).
+pub fn plugin_grant(perm: &str) -> Option<(&str, Option<&str>)> {
+    let rest = perm.strip_prefix("plugin:")?;
+    let (slug, command) = match rest.split_once(':') {
+        Some((slug, command)) => (slug, Some(command)),
+        None => (rest, None),
+    };
+    let word = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (word(slug) && command.is_none_or(word)).then_some((slug, command))
+}
+
+/// Whether `permissions` let an app run a command on the plugin `slug`
+/// ([`plugin_grant`]). `first_word`: the command's first word as the plugin
+/// receives it (`tools::plugin_tool::command_words`, the one reading of a
+/// command), `None` for a command with no words.
+pub fn grants_plugin_command(permissions: &[String], slug: &str, first_word: Option<&str>) -> bool {
+    permissions
+        .iter()
+        .filter_map(|p| plugin_grant(p))
+        .any(|(s, c)| s == slug && c.is_none_or(|c| first_word == Some(c)))
 }
 
 /// Every permission must carry a known prefix, and a `filesystem:read:`
@@ -427,6 +456,11 @@ pub fn validate_permissions(permissions: &[String]) -> Result<(), NappError> {
         if perm.starts_with(FILESYSTEM_READ) && file_read_folder(perm).is_none() {
             return Err(NappError::Manifest(format!(
                 "{perm}: a visible folder inside the NeboAI workspace, relative to it, like {FILESYSTEM_READ}Media/Projects"
+            )));
+        }
+        if perm.starts_with("plugin:") && plugin_grant(perm).is_none() {
+            return Err(NappError::Manifest(format!(
+                "malformed permission: {perm} (plugin:<slug>, or plugin:<slug>:<command> for one command)"
             )));
         }
     }
@@ -688,6 +722,29 @@ mod tests {
             assert!(validate_permissions(&[bad.into()]).is_err(), "{bad}");
         }
         validate_permissions(&["filesystem:read:Media/Projects".into(), "storage:readwrite".into()]).unwrap();
+    }
+
+    /// `plugin:<slug>` grants every command of one plugin and
+    /// `plugin:<slug>:<command>` one command; nothing else is a grant.
+    #[test]
+    fn a_plugin_grant_names_one_plugin_and_maybe_one_command() {
+        validate_permissions(&["plugin:nebo-media".into(), "plugin:nebo-media:strip".into()]).unwrap();
+        for bad in ["plugin:", "plugin:*", "plugin:nebo-media:", "plugin:nebo media", "plugin:a:b:c", "plugin:../x"] {
+            let err = validate_permissions(&[bad.into()]).unwrap_err().to_string();
+            assert!(err.contains("malformed permission"), "{bad}: {err}");
+        }
+
+        let all = vec!["plugin:nebo-media".to_string()];
+        assert!(grants_plugin_command(&all, "nebo-media", Some("strip")));
+        assert!(grants_plugin_command(&all, "nebo-media", None), "every command, none included");
+        assert!(!grants_plugin_command(&all, "gmail", Some("send")), "another plugin");
+
+        let strip = vec!["plugin:nebo-media:strip".to_string(), "network:example.com".to_string()];
+        assert!(grants_plugin_command(&strip, "nebo-media", Some("strip")));
+        assert!(!grants_plugin_command(&strip, "nebo-media", Some("render")));
+        assert!(!grants_plugin_command(&strip, "nebo-media", Some("Strip")), "the word as written");
+        assert!(!grants_plugin_command(&strip, "nebo-media", None), "no command, no scoped grant");
+        assert!(!grants_plugin_command(&[], "nebo-media", Some("strip")));
     }
 
     #[test]

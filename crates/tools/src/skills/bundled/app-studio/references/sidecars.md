@@ -16,6 +16,7 @@ through tools declared in `agent.json`. Most needs are met without one.
 | AI: text, a judgment, a picture | `janus.complete`, `decide`, the employee's `generate_media` |
 | A file made for the owner | The employee hands it over with `share_file`, the page with `share` |
 | Another employee's help | `agents.invoke` (needs `subagent:<id>`) |
+| A plugin's work at once (a thumbnail, a strip, a trim) | `plugins.run` on the page, with `plugin:<slug>` in the manifest (sdk-more.md) |
 
 A folder trigger, in the `agent_json` of `create_employee` (each change batch
 starts a run with the files in `_watch_payload.files`):

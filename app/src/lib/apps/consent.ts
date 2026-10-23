@@ -1,7 +1,7 @@
 /**
  * The owner's OK for what an app from the marketplace asks to do beyond its
  * own page: see his files, talk to another website, ask another of his
- * employees (the server's `app_grants`). Asked when he opens the app
+ * employees, use one of his plugins (the server's `app_grants`). Asked when he opens the app
  * (`launchApp`), in plain words; changed later in the app's settings.
  */
 
@@ -53,7 +53,14 @@ export function permissionWords(
 ): { key: string; values: Record<string, string> } {
   const lead = asking ? "appPermissions.wants" : "appPermissions.can";
   const kind =
-    p.kind === "files" ? "Files" : p.kind === "web" ? "Web" : "Helper";
-  const any = p.target === "" ? "Any" : "";
+    p.kind === "files"
+      ? "Files"
+      : p.kind === "web"
+        ? "Web"
+        : p.kind === "plugin"
+          ? "Plugin"
+          : "Helper";
+  // A plugin request always names its plugin.
+  const any = p.target === "" && kind !== "Plugin" ? "Any" : "";
   return { key: `${lead}${kind}${any}`, values: { name, target: p.target } };
 }

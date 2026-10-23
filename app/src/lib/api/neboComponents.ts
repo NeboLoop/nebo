@@ -1243,6 +1243,12 @@ export interface OnboardingStatus {
 	checklist: string[]
 }
 
+export interface Outcome {
+	ok: boolean
+	output: string
+	files: string[]
+}
+
 export interface OutcomeCount {
 	outcome: string
 	count: number
@@ -3014,6 +3020,10 @@ export interface RevokeAgentApiKeyResponse {
 export interface RunAgentWorkflowResponse {
 	runId: string
 	run: WorkflowRun
+}
+
+export interface RunResponse {
+	job: string
 }
 
 export interface RunTaskResponse {
