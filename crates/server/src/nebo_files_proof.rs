@@ -1,11 +1,11 @@
-//! Nebo's own files and server, proven through the real server: an
+//! Nebo's secrets and server, proven through the real server: an
 //! employee's file tools and commands reach its workspace, its helpers'
-//! copies and its own conversation's saved results, and never the rest of
-//! Nebo's folder (the settings file with the server's secret, the logs, the
-//! database, other conversations' files), however the path is spelled.
-//! What Nebo hands an employee to read (the folder of a skill an installed
-//! plugin ships) it reads and never changes; every other Nebo folder on the
-//! computer is closed whole. Nebo's own settings are not in its commands'
+//! copies, its own conversation's saved results and the rest of Nebo's
+//! folder (the installed plugins among it), and never Nebo's secrets (the
+//! settings file with the server's secret, the keys and sign-in tokens, the
+//! logs, the database, the plugins' accounts, other conversations' files),
+//! however the path is spelled, in this Nebo's folder or another's on the
+//! computer. Nebo's own settings are not in its commands'
 //! environment, its commands never reach Nebo's own API, and a scheduled
 //! command meets every one of those limits and its employee's permissions.
 
@@ -73,7 +73,7 @@ async fn an_employee_never_reaches_nebo_own_files() {
         at("sessions/other/tool-results/r.txt"),
     ] {
         let r = nebo.tool(&ctx, "read_file", json!({ "path": path })).await;
-        assert!(r.is_error && r.content.contains("Nebo's own files"), "read_file {path}: {}", r.content);
+        assert!(r.is_error && r.content.contains("Nebo's secrets"), "read_file {path}: {}", r.content);
         assert!(!leaked(&r.content), "{}", r.content);
     }
     let r = nebo.tool(&ctx, "write_file", json!({ "path": at("settings.json"), "content": "{}" })).await;
@@ -86,13 +86,16 @@ async fn an_employee_never_reaches_nebo_own_files() {
     for command in [
         format!("cat {} 2>/dev/null | head -50", at("settings.json")),
         format!("grep -ri 'gmail\\|oauth' {} | tail -30", at("logs/proof.log")),
-        format!("find {} -type f | head -40", home.display()),
         format!("sqlite3 {} 'SELECT name FROM sqlite_master'", at("data/nebo.db")),
     ] {
         let r = nebo.tool(&ctx, "run_command", json!({ "command": command, "description": "Look into the connection" })).await;
-        assert!(r.is_error && r.content.contains("Nebo's own files"), "{command}: {}", r.content);
+        assert!(r.is_error && r.content.contains("Nebo's secrets"), "{command}: {}", r.content);
         assert!(!leaked(&r.content), "{}", r.content);
     }
+    // Nebo's folder itself is open: a listing names what is there and
+    // reads none of it.
+    let r = nebo.tool(&ctx, "run_command", json!({ "command": format!("find {} -type f | head -40", home.display()), "description": "List Nebo's folder" })).await;
+    assert!(!r.is_error && !leaked(&r.content), "{}", r.content);
     std::fs::create_dir_all(home.join("files")).unwrap();
     let around = format!(
         "cd {} && cat ../settings.json ../logs/proof.log ../sessions/other/tool-results/r.txt",
@@ -144,9 +147,9 @@ async fn an_employee_never_reaches_nebo_own_files() {
 /// plugin-many-skills-fan-out run 2, calls #8–9). A plugin installed as the
 /// marketplace lays it out, and its skill's own instructions followed
 /// through the real server: load it, read the folder `use_skill` names and
-/// the file the skill points to, run the script it says to run. The skill
-/// is never changed, and the plugin's program, its account and its data,
-/// Nebo's settings and logs stay closed.
+/// the file the skill points to, run the script it says to run. The
+/// plugin's program and data are open like any folder; its account and
+/// Nebo's settings stay closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_employee_reads_what_use_skill_hands_it() {
     let nebo = session().await;
@@ -217,45 +220,23 @@ async fn an_employee_reads_what_use_skill_hands_it() {
         .await;
     assert!(!r.is_error && r.content.contains("references") && r.content.contains("RATES-canary"), "{}", r.content);
 
-    // Never changed.
-    let guide = std::path::PathBuf::from(&folder).join("SKILL.md");
-    let r = nebo.tool(&ctx, "write_file", json!({ "path": guide.to_string_lossy(), "content": "rewritten" })).await;
-    assert!(r.is_error && r.content.contains("never changes it"), "write_file: {}", r.content);
-    assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "write_file changed the skill");
-    // A command's text may name a plugin's skill (it is read and run from
-    // there), so only the operating system keeps a command from changing
-    // it (`nebo_files::named_in`, `confine`).
+    // The rest of the plugin is open like any folder: its program runs and
+    // its data reads. Its account and Nebo's settings stay closed.
+    let r = nebo.tool(&ctx, "read_file", json!({ "path": home.join("appdata/plugins/proofbooks/state.txt").to_string_lossy() })).await;
+    assert!(!r.is_error && r.content.contains("DATA-canary"), "the plugin's data: {}", r.content);
     let r = nebo
-        .tool(&ctx, "run_command", json!({ "command": format!("echo rewritten >> '{}'", guide.display()), "description": "Edit the skill" }))
+        .tool(&ctx, "run_command", json!({ "command": format!("sh '{}' bills list", package.join("proofbooks").display()), "description": "Run the plugin" }))
         .await;
-    if tools::confine::available() {
-        assert!(r.is_error, "the command changed a plugin's skill: {}", r.content);
-        assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "the command changed the skill");
-    } else {
-        eprintln!("no confinement on this computer: a command's writes to a plugin's skill rest on nothing");
-    }
-
-    // The rest of the plugin, and Nebo's own files, stay closed.
-    let leaked = |t: &str| ["PROGRAM-canary", "ACCOUNT-canary", "DATA-canary"].iter().any(|c| t.contains(c));
-    for path in [
-        package.join("proofbooks"),
-        package.join("plugin.json"),
-        home.join("nebo/plugin-profiles/proofbooks/creds.json"),
-        home.join("appdata/plugins/proofbooks/state.txt"),
-        home.join("settings.json"),
-    ] {
+    assert!(!r.is_error && r.content.contains("PROGRAM-canary"), "the plugin's program: {}", r.content);
+    for path in [home.join("nebo/plugin-profiles/proofbooks/creds.json"), home.join("settings.json")] {
         let r = nebo.tool(&ctx, "read_file", json!({ "path": path.to_string_lossy() })).await;
-        assert!(r.is_error && r.content.contains("Nebo's own files"), "read_file {}: {}", path.display(), r.content);
-        assert!(!leaked(&r.content), "{}", r.content);
+        assert!(r.is_error && r.content.contains("Nebo's secrets"), "read_file {}: {}", path.display(), r.content);
+        assert!(!r.content.contains("ACCOUNT-canary"), "{}", r.content);
     }
-    let r = nebo
-        .tool(&ctx, "run_command", json!({ "command": format!("{} bills list", package.join("proofbooks").display()), "description": "Run the plugin" }))
-        .await;
-    assert!(r.is_error && r.content.contains("Nebo's own files") && !leaked(&r.content), "the plugin's program: {}", r.content);
-    let around = format!("cd '{folder}' && cat ../../proofbooks ../../../../plugin-profiles/proofbooks/creds.json; sh ../../proofbooks");
+    let around = format!("cd '{folder}' && cat ../../../../plugin-profiles/proofbooks/creds.json");
     let r = nebo.tool(&ctx, "run_command", json!({ "command": around, "description": "Look around the plugin" })).await;
     if tools::confine::available() {
-        assert!(!leaked(&r.content), "a confined command reached the plugin's program or account: {}", r.content);
+        assert!(!r.content.contains("ACCOUNT-canary"), "a confined command reached the plugin's account: {}", r.content);
     }
 }
 
@@ -264,8 +245,8 @@ async fn an_employee_reads_what_use_skill_hands_it() {
 /// `NEBO_HOME` was fenced found and read a second Nebo's `settings.json`
 /// under `~/.local/share/nebo`, the platform-native folder. Every folder a
 /// Nebo on this computer may keep its settings in (`config::nebo_roots`:
-/// the platform-native one, the pre-v5 one, `~/.nebo`) is closed to an
-/// employee as this one's own files are, by every spelling a command uses.
+/// the platform-native one, the pre-v5 one, `~/.nebo`) keeps its secrets
+/// closed to an employee as this one's are, by every spelling a command uses.
 /// Only sizes and absent files are asked for: a proof never reads a real
 /// install's settings.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -283,10 +264,10 @@ async fn another_nebo_on_this_computer_stays_closed() {
     assert!(others.len() >= 2, "the platform-native folder and ~/.nebo are other Nebos' here: {others:?}");
     let home = dirs::home_dir().expect("a home folder");
     for root in &others {
-        // A file no install has, so a broken fence reads nothing real.
-        let absent = root.join(format!("proof-{}.json", uuid::Uuid::new_v4().simple()));
+        // A log no install has, so a broken fence reads nothing real.
+        let absent = root.join(format!("logs/proof-{}.log", uuid::Uuid::new_v4().simple()));
         let r = nebo.tool(&ctx, "read_file", json!({ "path": absent.to_string_lossy() })).await;
-        assert!(r.is_error && r.content.contains("Nebo's own files"), "read_file {}: {}", absent.display(), r.content);
+        assert!(r.is_error && r.content.contains("Nebo's secrets"), "read_file {}: {}", absent.display(), r.content);
         let settings = root.join("settings.json");
         let mut spellings = vec![settings.display().to_string()];
         if let Ok(rest) = settings.strip_prefix(&home) {
@@ -297,7 +278,7 @@ async fn another_nebo_on_this_computer_stays_closed() {
             let r = nebo
                 .tool(&ctx, "run_command", json!({ "command": format!("wc -c \"{spelled}\""), "description": "Size the settings" }))
                 .await;
-            assert!(r.is_error && r.content.contains("Nebo's own files"), "{spelled}: {}", r.content);
+            assert!(r.is_error && r.content.contains("Nebo's secrets"), "{spelled}: {}", r.content);
         }
     }
 }
@@ -460,7 +441,7 @@ async fn a_scheduled_command_meets_its_employee_limits() {
     let job = scheduled(&agent, "Read settings", format!("cat {}", settings.display()));
     let (ok, output, err) = crate::scheduler::execute_job(&nebo.state, &job, true).await;
     let err = err.unwrap_or_default();
-    assert!(!ok && err.contains("Nebo's own files"), "{output}{err}");
+    assert!(!ok && err.contains("Nebo's secrets"), "{output}{err}");
     assert!(!output.contains(secret.trim()) && !err.contains(secret.trim()));
 
     // A step that needs the owner's OK is refused, not parked, and recorded.
@@ -567,7 +548,7 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
     }
     let secret = std::fs::read_to_string(&settings).unwrap();
     let err = workflow_step(&nebo, &agent, "command", json!({ "command": format!("cat {}", settings.display()) })).await.unwrap_err();
-    assert!(err.contains("Nebo's own files"), "{err}");
+    assert!(err.contains("Nebo's secrets"), "{err}");
     assert!(!err.contains(secret.trim()));
 
     // An employee whose web access is on: a command spelled around the
@@ -761,7 +742,7 @@ async fn a_full_access_employee_runs_unconfined() {
     // Nebo's own settings are not in its environment.
     let full = Nebo::ctx(&builder, Origin::User);
     let r = nebo.tool(&full, "run_command", run(format!("cat '{}'", home.join("logs/full-access-proof.log").display()))).await;
-    assert!(r.is_error && r.content.contains("Nebo's own files") && !reads(&r), "{}", r.content);
+    assert!(r.is_error && r.content.contains("Nebo's secrets") && !reads(&r), "{}", r.content);
     let r = nebo.tool(&full, "run_command", run("env".into())).await;
     let own: Vec<&str> = r.content.lines().filter(|l| l.starts_with("NEBO_") || l.starts_with("NEBOAI_")).collect();
     assert!(!r.is_error && own.is_empty(), "Nebo's own settings in a Full access command's environment: {own:?}");
@@ -855,7 +836,7 @@ async fn an_employee_command_is_refused_by_nebo_own_api() {
     let r = nebo
         .tool(&ctx, "run_command", json!({ "command": format!("cat '{}'", nebo.home.join(".install-key").display()), "description": "Read the key" }))
         .await;
-    assert!(r.is_error && r.content.contains("Nebo's own files") && !r.content.contains(&key), "{}", r.content);
+    assert!(r.is_error && r.content.contains("Nebo's secrets") && !r.content.contains(&key), "{}", r.content);
     drop(open);
 
     // The app: a browser signs in with a ticket and gets the app shell and

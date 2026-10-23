@@ -1,7 +1,6 @@
 //! What a command an employee runs may reach, enforced by the operating
-//! system around the command itself: Nebo's own files (`nebo_files`) can't
-//! be read or changed, the skills the installed plugins ship can't be
-//! changed, Nebo's own ports (`types::own_ports`: its local API,
+//! system around the command itself: Nebo's secrets (`nebo_files`) can't
+//! be read or changed, Nebo's own ports (`types::own_ports`: its local API,
 //! its browser's debugging port) can't be connected to, and a run whose web
 //! access is off can't reach the network. Everything else the command does
 //! runs as it would anyway, a server the employee started on this computer
@@ -144,7 +143,7 @@ fn platform() -> Option<Platform> {
         if found.is_none() {
             tracing::warn!(
                 "commands can't be confined on this computer: an employee whose web access is off can't run \
-                 commands, and Nebo's own files are fenced by the command's text alone"
+                 commands, and Nebo's secrets are fenced by the command's text alone"
             );
         }
         found
@@ -157,16 +156,14 @@ fn profile(offline: bool, fence: Option<&NeboFiles>, closed_ports: &[u16]) -> St
     let mut p = vec!["(version 1)".to_string(), "(allow default)".to_string()];
     if let Some(fence) = fence {
         let subpaths = |paths: &[PathBuf]| paths.iter().map(|o| format!("(subpath {})", quoted(o))).collect::<Vec<_>>().join(" ");
-        let roots = fence.real_roots();
-        p.push(format!("(deny file-read* file-write* {})", subpaths(&roots)));
-        let skills = fence.real_skills();
-        if !skills.is_empty() {
-            p.push(format!("(allow file-read* {})", subpaths(&skills)));
+        let (closed, own) = fence.real_protected();
+        p.push(format!("(deny file-read* file-write* {})", subpaths(&closed)));
+        if let Some(own) = own {
+            p.push(format!("(allow file-read* file-write* {})", subpaths(&[own])));
         }
-        p.push(format!("(allow file-read* file-write* {})", subpaths(&fence.real_open())));
-        // Moving a folder above one would carry the closed paths out from
-        // under the fence.
-        let mut ancestors: Vec<&Path> = roots.iter().flat_map(|root| root.ancestors().skip(1)).collect();
+        // Moving a folder above one would carry the secrets out from under
+        // the list.
+        let mut ancestors: Vec<&Path> = closed.iter().flat_map(|path| path.ancestors().skip(1)).collect();
         ancestors.sort();
         ancestors.dedup();
         if !ancestors.is_empty() {
@@ -304,10 +301,9 @@ fn quoted(path: &Path) -> String {
     serde_json::to_string(&path.to_string_lossy()).unwrap_or_default()
 }
 
-/// The `bwrap` arguments: the whole filesystem as it is, each closed entry
-/// of Nebo's folders covered by an empty read-only one, the installed
-/// plugins' skills bound read-only, and offline a network namespace with
-/// nothing in it.
+/// The `bwrap` arguments: the whole filesystem as it is, each of Nebo's
+/// secrets covered by an empty read-only one, and offline a network
+/// namespace with nothing in it.
 fn bwrap_args(offline: bool, fence: Option<&NeboFiles>) -> Vec<OsString> {
     let mut args: Vec<OsString> = ["bwrap", "--dev-bind", "/", "/", "--die-with-parent"].map(OsString::from).into();
     if offline {
@@ -320,9 +316,6 @@ fn bwrap_args(offline: bool, fence: Option<&NeboFiles>) -> Vec<OsString> {
         } else {
             args.extend([OsString::from("--ro-bind"), "/dev/null".into(), path.into()]);
         }
-    }
-    for skill in fence.map(NeboFiles::real_skills).unwrap_or_default() {
-        args.extend([OsString::from("--ro-bind"), skill.clone().into(), skill.into()]);
     }
     args.push("--".into());
     args
@@ -378,7 +371,7 @@ mod tests {
             return;
         }
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"));
         let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
         let r = root.to_string_lossy();
         let (_, out) = run(&c, &format!("cat {r}/settings.json; cat {r}/logs/nebo.log; cd {r}/files && cat ../settings.json; cat {r}/sessions/s2/r.txt; grep -r SECRET {r}"));
@@ -390,12 +383,12 @@ mod tests {
         assert!(std::fs::read_to_string(root.join("settings.json")).unwrap().contains("SECRET"));
     }
 
-    /// The skills an installed plugin ships are read and run from, never
-    /// changed; the plugin's program and another Nebo's folder stay closed.
+    /// A plugin's folder is the command's to read, run from and change; its
+    /// accounts and another Nebo's settings stay closed.
     #[test]
-    fn a_confined_command_reads_a_plugin_skill_and_nothing_more() {
+    fn a_confined_command_uses_a_plugins_folder_but_no_secret() {
         if platform().is_none() {
-            eprintln!("no confinement on this computer; the fence rests on the safeguard");
+            eprintln!("no confinement on this computer; the list rests on the safeguard");
             return;
         }
         let (d, root) = home();
@@ -403,23 +396,18 @@ mod tests {
         std::fs::create_dir_all(skill.join("scripts")).unwrap();
         std::fs::write(skill.join("SKILL.md"), "---\nname: ledger-bills\n---\nRATES-GUIDE").unwrap();
         std::fs::write(skill.join("scripts/total.sh"), "echo TOTAL-RAN").unwrap();
-        std::fs::write(root.join("user/plugins/ledger/0.1.0/ledger"), "PROGRAM-BYTES").unwrap();
+        std::fs::create_dir_all(root.join("nebo/plugin-profiles/ledger")).unwrap();
+        std::fs::write(root.join("nebo/plugin-profiles/ledger/token.json"), "PLUGIN-TOKEN").unwrap();
         let other = std::fs::canonicalize(d.path()).unwrap().join("other-nebo");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("settings.json"), "THEIR-SECRET").unwrap();
-        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"));
         let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
         let s = skill.to_string_lossy();
-        let (ok, out) = run(&c, &format!("cat '{s}/SKILL.md' && sh '{s}/scripts/total.sh' && ls '{s}'"));
-        assert!(ok && out.contains("RATES-GUIDE") && out.contains("TOTAL-RAN"), "{out}");
-        let (ok, _) = run(&c, &format!("echo changed >> '{s}/SKILL.md'"));
-        assert!(!ok, "a plugin's skill was changed");
-        assert!(!std::fs::read_to_string(skill.join("SKILL.md")).unwrap().contains("changed"));
-        let (ok, _) = run(&c, &format!("echo new > '{s}/new.md'"));
-        assert!(!ok && !skill.join("new.md").exists(), "a file was added to a plugin's skill");
-        let program = root.join("user/plugins/ledger/0.1.0/ledger");
-        let (_, out) = run(&c, &format!("cat '{}' '{}'", program.display(), other.join("settings.json").display()));
-        assert!(!out.contains("PROGRAM-BYTES") && !out.contains("THEIR-SECRET"), "{out}");
+        let (ok, out) = run(&c, &format!("cat '{s}/SKILL.md' && sh '{s}/scripts/total.sh' && echo note >> '{s}/notes.md' && cat '{s}/notes.md'"));
+        assert!(ok && out.contains("RATES-GUIDE") && out.contains("TOTAL-RAN") && out.contains("note"), "{out}");
+        let (_, out) = run(&c, &format!("cat '{}' '{}'", root.join("nebo/plugin-profiles/ledger/token.json").display(), other.join("settings.json").display()));
+        assert!(!out.contains("PLUGIN-TOKEN") && !out.contains("THEIR-SECRET"), "{out}");
     }
 
     /// Offline, nothing the command starts reaches a socket: not this
