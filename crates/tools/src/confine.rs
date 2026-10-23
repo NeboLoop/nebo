@@ -378,7 +378,7 @@ mod tests {
             return;
         }
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false, false);
         let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
         let r = root.to_string_lossy();
         let (_, out) = run(&c, &format!("cat {r}/settings.json; cat {r}/logs/nebo.log; cd {r}/files && cat ../settings.json; cat {r}/sessions/s2/r.txt; grep -r SECRET {r}"));
@@ -407,7 +407,7 @@ mod tests {
         let other = std::fs::canonicalize(d.path()).unwrap().join("other-nebo");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("settings.json"), "THEIR-SECRET").unwrap();
-        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false, false);
         let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
         let s = skill.to_string_lossy();
         let (ok, out) = run(&c, &format!("cat '{s}/SKILL.md' && sh '{s}/scripts/total.sh' && ls '{s}'"));

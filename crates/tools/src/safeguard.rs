@@ -794,7 +794,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         std::fs::create_dir_all(root.join("files")).unwrap();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false, false);
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
 
@@ -832,7 +832,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         std::fs::create_dir_all(root.join("files")).unwrap();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false, false);
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let check = |into: &str| {
             media_write(&serde_json::json!({ "kind": "speech", "into": into }))
@@ -866,7 +866,7 @@ mod tests {
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), "---\nname: ledger-bills\n---\n").unwrap();
         let other = dir.path().join("platform-nebo");
-        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false, false);
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let guide = skill.join("SKILL.md").to_string_lossy().into_owned();
 
@@ -913,7 +913,7 @@ mod tests {
         let proj = dir.path().join("proj");
         std::fs::create_dir_all(proj.join("sub")).unwrap();
         std::fs::write(proj.join("README.md"), "hi").unwrap();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false, false);
         let run = Run { fence: Some(&fence), cwd: Some(&proj), cloud: false };
         let check = |command: &str, cwd: Option<&Path>| {
             let mut input = serde_json::json!({ "command": command });
@@ -947,6 +947,14 @@ mod tests {
         refused("f() { cd notes; }; cat ../settings.json", Some(&workspace));
         refused("if false; then cd notes; fi; cat ../settings.json", Some(&workspace));
         refused("cd \"$UNKNOWN\"; cat ../settings.json", Some(&workspace));
+        // `&&` only vouches for the `cd` within its own statement.
+        refused("cd nope && true; cat ../settings.json", Some(&workspace));
+        refused("cd nope && true\ncat ../settings.json", Some(&workspace));
+        refused("true || cd notes && cat ../settings.json", Some(&workspace));
+        refused("! cd nope && cat ../settings.json", Some(&workspace));
+        refused("if false; then cd notes && :; fi; cat ../settings.json", Some(&workspace));
+        refused("f() { cd notes && :; }; cat ../settings.json", Some(&workspace));
+        refused("cd notes && : || cat ../settings.json", Some(&workspace));
         // The call's own folder inside the closed part.
         refused("ls", Some(&root.join("logs")));
         refused("cat nebo.log", Some(&root.join("logs")));
@@ -993,7 +1001,7 @@ mod tests {
         let library = dir.path().join("Library/Application Support/Nebo");
         std::fs::create_dir_all(library.join("sessions/s9/verify")).unwrap();
         std::fs::create_dir_all(dir.path().join("NeboAI")).unwrap();
-        let mac = NeboFiles::at(&library, &[], &library.join("sessions/s1"), false);
+        let mac = NeboFiles::at(&library, &[], &library.join("sessions/s1"), false, false);
         let at_home = Run { fence: Some(&mac), cwd: Some(dir.path()), cloud: false };
         let r = check_shell_safeguard(
             &serde_json::json!({ "command": "cd NeboAI && ln -sf \"../Library/Application Support/Nebo/sessions/s9/verify/report.json\" x" }),
@@ -1044,8 +1052,9 @@ mod tests {
             "cd myrepo/web && cat ../../today.md",
             "cd notes && echo hi > ../today.md",
             "cd myrepo && pnpm --dir .. build",
+            "cd myrepo && make > ../build.log",
         ] {
-            let r = check(ok, None);
+            let r = check(ok, Some(&workspace));
             assert!(r.is_none(), "{ok:?} must be allowed: {r:?}");
         }
         assert!(check("ls && cat today.md", Some(&workspace.join("notes"))).is_none(), "the workspace as the call's folder");

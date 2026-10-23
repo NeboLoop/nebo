@@ -526,10 +526,16 @@ pub struct ShellCommand {
     /// at: `( … )`, `$( … )`, `<( … )`, and each stage of a pipeline. A
     /// `cd` inside one ends with it.
     pub scopes: Vec<usize>,
-    /// The command right after it runs only if it succeeds: the operator
-    /// after it is `&&` (`cmd && next`). A later command can then be sure
-    /// this command's `cd` took effect.
+    /// The command right after it runs only if it succeeds (`cmd && next`,
+    /// with no `||` or `!` on the way and not inside a branch, loop or
+    /// function body): that command can be sure this one's `cd` took effect.
     pub and_then: bool,
+    /// Where the statement it belongs to starts: the commands one `&&`, `||`
+    /// or `|` joins share it; a `;`, `&` or newline starts a new one.
+    pub stmt: usize,
+    /// It starts the right side of an `||` (`a || cmd`): it runs because
+    /// something before it failed, a `cd` included.
+    pub or_else: bool,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -602,26 +608,100 @@ pub fn shell_exit_command(script: &str) -> Option<(ShellCommand, Option<String>)
     }
 }
 
-/// The operator right after the command `node` in its enclosing `&&`/`||`
-/// list or pipeline (`&&`, `||`, `|`, `|&`), or `None` when nothing runs
-/// after it or it ends with `;`, `&` or a newline (those are not `list`
-/// nodes). A command on the right of one list is followed by the operator
-/// after the whole list.
-fn op_after(node: Node, script: &str) -> Option<String> {
-    let parent = node.parent()?;
-    match parent.kind() {
-        "list" | "pipeline" => {
-            let left = parent.named_child(0)?;
-            if left.id() == node.id() {
+/// Whether the command right after `node` runs only if `node` succeeds:
+/// climbing its `&&`/`||` lists, it is the left side of an `&&`, or the
+/// last of a left side reached through `&&` alone. A `!`, an `||`, or a
+/// branch, loop or function body around it (up to its subshell) means no.
+fn and_then(node: Node, script: &str) -> bool {
+    let mut around = node.parent();
+    while let Some(n) = around {
+        match n.kind() {
+            "negated_command" | "if_statement" | "elif_clause" | "else_clause" | "while_statement" | "until_statement"
+            | "for_statement" | "c_style_for_statement" | "case_statement" | "case_item" | "do_group"
+            | "function_definition" | "compound_statement" => return false,
+            "subshell" | "command_substitution" | "process_substitution" | "program" => break,
+            _ => around = n.parent(),
+        }
+    }
+    let mut at = node;
+    while let Some(parent) = at.parent() {
+        match parent.kind() {
+            "list" => {
                 let mut cursor = parent.walk();
-                parent.children(&mut cursor).find(|c| !c.is_named()).map(|c| node_text(c, script).to_string())
-            } else {
-                op_after(parent, script)
+                let op = parent.children(&mut cursor).find(|c| !c.is_named()).map(|c| node_text(c, script)).unwrap_or_default();
+                if op != "&&" {
+                    return false;
+                }
+                if parent.named_child(0).is_some_and(|left| left.id() == at.id()) {
+                    return true;
+                }
+                at = parent;
+            }
+            "redirected_statement" => at = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `node` starts the right side of an `||` list: climbing while it
+/// is the first thing in what holds it, it reaches an `||` as its right side.
+fn or_else(node: Node, script: &str) -> bool {
+    let mut at = node;
+    while let Some(parent) = at.parent() {
+        match parent.kind() {
+            "list" => {
+                if parent.named_child(0).is_some_and(|left| left.id() == at.id()) {
+                    at = parent;
+                    continue;
+                }
+                let mut cursor = parent.walk();
+                return parent.children(&mut cursor).any(|c| !c.is_named() && node_text(c, script) == "||");
+            }
+            "pipeline" | "redirected_statement" | "negated_command" if parent.named_child(0).is_some_and(|f| f.id() == at.id()) => {
+                at = parent
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The statement `node` belongs to: climbing through the `&&`/`||` lists,
+/// pipelines and redirects that join it to others.
+fn statement(node: Node) -> Node {
+    let mut at = node;
+    while let Some(parent) = at.parent() {
+        if !matches!(parent.kind(), "list" | "pipeline" | "redirected_statement" | "negated_command") {
+            break;
+        }
+        at = parent;
+    }
+    at
+}
+
+/// The last simple command under `node`, the one its redirects bind to.
+fn last_command(node: Node) -> Option<Node> {
+    let mut last = None;
+    let mut cursor = node.walk();
+    'walk: loop {
+        let n = cursor.node();
+        if n.kind() == "command" {
+            last = Some(n);
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() || cursor.node().id() == node.id() {
+                break 'walk;
             }
         }
-        "redirected_statement" | "negated_command" => op_after(parent, script),
-        _ => None,
     }
+    last
 }
 
 fn shell_command(node: Node, script: &str) -> ShellCommand {
@@ -638,7 +718,9 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         redirects: Vec::new(),
         patterns: Vec::new(),
         scopes: Vec::new(),
-        and_then: op_after(node, script).as_deref() == Some("&&"),
+        and_then: and_then(node, script),
+        stmt: statement(node).start_byte(),
+        or_else: or_else(node, script),
     };
     let mut around = Some(node);
     while let Some(n) = around {
@@ -652,7 +734,10 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
     }
     let mut around = Some(node);
     while let Some(n) = around {
-        for target in redirect_targets(n, script) {
+        // A redirect on a statement around a list (`cd a && make > log`)
+        // is the last command's, as the shell binds it.
+        let last = n == node || last_command(n).is_some_and(|c| c.id() == node.id());
+        for target in redirect_targets(n, script).into_iter().filter(|_| last) {
             let word = shell_word(target, script);
             if word.is_none() {
                 command.patterns.extend(shell_pattern(target, script));

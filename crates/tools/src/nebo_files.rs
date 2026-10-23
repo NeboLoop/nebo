@@ -53,10 +53,13 @@ const OPEN: &[&str] = &[
     // --user`, `cargo install`, `go install`): the image points them here
     // so they persist with the bot's state.
     "toolchains",
-    // A cloud bot's `$HOME` (`/data/home/nebo`): the employee's own home,
-    // its shell profile and the tools' settings it keeps there.
-    "home",
 ];
+
+/// A cloud bot's `$HOME` (`/data/home/nebo`), relative to Nebo's folder:
+/// the employee's own home there, its shell profile and the tools'
+/// settings it keeps. Open on a cloud bot only (`crate::cloud_bot`); on any
+/// other install a `home` in Nebo's folder is Nebo's own.
+const CLOUD_HOME: &str = "home";
 
 /// Where the installed plugins' packages live, relative to Nebo's folder.
 /// The folder of each skill a plugin ships is read by every run and changed
@@ -110,14 +113,14 @@ impl NeboFiles {
     pub fn of(ctx: &crate::origin::ToolContext) -> Option<Self> {
         let root = config::data_dir().ok()?;
         let session = crate::checkpoint::session_dir(&ctx.session_id);
-        Some(Self::at(&root, &config::nebo_roots(), &session, ctx.trusted_plugin_env))
+        Some(Self::at(&root, &config::nebo_roots(), &session, ctx.trusted_plugin_env, crate::cloud_bot()))
     }
 
     /// The fence of the folder `root`, with every other folder of `roots`
     /// closed whole (`root` itself may be among them), `session` (a folder
-    /// under `root`) open as the run's own, and the installed plugins open
-    /// when `plugins`.
-    pub fn at(root: &Path, roots: &[PathBuf], session: &Path, plugins: bool) -> Self {
+    /// under `root`) open as the run's own, the installed plugins open
+    /// when `plugins`, and the bot's home (`CLOUD_HOME`) open when `cloud`.
+    pub fn at(root: &Path, roots: &[PathBuf], session: &Path, plugins: bool, cloud: bool) -> Self {
         let root = lexical(&absolute(root, None));
         let real = resolved(&root);
         let mut others: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -131,6 +134,9 @@ impl NeboFiles {
         let mut open: Vec<PathBuf> = OPEN.iter().map(PathBuf::from).collect();
         if plugins {
             open.extend(PLUGINS.iter().map(PathBuf::from));
+        }
+        if cloud {
+            open.push(PathBuf::from(CLOUD_HOME));
         }
         if let Ok(rel) = lexical(&absolute(session, None)).strip_prefix(&root)
             && rel.components().count() >= 2
@@ -881,7 +887,7 @@ mod tests {
     }
 
     fn fence(root: &Path) -> NeboFiles {
-        NeboFiles::at(root, &[], &root.join("sessions/s1"), false)
+        NeboFiles::at(root, &[], &root.join("sessions/s1"), false, false)
     }
 
     #[test]
@@ -895,7 +901,10 @@ mod tests {
             assert!(!fence.closes(&root.join(open), None, Write), "{open} must be open");
         }
         assert!(!fence.closes(Path::new("/etc/hosts"), None, Write), "outside the folder is not the fence's");
-        assert!(!fence.closes(&root.join("home/nebo/.zshrc"), None, Write), "a cloud bot's home is the employee's");
+        assert!(fence.closes(&root.join("home/nebo/.zshrc"), None, Read), "a `home` in Nebo's folder is Nebo's own off a cloud bot");
+        let cloud = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false, true);
+        assert!(!cloud.closes(&root.join("home/nebo/.zshrc"), None, Write), "a cloud bot's home is the employee's");
+        assert!(cloud.closes(&root.join("settings.json"), None, Read), "the rest stays closed on a cloud bot");
     }
 
     /// A pattern is matched one part at a time, and one that needs more
@@ -964,7 +973,7 @@ mod tests {
             std::os::unix::fs::symlink(root.join("settings.json"), root.join(skill).join("link")).unwrap();
             assert!(fence.closes(&root.join(skill).join("link"), None, Read), "a link in a skill to a closed file");
         }
-        let workflow = NeboFiles::at(&root, &[], &root.join("sessions/s1"), true);
+        let workflow = NeboFiles::at(&root, &[], &root.join("sessions/s1"), true, false);
         assert!(!workflow.closes(&root.join(skill).join("SKILL.md"), None, Write), "a workflow step works in the plugins");
         let real = std::fs::canonicalize(&root).unwrap();
         let mut skills = fence.real_skills();
@@ -976,7 +985,7 @@ mod tests {
     #[test]
     fn a_workflow_step_also_works_in_the_installed_plugins_and_nothing_more() {
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), true);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), true, false);
         for open in ["nebo/plugins/odoo/1.0.0/odoo", "user/plugins/mine/bin", "appdata/plugins/odoo/cache.db", "files/a.md"] {
             assert!(!fence.closes(&root.join(open), None, Write), "{open} must be open to a workflow step");
         }
@@ -999,7 +1008,7 @@ mod tests {
         std::fs::create_dir_all(other.join("files")).unwrap();
         std::fs::write(other.join("settings.json"), "{\"accessSecret\": \"theirs\"}").unwrap();
         let gone = d.path().join("dot-nebo");
-        let fence = NeboFiles::at(&root, &[root.clone(), other.clone(), gone.clone()], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[root.clone(), other.clone(), gone.clone()], &root.join("sessions/s1"), false, false);
         for closed in [other.clone(), other.join("settings.json"), other.join("files/a.md"), gone.join("settings.json")] {
             assert!(fence.closes(&closed, None, Read), "{} must be closed", closed.display());
         }
@@ -1013,7 +1022,7 @@ mod tests {
         let inner = outer.join("instance");
         std::fs::create_dir_all(inner.join("files")).unwrap();
         std::fs::write(outer.join("settings.json"), "{}").unwrap();
-        let nested = NeboFiles::at(&inner, &[outer.clone()], &inner.join("sessions/s1"), false);
+        let nested = NeboFiles::at(&inner, &[outer.clone()], &inner.join("sessions/s1"), false, false);
         assert!(!nested.closes(&inner.join("files/a.md"), None, Write), "this Nebo's workspace");
         assert!(nested.closes(&inner.join("settings.json"), None, Read));
         assert!(nested.closes(&outer.join("settings.json"), None, Read));
@@ -1023,7 +1032,7 @@ mod tests {
         {
             let alias = d.path().join("alias");
             std::os::unix::fs::symlink(&root, &alias).unwrap();
-            let aliased = NeboFiles::at(&root, &[alias.clone()], &root.join("sessions/s1"), false);
+            let aliased = NeboFiles::at(&root, &[alias.clone()], &root.join("sessions/s1"), false, false);
             assert!(!aliased.closes(&alias.join("files/a.md"), None, Write), "its workspace by the other name");
             assert!(aliased.closes(&alias.join("settings.json"), None, Read));
         }
@@ -1036,7 +1045,7 @@ mod tests {
         let Some(user_home) = dirs::home_dir() else { return };
         let (_d, root) = home();
         let name = format!(".nebo-fence-proof-{}", std::process::id());
-        let fence = NeboFiles::at(&root, &[user_home.join(&name)], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[user_home.join(&name)], &root.join("sessions/s1"), false, false);
         for text in [
             format!("cat $HOME/{name}/settings.json"),
             format!("cat \"${{HOME}}/{name}/logs/nebo.log\""),
@@ -1068,7 +1077,7 @@ mod tests {
         let other = d.path().join("other-nebo");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("settings.json"), "{}").unwrap();
-        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false, false);
         let real = std::fs::canonicalize(&root).unwrap();
         let mut got: Vec<String> = fence
             .closed_entries()
