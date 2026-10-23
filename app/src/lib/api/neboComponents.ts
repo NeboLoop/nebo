@@ -1379,6 +1379,9 @@ export interface PermissionAskCard {
 	statedReason?: string
 	details: AskDetail[]
 	reason: string
+	reasonKey: string
+	reasonValues: Record<string, string>
+	warningKey?: string
 	command?: string
 	allowAlways: boolean
 	allowAlwaysCovers?: string

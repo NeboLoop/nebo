@@ -16,6 +16,8 @@ function ask(id: string, chatId: string, status = 'open', createdAt = 1): Permis
 		why: '',
 		details: [],
 		reason: "It's the first time it would contact them.",
+		reasonKey: 'permissionAsk.reason.newCounterparty',
+		reasonValues: {},
 		allowAlways: true,
 		thisOnce: true,
 		status,

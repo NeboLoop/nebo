@@ -54,6 +54,8 @@ const permission = {
 	why: '',
 	details: [],
 	reason: 'It goes outside the company.',
+	reasonKey: '',
+	reasonValues: {},
 	allowAlways: true,
 	thisOnce: true,
 	status: 'open',
@@ -164,6 +166,33 @@ describe('ask cards', () => {
 		const plain = text(render(PermissionAskCard, { props: { ask: permission, via: 'chat' } }).body);
 		expect(plain).toContain('Send the invoice to the client');
 		expect(plain).not.toMatch(/Why:|Show details/);
+	});
+
+	// The owner reads why it asked in his own language: the bot sends the
+	// line's key and values, and the card words it from the translations;
+	// a bot that sends none still shows its English line.
+	it('a permission ask words why it asked from the translations', () => {
+		const keyed = {
+			...permission,
+			reason: 'English from the bot',
+			reasonKey: 'permissionAsk.reason.reachesApp',
+			reasonValues: { app: 'Messages' }
+		};
+		const shown = text(render(PermissionAskCard, { props: { ask: keyed, via: 'chat' } }).body);
+		expect(shown).toContain('It would use your Messages app as you.');
+		expect(shown).not.toContain('English from the bot');
+
+		const removal = {
+			...permission,
+			reasonKey: 'permissionAsk.reason.removesFolders',
+			warningKey: 'permissionAsk.warning.recursivelyForceRemovesFiles'
+		};
+		expect(text(render(PermissionAskCard, { props: { ask: removal, via: 'chat' } }).body)).toContain(
+			'Removing a folder outside its work needs your OK. It may remove whole folders of files, without asking.'
+		);
+
+		const unknown = { ...permission, reason: 'Its own words.', reasonKey: 'permissionAsk.reason.noSuchCase' };
+		expect(text(render(PermissionAskCard, { props: { ask: unknown, via: 'chat' } }).body)).toContain('Its own words.');
 	});
 
 	it('an approval matches: tinted while open, a receipt once decided', () => {
