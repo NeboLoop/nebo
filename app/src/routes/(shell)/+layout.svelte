@@ -782,15 +782,19 @@
     onWsEvent('nebo:team_created', (data) => {
       const team = data?.team;
       if (!team?.id) return;
-      // A new team goes to the bottom of its list, as the bot orders it.
+      // Shown at once, then put in its place as the bot orders the list
+      // (A to Z among the teams the owner has not dragged).
       teams = [...teams.filter((w) => w.id !== team.id), { ...team, pinPosition: undefined }];
       teamActivity[team.id] = Date.now();
+      loadTeams();
     });
     // Name, mission, or members changed (the edit picker, or the model).
     onWsEvent('nebo:team_updated', (data) => {
       const team = data?.team;
       if (!team?.id) return;
       teams = teams.map((w) => (w.id === team.id ? { ...team, pinPosition: w.pinPosition } : w));
+      // A new name can move it in the bot's order.
+      loadTeams();
     });
     // Removed here or elsewhere (a temporary team disbands once its outcome
     // reached the owner).
@@ -2237,6 +2241,7 @@
       newTeamOpen = false;
       teams = [...teams.filter((w) => w.id !== team.id), { ...team, pinPosition: undefined, projects: [] }];
       teamActivity[team.id] = Date.now();
+      loadTeams();
       openTeam(team.id);
     }}
   />
