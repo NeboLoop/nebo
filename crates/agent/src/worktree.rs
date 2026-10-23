@@ -508,6 +508,97 @@ pub async fn reattach(iso: Isolation) -> Result<Isolation, String> {
     Ok(iso)
 }
 
+/// Put back what a copy lost while it sat between the turns that work in
+/// it: a loss nobody's call made (a cleaner, a crash, a hand) never lands
+/// as a deletion. Run when a copy comes back into use ([`reattach`]) and
+/// before an idle copy is put away, so its save is never made from a
+/// damaged copy. Every change a turn makes is saved when the turn ends
+/// ([`save`]), so between turns the copy holds what its save does:
+/// - a scratch copy gets back each file its saved snapshot holds and its
+///   folder no longer does; one the snapshot could not hold that is gone
+///   is held as unknown ([`UNHELD`]), never a deletion;
+/// - a worktree gets back each tracked file its folder lost; one whose own
+///   git link is gone is set aside whole, kept, and checked out again from
+///   its branch.
+///
+/// Returns what was put back, in words for the builder and the log; `None`
+/// when nothing was lost (or the copy was never saved, or is gone: [`present`]
+/// makes that one again).
+pub async fn restore_lost(iso: &Isolation) -> Result<Option<String>, String> {
+    let said = |n: usize, names: &[String], how: &str| {
+        let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+        let more = if n > shown.len() { format!(" and {} more", n - shown.len()) } else { String::new() };
+        format!("its copy at {} had lost {n} file(s) since it was last saved ({}{more}); {how}", iso.path().display(), shown.join(", "))
+    };
+    match iso {
+        Isolation::Git(wt) if !wt.path.exists() => Ok(None),
+        Isolation::Git(wt) if !wt.path.join(".git").exists() => {
+            let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+            let aside = wt.path.with_file_name(format!("{}.damaged-{secs}", wt.task_id));
+            std::fs::rename(&wt.path, &aside).map_err(|e| format!("set {} aside: {e}", wt.path.display()))?;
+            reattach_worktree(wt.clone()).await?;
+            Ok(Some(format!(
+                "its copy at {} had lost its link to the project; it was checked out again from branch {}, its last save, and what was left of it is kept at {}",
+                wt.path.display(),
+                wt.branch,
+                aside.display()
+            )))
+        }
+        Isolation::Git(wt) => {
+            if rebasing(wt).await {
+                return Ok(None);
+            }
+            let lost = z_paths(&wt.path, &["ls-files", "-z", "--deleted"]).await;
+            if lost.is_empty() {
+                return Ok(None);
+            }
+            let mut input = Vec::new();
+            for p in &lost {
+                input.extend_from_slice(p.as_bytes());
+                input.push(0);
+            }
+            git_io(&wt.path, &["checkout-index", "-z", "--stdin"], Some(&input)).await.map_err(|e| format!("put back {}: {e}", wt.path.display()))?;
+            Ok(Some(said(lost.len(), &lost, "they were put back from it")))
+        }
+        Isolation::Copy(c) if !c.path.is_dir() => Ok(None),
+        Isolation::Copy(c) => {
+            let shadow = saved_shadow(&c.path).await?;
+            let Some(saved) = shadow.kept(SAVED).await else { return Ok(None) };
+            let gone = |rel: &str| std::fs::symlink_metadata(c.path.join(rel)).is_err();
+            let lost: Vec<String> = shadow.paths(&saved).await?.into_iter().filter(|rel| gone(rel)).collect();
+            let saved_at = saved_dir(&c.path);
+            let mut unheld = read_paths(&saved_at.join(UNHELD));
+            let left: Vec<String> = read_paths(&saved_at.join(LEFT_OUT)).into_iter().filter(|rel| gone(rel) && !unheld.contains(rel)).collect();
+            if lost.is_empty() && left.is_empty() {
+                return Ok(None);
+            }
+            if !lost.is_empty() {
+                let from = c.path.with_file_name(format!("{}.restoring", c.task_id));
+                let _ = std::fs::remove_dir_all(&from);
+                let put = async {
+                    shadow.export(&saved, &from).await?;
+                    for rel in &lost {
+                        let to = c.path.join(rel);
+                        if let Some(parent) = to.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+                        }
+                        std::fs::copy(from.join(rel), &to).map_err(|e| format!("put back {rel}: {e}"))?;
+                    }
+                    Ok::<(), String>(())
+                }
+                .await;
+                let _ = std::fs::remove_dir_all(&from);
+                put?;
+            }
+            unheld.extend(left.iter().cloned());
+            write_paths(&saved_at.join(UNHELD), &unheld)?;
+            let mut names = lost.clone();
+            names.extend(left.iter().cloned());
+            Ok(Some(said(names.len(), &names, "they were put back from it, and any it could not hold are never landed as deletions")))
+        }
+    }
+}
+
 /// Make a copy that is gone again from its saved work ([`save`]): a
 /// worktree from its task branch, a scratch copy from its saved snapshot.
 /// A copy still on disk is left as it is.
@@ -520,6 +611,9 @@ pub async fn reattach(iso: Isolation) -> Result<Isolation, String> {
 /// the copy had it, so it is held as unknown ([`UNHELD`]): never a deletion
 /// the copy lands. Catching up then takes in the owner's version.
 async fn present(iso: &Isolation) -> Result<(), String> {
+    if let Some(said) = restore_lost(iso).await? {
+        tracing::warn!(copy = %iso.path().display(), "{said}");
+    }
     match iso {
         Isolation::Git(wt) => reattach_worktree(wt.clone()).await.map(|_| ()),
         Isolation::Copy(c) if c.path.is_dir() => Ok(()),
@@ -616,7 +710,12 @@ pub async fn save(iso: &Isolation) -> Result<(), String> {
     match iso {
         Isolation::Git(wt) => {
             if !wt.path.join(".git").exists() {
-                return Ok(());
+                // Gone: its work is on its branch. A folder left without its
+                // link is damaged, never saved over its branch.
+                return match wt.path.exists() {
+                    true => Err(format!("{} has lost its link to the project; it is not saved over its branch", wt.path.display())),
+                    false => Ok(()),
+                };
             }
             if rebasing(wt).await {
                 return Err(format!("{} is catching up with the project; it is saved when that ends", wt.path.display()));
@@ -2540,6 +2639,88 @@ mod tests {
             let unsaved = create_copy(f.path(), "sa-unsaved").unwrap();
             std::fs::remove_dir_all(&unsaved.path).unwrap();
             assert!(reattach(Isolation::Copy(unsaved)).await.unwrap_err().contains("none of its work was saved"));
+        }))
+    }
+
+    /// Data-loss review of #1014 (probe on 10-23): a cleaner deleted a file
+    /// of an idle copy that still looked present, and the landing deleted
+    /// the owner's file. A copy coming back into use gets back what it lost
+    /// since its last save; only what its own turns removed lands as a
+    /// deletion.
+    #[test]
+    fn a_file_an_idle_copy_lost_is_put_back_never_landed_as_a_deletion() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::create_dir_all(f.path().join("src")).unwrap();
+            std::fs::write(f.path().join("src/a.txt"), "the owner's\n").unwrap();
+            let c = create_copy(f.path(), "sa-lost-1").unwrap();
+            std::fs::write(c.path.join("b.txt"), "the copy's\n").unwrap();
+            let mut iso = Isolation::Copy(c.clone());
+            save(&iso).await.unwrap();
+            put_away(&mut iso, "Kept", false).await.unwrap();
+            // Lost while it sat: nobody's call removed it.
+            std::fs::remove_file(c.path.join("src/a.txt")).unwrap();
+            let iso = reattach(iso).await.unwrap();
+            assert_eq!(std::fs::read_to_string(c.path.join("src/a.txt")).unwrap(), "the owner's\n", "put back from the save");
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Add b", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), ["b.txt"]);
+            assert_eq!(std::fs::read_to_string(f.path().join("src/a.txt")).unwrap(), "the owner's\n", "the owner's file stays");
+
+            // An idle copy is never saved over its good save while damaged.
+            let c = create_copy(f.path(), "sa-lost-2").unwrap();
+            std::fs::write(c.path.join("c.txt"), "c\n").unwrap();
+            let iso = Isolation::Copy(c.clone());
+            save(&iso).await.unwrap();
+            std::fs::remove_file(c.path.join("src/a.txt")).unwrap();
+            assert!(restore_lost(&iso).await.unwrap().is_some_and(|s| s.contains("src/a.txt")));
+            save(&iso).await.unwrap();
+            std::fs::remove_dir_all(&c.path).unwrap();
+            reattach(iso.clone()).await.unwrap();
+            assert!(c.path.join("src/a.txt").exists(), "the save still holds it");
+
+            // A deletion its own turn made (before its save) still lands.
+            let c = create_copy(f.path(), "sa-lost-3").unwrap();
+            std::fs::remove_file(c.path.join("src/a.txt")).unwrap();
+            let iso = Isolation::Copy(c.clone());
+            save(&iso).await.unwrap();
+            let iso = reattach(iso).await.unwrap();
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Remove a", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), ["src/a.txt"]);
+        }))
+    }
+
+    /// The same for a worktree: a tracked file lost while it sat is put
+    /// back from its branch, and one whose own git link was cleaned away
+    /// is set aside and checked out again, never "in the way".
+    #[test]
+    fn a_worktree_that_lost_files_or_its_link_comes_back_from_its_branch() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-lost-w1").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "b\n").unwrap();
+            let iso = Isolation::Git(wt.clone());
+            save(&iso).await.unwrap();
+            std::fs::remove_file(wt.path.join("a.txt")).unwrap();
+            let iso = reattach(iso).await.unwrap();
+            assert!(wt.path.join("a.txt").exists(), "put back from its branch");
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Add b", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), ["b.txt"]);
+            assert!(r.path().join("a.txt").exists());
+
+            let wt = create_worktree(r.path(), "sa-lost-w2").await.unwrap();
+            std::fs::write(wt.path.join("c.txt"), "c\n").unwrap();
+            let iso = Isolation::Git(wt.clone());
+            save(&iso).await.unwrap();
+            std::fs::remove_file(wt.path.join(".git")).unwrap();
+            assert!(save(&iso).await.unwrap_err().contains("lost its link"), "never saved over its branch");
+            let iso = reattach(iso).await.unwrap();
+            assert!(wt.path.join(".git").exists() && wt.path.join("c.txt").exists(), "checked out again from its branch");
+            let mut isos = [iso];
+            let out = merge_all(&mut isos, "Add c", None, &Landing::default()).await;
+            assert_eq!(landed_files(&out[0].1), ["c.txt"]);
         }))
     }
 

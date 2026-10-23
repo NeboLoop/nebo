@@ -1980,6 +1980,11 @@ impl Helpers {
             let mut error = error.to_string();
             let held = self.state().copies.get(&run.id).cloned();
             if let Some(mut held) = held {
+                // Saved from the copy as its last turn left it, never from
+                // what it lost while Nebo was down.
+                if let Err(e) = crate::worktree::restore_lost(&held.iso).await {
+                    tracing::warn!(task = %run.id, error = %e, "what an interrupted helper's copy lost could not be put back");
+                }
                 match crate::worktree::put_away(&mut held.iso, "Unfinished work, put away when Nebo restarted", false).await {
                     Some(kept) => {
                         error.push_str(&format!("; {kept}, and a follow-up continues in it"));

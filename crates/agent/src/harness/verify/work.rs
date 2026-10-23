@@ -178,6 +178,10 @@ pub struct Starting<'a> {
 #[derive(Clone, Default)]
 pub struct TurnWork {
     works: Arc<tokio::sync::Mutex<Vec<Work>>>,
+    /// What the copies this turn took up had lost since they were last
+    /// saved, put back from it (`worktree::restore_lost`): told to the
+    /// builder beside its first routed call.
+    restored: Arc<std::sync::Mutex<Vec<String>>>,
     /// A linked coding agent's own project, as it was when the turn began:
     /// its work starts (a row, a review) only if the turn changed it.
     folder: Arc<tokio::sync::Mutex<Option<(PathBuf, Snapshot)>>>,
@@ -304,16 +308,24 @@ impl TurnWork {
             })
             .unwrap_or_default();
         for row in rows {
-            // Its copy, cleared by the system since: made again from its
+            // Its copy comes back as its last save left it: what it lost
+            // since is put back, and one that is gone is made again from its
             // saved work, while the verification's own files are kept.
-            if !Path::new(&row.work_dir).is_dir()
-                && row.landed_ref.is_empty()
+            if row.landed_ref.is_empty()
                 && row.state != "stopped"
                 && Work::home(&row.id).is_dir()
                 && let Some(iso) = row.isolation_state.clone().and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok())
-                && let Err(e) = worktree::reattach(iso).await
             {
-                tracing::warn!(verification = %row.id, error = %e, "a cleared copy could not be made again");
+                match worktree::restore_lost(&iso).await {
+                    Ok(Some(said)) => turn.restored.lock().unwrap_or_else(|e| e.into_inner()).push(said),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(verification = %row.id, error = %e, "what a copy lost could not be put back"),
+                }
+                if !Path::new(&row.work_dir).is_dir()
+                    && let Err(e) = worktree::reattach(iso).await
+                {
+                    tracing::warn!(verification = %row.id, error = %e, "a cleared copy could not be made again");
+                }
             }
             // Work still in hand: being checked, waiting on the owner, or
             // finished in a copy (this loop's, or a helper's own) that
@@ -480,6 +492,16 @@ impl TurnWork {
                 *c = mapped;
                 routed.rewrote = true;
             }
+        }
+        // What a copy lost since its last save, put back: the builder hears
+        // it once, beside its first call that reaches its work.
+        let restored: Vec<String> = std::mem::take(&mut *self.restored.lock().unwrap_or_else(|e| e.into_inner()));
+        if !restored.is_empty() {
+            let note = format!("Note: {}.", restored.join("; "));
+            routed.started = Some(match routed.started.take() {
+                Some(started) => format!("{started}\n{note}"),
+                None => note,
+            });
         }
         Ok(routed)
     }
@@ -949,6 +971,12 @@ pub async fn sweep(store: &db::Store, now: i64) -> usize {
                         && let Some(mut iso) = v.isolation_state.clone().and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok())
                         && iso.path().exists()
                     {
+                        // Its save is made from the copy as its last turn
+                        // left it, never from what it lost since.
+                        if let Err(e) = worktree::restore_lost(&iso).await {
+                            tracing::warn!(verification = %v.id, error = %e, "what an idle copy lost could not be put back; it is kept as it is");
+                            continue;
+                        }
                         worktree::put_away(&mut iso, "Verified work never landed, put away to free the disk", true).await;
                         let _ = store.set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
                     }
