@@ -823,12 +823,21 @@ fn mapped(value: &str, from: &str, to: &str) -> Option<String> {
 
 /// Rewrite every occurrence of the folder `from` as a path (followed by the
 /// end, a separator, a quote or a space) in every string of `input` to `to`.
+/// A command (`command`) is shell text: `to` is quoted there when the
+/// shell would otherwise split or read it ([`shell_safe`]); a file path is
+/// taken as it is.
 fn rewrite(input: &mut serde_json::Value, from: &str, to: &str) -> bool {
+    rewrite_in(input, from, to, false)
+}
+
+fn rewrite_in(input: &mut serde_json::Value, from: &str, to: &str, shell: bool) -> bool {
     match input {
         serde_json::Value::String(s) => {
             let mut out = String::with_capacity(s.len());
             let mut rest = s.as_str();
             let mut changed = false;
+            // The quoting the text so far leaves the next character in.
+            let mut quote = Quote::None;
             while let Some(at) = rest.find(from) {
                 let after = &rest[at + from.len()..];
                 let boundary =
@@ -838,13 +847,36 @@ fn rewrite(input: &mut serde_json::Value, from: &str, to: &str) -> bool {
                         c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
                     });
                 out.push_str(&rest[..at]);
-                if boundary && before_ok {
-                    out.push_str(to);
-                    changed = true;
-                } else {
+                quote = quote.after(&rest[..at]);
+                if !(boundary && before_ok) {
                     out.push_str(from);
+                    quote = quote.after(from);
+                    rest = after;
+                    continue;
                 }
+                changed = true;
                 rest = after;
+                if !shell || shell_safe(to) {
+                    out.push_str(to);
+                    continue;
+                }
+                match quote {
+                    Quote::Single => out.push_str(&to.replace('\'', "'\\''")),
+                    Quote::Double => out.push_str(&double_quoted(to)),
+                    // A bare word: the copy's path and the rest of the word
+                    // up to anything the shell reads itself (a space, an
+                    // operator, a quote, a pattern), in double quotes.
+                    Quote::None => {
+                        let end = rest
+                            .find(|c: char| c.is_whitespace() || ";&|()<>'\"`*?[{".contains(c))
+                            .unwrap_or(rest.len());
+                        out.push('"');
+                        out.push_str(&double_quoted(to));
+                        out.push_str(&double_quoted(&rest[..end]));
+                        out.push('"');
+                        rest = &rest[end..];
+                    }
+                }
             }
             out.push_str(rest);
             if changed {
@@ -854,11 +886,54 @@ fn rewrite(input: &mut serde_json::Value, from: &str, to: &str) -> bool {
         }
         serde_json::Value::Array(items) => items
             .iter_mut()
-            .fold(false, |acc, v| rewrite(v, from, to) || acc),
+            .fold(false, |acc, v| rewrite_in(v, from, to, shell) || acc),
         serde_json::Value::Object(map) => map
-            .values_mut()
-            .fold(false, |acc, v| rewrite(v, from, to) || acc),
+            .iter_mut()
+            .fold(false, |acc, (k, v)| rewrite_in(v, from, to, shell || k == "command") || acc),
         _ => false,
+    }
+}
+
+/// Whether `path` reads as one word in a shell, unquoted: only characters
+/// no shell gives a meaning to (a Windows path's `\` included, as
+/// PowerShell reads it).
+fn shell_safe(path: &str) -> bool {
+    path.chars().all(|c| c.is_alphanumeric() || "/._-+:@%,=~\\".contains(c))
+}
+
+/// `text` as it is written inside double quotes: what the shell would
+/// still read there escaped.
+fn double_quoted(text: &str) -> String {
+    text.replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`")
+}
+
+/// The quoting a point in shell text is in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Quote {
+    None,
+    Single,
+    Double,
+}
+
+impl Quote {
+    /// The quoting after `text`, from this one.
+    fn after(self, text: &str) -> Quote {
+        let mut q = self;
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            q = match (q, c) {
+                (Quote::None | Quote::Double, '\\') => {
+                    chars.next();
+                    q
+                }
+                (Quote::None, '\'') => Quote::Single,
+                (Quote::Single, '\'') => Quote::None,
+                (Quote::None, '"') => Quote::Double,
+                (Quote::Double, '"') => Quote::None,
+                _ => q,
+            };
+        }
+        q
     }
 }
 
@@ -982,6 +1057,46 @@ fn size_of(dir: &Path) -> u64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A copy whose path has a space ("Application Support"): a command
+    /// gets it quoted where the shell would split it, as one word with the
+    /// rest of the path; a file path gets it as it is. Live 2026-10-21:
+    /// `cd <copy> && …` failed with "cd: too many arguments".
+    #[test]
+    fn a_copy_path_with_a_space_is_quoted_in_a_command() {
+        let to = "/Users/o/Library/Application Support/Nebo/worktrees/site/v-1";
+        let cases = [
+            ("cd /x/site && ls", "cd \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\" && ls"),
+            ("cat /x/site/src/a.ts", "cat \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1/src/a.ts\""),
+            ("ls /x/site/src/*.ts", "ls \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1/src/\"*.ts"),
+            ("cd \"/x/site\" && ls", "cd \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\" && ls"),
+            ("cd '/x/site/web' && ls", "cd '/Users/o/Library/Application Support/Nebo/worktrees/site/v-1/web' && ls"),
+            ("pnpm --dir=/x/site build", "pnpm --dir=\"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\" build"),
+            ("echo $(ls /x/site)", "echo $(ls \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\")"),
+        ];
+        for (command, want) in cases {
+            let mut input = json!({"command": command, "path": "/x/site/src/a.ts"});
+            assert!(rewrite(&mut input, "/x/site", to));
+            assert_eq!(input["command"], want, "{command}");
+            assert_eq!(input["path"], format!("{to}/src/a.ts"), "a file path is not shell text");
+        }
+        // A copy path the shell reads as one word stays bare.
+        let mut input = json!({"command": "cd /x/site && ls"});
+        assert!(rewrite(&mut input, "/x/site", "/private/tmp/nebo-501/worktrees/site/v-1"));
+        assert_eq!(input["command"], "cd /private/tmp/nebo-501/worktrees/site/v-1 && ls");
+        // What the shell makes of the quoted command is the copy's path.
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("Application Support/v-1");
+        std::fs::create_dir_all(copy.join("src")).unwrap();
+        std::fs::write(copy.join("src/a.ts"), "x").unwrap();
+        let mut input = json!({"command": "cd /x/site && ls src/*.ts && cat /x/site/src/a.ts"});
+        assert!(rewrite(&mut input, "/x/site", &copy.to_string_lossy()));
+        if cfg!(unix) {
+            let out = std::process::Command::new("sh").arg("-c").arg(input["command"].as_str().unwrap()).output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "src/a.ts\nx");
+        }
+    }
 
     #[test]
     fn a_projects_paths_point_into_its_copy_and_nothing_else_moves() {
