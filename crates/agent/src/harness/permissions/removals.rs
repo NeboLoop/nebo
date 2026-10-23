@@ -39,15 +39,17 @@ pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Ru
             outside.push(target.clone());
             continue;
         };
-        // `folder/*`: what is in the folder.
-        let (folder, contents) = match path.file_name() {
-            Some(name) if name == "*" => (path.parent().unwrap_or(path), true),
-            _ => (path, false),
+        // `folder/*`: what is in the folder. Through a link, what it points
+        // to is removed when the target is written `link/` or `link/*`; the
+        // link alone otherwise.
+        let (folder, contents, follows) = match path.file_name() {
+            Some(name) if name == "*" => (path.parent().unwrap_or(path), true, true),
+            _ => (path, false, target.ends_with('/')),
         };
         if work.is_root(folder) {
             whole_work = true;
             outside.push(target.clone());
-        } else if !work.holds(folder, contents) {
+        } else if !work.holds(folder, contents, follows) {
             outside.push(target.clone());
         }
     }
@@ -95,10 +97,13 @@ impl Work {
     }
 
     /// Whether `folder` (or what is in it, `contents`) is the run's to
-    /// remove: inside one of its folders, or a folder it made.
-    fn holds(&self, folder: &Path, contents: bool) -> bool {
-        self.inside.iter().any(|f| within(folder, f) && (contents || !same(folder, f)))
-            || self.made.iter().any(|f| within(folder, f))
+    /// remove: inside one of its folders, or a folder it made. Where it
+    /// really is decides: a link inside the work to a folder outside it is
+    /// outside, when the removal goes through it (`follows`).
+    fn holds(&self, folder: &Path, contents: bool, follows: bool) -> bool {
+        let real = if follows { resolved(folder) } else { placed(folder) };
+        self.inside.iter().any(|f| real.starts_with(resolved(f)) && (contents || !same(folder, f)))
+            || self.made.iter().any(|f| real.starts_with(resolved(f)))
     }
 
     /// Whether `path` is a working copy or the project it copies, itself.
@@ -127,14 +132,19 @@ fn made_by_it(cx: &CheckCx<'_>, targets: &[String]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether `path` is `folder` or inside it, as named or with links resolved.
-fn within(path: &Path, folder: &Path) -> bool {
-    path.starts_with(folder) || resolved(path).starts_with(resolved(folder))
-}
-
-/// Whether two paths name one folder, as named or with links resolved.
+/// Whether two paths name one folder, as named or with links resolved:
+/// either is enough to count as the folder itself, which only ever asks.
 fn same(a: &Path, b: &Path) -> bool {
     a == b || resolved(a) == resolved(b)
+}
+
+/// Where `path` itself really is: its folder with links resolved, and its
+/// own name as written (a link there is the link, not what it points to).
+fn placed(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => resolved(parent).join(name),
+        _ => resolved(path),
+    }
 }
 
 /// `path` with links resolved as far as it exists.

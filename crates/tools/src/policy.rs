@@ -466,7 +466,17 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
 /// paths start.
 pub fn never_removed(cmd: &str, cwd: Option<&std::path::Path>) -> Option<String> {
     let fx = shell_effects(cmd, None).anchored(cwd.unwrap_or(std::path::Path::new("")));
-    fx.removes_trees.into_iter().filter_map(|t| t.strip_prefix("file:").map(str::to_string)).find(|p| is_never_removed(p))
+    // Through a link (`link/`, `link/*`), where it points is what goes.
+    let through = |p: &str| {
+        let (folder, contents) = match p.strip_suffix("/*") {
+            Some(folder) => (folder, true),
+            None => (p, false),
+        };
+        (contents || p.ends_with('/'))
+            && std::fs::canonicalize(folder)
+                .is_ok_and(|real| is_never_removed(&format!("{}{}", real.display(), if contents { "/*" } else { "" })))
+    };
+    fx.removes_trees.into_iter().filter_map(|t| t.strip_prefix("file:").map(str::to_string)).find(|p| is_never_removed(p) || through(p))
 }
 
 /// Whether `path` (as written, links not followed) is one no command
@@ -1131,6 +1141,15 @@ mod tests {
             assert!(never_removed(cmd, Some(std::path::Path::new("/w"))).is_some(), "{cmd}");
         }
         assert_eq!(never_removed("rm -rf ..", Some(std::path::Path::new(&format!("{home}/x")))), Some(home.clone()));
+        #[cfg(unix)]
+        {
+            // Through a link, where it points is what goes.
+            let d = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink("/usr", d.path().join("u")).unwrap();
+            let at = Some(d.path());
+            assert!(never_removed("rm -rf u/", at).is_some() && never_removed("rm -rf u/*", at).is_some());
+            assert_eq!(never_removed("rm -rf u", at), None, "the link itself");
+        }
         for cmd in ["rm -rf /usr/local/x", "rm -rf ~/x", "rm -rf ~/x/*", "rm -rf build", "rm -f /etc", "rm -rf \"$D\""] {
             assert_eq!(never_removed(cmd, Some(std::path::Path::new("/w"))), None, "{cmd}");
         }

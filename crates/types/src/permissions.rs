@@ -56,7 +56,9 @@ pub struct CallEffects {
     /// The folders and trees of files the call removes outright (a
     /// recursive or folder delete: `rm -r`, `rmdir`, `find … -delete`,
     /// `rsync --delete`), each named as `deletes` names a file
-    /// (`file:<path>`, `file:<folder>/*` for what is in a folder), or by its
+    /// (`file:<path>`, `file:<folder>/*` for what is in a folder, a trailing
+    /// `/` kept as written: through a link it removes what the link points
+    /// to), or by its
     /// command (`command:<words>`) when only running it knows the target.
     /// Outside the run's own work it asks, in every mode
     /// (`permissions::removals`).
@@ -132,7 +134,17 @@ impl CallEffects {
         };
         self.deletes = self.deletes.into_iter().map(anchor).collect();
         self.overwrites = self.overwrites.into_iter().map(anchor).collect();
-        self.removes_trees = self.removes_trees.into_iter().map(anchor).collect();
+        // A trailing `/` is kept: `rm -rf link/` removes what a link points
+        // to, `rm -rf link` only the link.
+        self.removes_trees = self
+            .removes_trees
+            .into_iter()
+            .map(|named| {
+                let slashed = named.len() > "file:/".len() && named.starts_with("file:") && named.ends_with('/');
+                let anchored = anchor(named);
+                if slashed && !anchored.ends_with('/') { format!("{anchored}/") } else { anchored }
+            })
+            .collect();
         self.creates = self
             .creates
             .into_iter()

@@ -1266,6 +1266,38 @@ async fn a_working_copy_is_its_own_inside_and_never_removed_whole() {
     assert!(r.parked_ask.is_some(), "a target only running it knows asks: {}", r.content);
 }
 
+/// A link in the work to a folder outside it: removing through the link
+/// (`docs/`, `docs/*`) removes the folder it points to, so it asks;
+/// removing the link itself goes ahead.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_out_of_the_work_is_judged_where_it_points() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let dir = tempfile::tempdir().unwrap();
+    let job = dir.path().join("job");
+    let documents = dir.path().join("Documents");
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::create_dir_all(&documents).unwrap();
+    std::fs::write(documents.join("contract.pdf"), "the owner's").unwrap();
+    std::os::unix::fs::symlink(&documents, job.join("docs")).unwrap();
+    put(&store, rule(Scope::Employee("dev".into()), cap("file"), Some(RuleField::Folder(job.clone())), Effect::Allow));
+    let mut c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+    c.owner_request = true;
+    let link = job.join("docs");
+    for through in [format!("rm -rf '{}/'", link.display()), format!("rm -rf '{}'/*", link.display()), format!("cd '{}' && rm -rf docs/", job.display())] {
+        let r = reg.execute(&c, "run_command", json!({ "command": through, "description": "Remove" })).await;
+        assert!(r.parked_ask.is_some(), "{through}: {}", r.content);
+        assert!(documents.join("contract.pdf").exists(), "{through}");
+    }
+    let r = reg.execute(&c, "run_command", json!({ "command": format!("rm -rf '{}'", link.display()), "description": "Remove" })).await;
+    assert!(!r.is_error && r.parked_ask.is_none(), "the link itself: {}", r.content);
+    assert!(std::fs::symlink_metadata(&link).is_err() && documents.join("contract.pdf").exists());
+}
+
 /// The folders no command removes are refused outright in every mode, with
 /// no card: nothing to allow, once or always. (`rmdir` of a folder that
 /// isn't empty: had it run, nothing would be gone.)
