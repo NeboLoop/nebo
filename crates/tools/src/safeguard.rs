@@ -1,6 +1,10 @@
 use std::path::Path;
 
-use crate::nebo_files::{Access, NeboFiles};
+use crate::nebo_files::NeboFiles;
+
+/// The file rule keys whose calls only read the files they name: an
+/// installed plugin is open to them, and to nothing that writes.
+const READ_KEYS: &[&str] = &["read_file", "share_file", "list_checkpoints", "check_plan"];
 
 /// Rule keys whose calls read or change files on this machine: the file
 /// safeguard and the folder fence apply to them.
@@ -18,14 +22,10 @@ const FILE_KEYS: &[&str] = &[
     "exit_plan_mode",
 ];
 
-/// The file rule keys whose calls only read the files they name: the skills
-/// the installed plugins ship are open to them, and to nothing that writes.
-const READ_KEYS: &[&str] = &["read_file", "share_file", "list_checkpoints", "check_plan"];
-
 /// Validate a tool call against hard safety limits, keyed on the call's
 /// rule key (`DynTool::rule_key`) so every shape of a job meets the same
-/// limit. `ctx` is the run the call belongs to: Nebo's own files are fenced
-/// but for the parts that run works in. Returns None if safe, or
+/// limit. `ctx` is the run the call belongs to: Nebo's secrets are closed to
+/// it (`nebo_files`). Returns None if safe, or
 /// Some(error_message) if blocked.
 /// This check is unconditional — cannot be bypassed by any setting.
 pub fn check_safeguard(rule_key: &str, input: &serde_json::Value, ctx: &crate::origin::ToolContext) -> Option<String> {
@@ -61,7 +61,7 @@ fn media_write(input: &serde_json::Value) -> Option<serde_json::Value> {
 
 /// What the safeguard reads about the run a call belongs to.
 struct Run<'a> {
-    /// Nebo's own files, fenced for this run.
+    /// Nebo's secrets, closed to this run.
     fence: Option<&'a NeboFiles>,
     /// The folder the run's relative paths are taken from.
     cwd: Option<&'a Path>,
@@ -71,59 +71,33 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    /// The refusal for a call that reaches `path` for `access` where the
-    /// fence closes it: one of Nebo's own files, or a plugin's skill it may
-    /// only read.
-    fn nebo_file(&self, path: &str, access: Access) -> Option<String> {
+    /// The refusal for a call that reaches `path`, when it is one of Nebo's
+    /// secrets, or an installed plugin a call would change (`write`).
+    fn nebo_file(&self, path: &str, write: bool) -> Option<String> {
         let fence = self.fence?;
         let named = Path::new(path);
-        if !fence.closes(named, self.cwd, access) {
+        if !fence.closes(named, self.cwd, write) {
             return None;
         }
-        Some(if fence.closes(named, self.cwd, Access::Read) {
-            nebo_file_refusal(path, fence)
+        Some(if fence.closes(named, self.cwd, false) {
+            nebo_file_refusal(path)
         } else {
             format!(
-                "BLOCKED: {path:?} is part of a skill an installed plugin ships. An employee reads it and \
-                 follows it, and never changes it. Your working files are under {}. \
-                 This is a hard safety limit that cannot be overridden",
-                fence.workspace().display()
+                "BLOCKED: {path:?} is part of an installed plugin. An employee reads it, runs it and follows its \
+                 skills, and never changes it. This is a hard safety limit that cannot be overridden"
             )
         })
     }
 }
 
-/// The refusal for reaching one of Nebo's own files, in the one wording
-/// every door uses. Where the employee was most likely looking for
-/// something it may use, the refusal says where that is instead: the app
-/// SDK, which is not a file at all (live 2026-10-23: refused
-/// `user/sdk/nebo.global.js`, an employee swapped the app's storage for
-/// `localStorage`), and an app's own folder, looked for from the data
-/// folder or `user` (live 2026-10-23: `find` there was refused, and the
-/// employee made the app's folder by hand).
-pub fn nebo_file_refusal(path: &str, fence: &NeboFiles) -> String {
-    let part = fence.part_of(Path::new(path));
-    let instead = match part.as_deref() {
-        Some(p) if p.components().any(|c| c.as_os_str() == "sdk") => " The app SDK is not a file here: Nebo serves \
-             it to every app page, through the script tag the starter page already has \
-             (`../../../sdk/nebo.global.js`). Its API is in the app-studio skill: \
-             read_skill_file(name: \"app-studio\", path: \"references/app-data.md\") and \
-             read_skill_file(name: \"app-studio\", path: \"references/sdk-more.md\")."
-            .to_string(),
-        Some(p) if p.as_os_str().is_empty() || p == Path::new("user") => format!(
-            " An app's or employee's own files are in its folder under {}, which is open to you: the app's \
-             location line (\"<name> is an app; its files are served from ...\") names its folder, and so does \
-             get_employee(name: \"<name>\").",
-            fence.agents_dir().display()
-        ),
-        _ => String::new(),
-    };
+/// The refusal for reaching one of Nebo's secrets, in the one wording every
+/// door uses: what it is, and that the rest of Nebo's folder is open.
+pub fn nebo_file_refusal(path: &str) -> String {
     format!(
-        "BLOCKED: {path:?} is one of Nebo's own files (its settings, logs, database and other internals). \
-         An employee never reads or changes them, and they are not where your work is: what Nebo knows \
-         reaches you through your tools. Your working files are under {}.{instead} \
-         This is a hard safety limit that cannot be overridden",
-        fence.workspace().display()
+        "BLOCKED: {path:?} is one of Nebo's secrets (its settings, keys and sign-in tokens, its database and logs, \
+         the plugins' accounts, or another conversation's saved results). An employee never reads or changes \
+         them; everything else in Nebo's folder is open to you. This is a hard safety limit that cannot be \
+         overridden"
     )
 }
 
@@ -283,7 +257,7 @@ fn check_file_safeguard(rule_key: &str, input: &serde_json::Value, run: &Run<'_>
     let action = verb(rule_key);
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Nebo's own files are off-limits for EVERY action, reads included: the
+    // Nebo's secrets are off-limits for EVERY action, reads included: the
     // settings file holds the server's secret, the database holds sessions
     // and auth material, and out-of-band access bypasses every tool gate
     // (2026-08-01: a cloud agent "fixed" its schedules with raw sqlite3
@@ -299,9 +273,8 @@ fn check_file_safeguard(rule_key: &str, input: &serde_json::Value, run: &Run<'_>
             None => vec![v],
         })
         .filter_map(|p| p.as_str());
-    let access = if READ_KEYS.contains(&rule_key) { Access::Read } else { Access::Write };
     for named in std::iter::once(path).chain(notebook).chain(listed).filter(|p| !p.is_empty()) {
-        if let Some(refusal) = run.nebo_file(named, access) {
+        if let Some(refusal) = run.nebo_file(named, !READ_KEYS.contains(&rule_key)) {
             return Some(refusal);
         }
     }
@@ -387,13 +360,13 @@ fn check_shell_safeguard(input: &serde_json::Value, run: &Run<'_>) -> Option<Str
 /// hard-safety pattern is present.
 fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
     // Shell is the easy way around the file tools' fence (sqlite3, cat,
-    // grep, …): a command that names one of Nebo's own files is refused
+    // grep, …): a command that names one of Nebo's secrets is refused
     // before it runs. The command itself runs confined as well (`confine`),
     // so a path spelled another way still can't be read.
     if let Some(fence) = run.fence
         && let Some(path) = fence.named_in(text, run.cwd)
     {
-        return Some(nebo_file_refusal(&path, fence));
+        return Some(nebo_file_refusal(&path));
     }
     let lower = text.to_lowercase();
     if has_sudo(&lower) && run.cloud {
@@ -807,47 +780,35 @@ mod tests {
         Run { fence: None, cwd: None, cloud: false }
     }
 
-    /// Nebo's own files are closed to every file action and every command
-    /// that names them, reads included; the workspace stays open.
-    /// A refusal where the employee was looking for something it may use
-    /// says where that is: the SDK's API for `…/sdk/…`, the apps' folder
-    /// for the data folder itself and `user`. Nothing more opens.
+    /// The refusal names what a secret is and says the rest of Nebo's folder
+    /// is open; the app SDK, an app's folder and the folder itself are.
     #[test]
-    fn a_refusal_points_to_the_sdk_docs_and_the_apps_folder() {
+    fn a_refusal_names_the_secret_and_the_rest_is_open() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("Nebo");
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
-        let said = |rel: &str| nebo_file_refusal(&root.join(rel).to_string_lossy(), &fence);
-        let sdk = said("user/sdk/nebo.global.js");
-        assert!(sdk.contains("references/app-data.md") && sdk.contains("references/sdk-more.md"), "{sdk}");
-        assert!(sdk.contains("Nebo serves it to every app page"), "{sdk}");
-        let agents = root.join("user/agents").display().to_string();
-        for looked in ["", "user"] {
-            let r = said(looked);
-            assert!(r.contains(&agents) && r.contains("location line"), "{looked:?}: {r}");
-            assert!(!r.contains("app-data.md"), "{r}");
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"));
+        let said = nebo_file_refusal(&root.join("settings.json").to_string_lossy());
+        assert!(said.contains("one of Nebo's secrets") && said.contains("everything else in Nebo's folder is open"), "{said}");
+        for open in ["user/sdk/nebo.global.js", "", "user", "user/agents/Scores/ui/index.html"] {
+            assert!(!fence.closes(&root.join(open), None, false), "{open:?} is open");
         }
-        let settings = said("settings.json");
-        assert!(!settings.contains("app-data.md") && !settings.contains("location line"), "{settings}");
-        for rel in ["user/sdk/nebo.global.js", "", "user", "settings.json"] {
-            assert!(fence.closes(&root.join(rel), None, crate::nebo_files::Access::Read), "{rel:?} stays closed");
-        }
-        assert!(!fence.closes(&root.join("user/agents/Scores/ui/index.html"), None, crate::nebo_files::Access::Write));
     }
 
+    /// Nebo's secrets are closed to every file action and every command
+    /// that names them, reads included; the rest stays open.
     #[test]
     fn nebo_own_files_are_closed_to_every_action() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         std::fs::create_dir_all(root.join("files")).unwrap();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"));
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
 
         for key in ["read_file", "write_file", "edit_file", "share_file", "convert_file"] {
             for closed in ["data/nebo.db", "settings.json", "logs/nebo.log"] {
                 let r = check_file_safeguard(key, &serde_json::json!({ "path": at(closed) }), &run);
-                assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "{key} {closed}: {r:?}");
+                assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's secrets")), "{key} {closed}: {r:?}");
             }
             assert!(check_file_safeguard(key, &serde_json::json!({ "path": at("files/draft.md") }), &run).is_none(), "{key}");
         }
@@ -870,7 +831,7 @@ mod tests {
     }
 
     /// generate_media writing an absolute or `~/` `into` meets the limits a
-    /// write_file there meets: Nebo's own files, protected system folders
+    /// write_file there meets: Nebo's secrets, protected system folders
     /// and the job's folders. A relative `into` stays inside the app's
     /// folder or the workspace, which the tool itself keeps it in.
     #[test]
@@ -878,14 +839,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         std::fs::create_dir_all(root.join("files")).unwrap();
-        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"));
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let check = |into: &str| {
             media_write(&serde_json::json!({ "kind": "speech", "into": into }))
                 .and_then(|write| check_file_safeguard("write_file", &write, &run))
         };
         let own = root.join("data/vo.mp3").to_string_lossy().into_owned();
-        assert!(check(&own).is_some_and(|m| m.contains("Nebo's own files")), "Nebo's own files");
+        assert!(check(&own).is_some_and(|m| m.contains("Nebo's secrets")), "Nebo's secrets");
         assert!(check(&root.join("files/vo.mp3").to_string_lossy()).is_none(), "the workspace");
         assert!(check("assets/vo.mp3").is_none(), "a relative into is the tool's to keep in its folder");
         let ctx = crate::origin::ToolContext::default();
@@ -900,40 +861,32 @@ mod tests {
         assert!(scope("assets/vo.mp3").is_none());
     }
 
-    /// A plugin's skill folder, the one `use_skill` names: the file tools
-    /// that read reach it, those that write never do, and a command may
-    /// name it. Another Nebo's folder on this computer is closed to all of
-    /// them.
+    /// An installed plugin is read and run, never changed; its accounts are a
+    /// secret, and so is another Nebo's settings on this computer.
     #[test]
-    fn a_plugin_skill_is_read_and_another_nebo_is_closed() {
+    fn a_plugin_is_read_never_changed_and_another_nebos_secrets_are_closed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         let skill = root.join("nebo/plugins/ledger/0.1.0/skills/ledger-bills");
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), "---\nname: ledger-bills\n---\n").unwrap();
         let other = dir.path().join("platform-nebo");
-        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false);
+        let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"));
         let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let guide = skill.join("SKILL.md").to_string_lossy().into_owned();
-
         for key in ["read_file", "share_file"] {
             assert!(check_file_safeguard(key, &serde_json::json!({ "path": guide }), &run).is_none(), "{key}");
         }
-        // A share of several files is refused when any one is Nebo's own.
-        let program = root.join("nebo/plugins/ledger/0.1.0/ledger").to_string_lossy().into_owned();
-        let r = check_file_safeguard("share_file", &serde_json::json!({ "path": [guide, program] }), &run);
-        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "a listed path: {r:?}");
-        for key in ["write_file", "edit_file", "convert_file"] {
+        for key in ["write_file", "edit_file"] {
             let r = check_file_safeguard(key, &serde_json::json!({ "path": guide }), &run);
-            assert!(r.as_deref().is_some_and(|m| m.contains("installed plugin ships") && m.contains("never changes it")), "{key}: {r:?}");
+            assert!(r.as_deref().is_some_and(|m| m.contains("never changes it")), "{key}: {r:?}");
         }
-        let program = root.join("nebo/plugins/ledger/0.1.0/ledger").to_string_lossy().into_owned();
-        let r = check_file_safeguard("read_file", &serde_json::json!({ "path": program }), &run);
-        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "the plugin's program: {r:?}");
+        let accounts = root.join("nebo/plugin-profiles/ledger/token.json").to_string_lossy().into_owned();
+        let r = check_file_safeguard("share_file", &serde_json::json!({ "path": [guide.clone(), accounts] }), &run);
+        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's secrets")), "a listed path: {r:?}");
         let theirs = other.join("settings.json").to_string_lossy().into_owned();
         let r = check_file_safeguard("read_file", &serde_json::json!({ "path": theirs }), &run);
-        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "another Nebo's settings: {r:?}");
-
+        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's secrets")), "another Nebo's settings: {r:?}");
         assert!(check_shell_safeguard(&serde_json::json!({ "command": format!("cat '{guide}'") }), &run).is_none());
         let r = check_shell_safeguard(&serde_json::json!({ "command": format!("cat {theirs}") }), &run);
         assert!(r.is_some(), "a command naming another Nebo's settings");

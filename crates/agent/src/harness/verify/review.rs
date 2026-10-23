@@ -531,10 +531,7 @@ mod tests {
                     }
                 }
             }
-            // Nebo's own folder, the verification's own files among them, is
-            // as closed to a reviewer as to any employee.
-            let own = crate::harness::verify::work::Work::home("v-reads").join("shadow.git/config");
-            assert!(tools::safeguard::check_safeguard("read_file", &json!({ "path": own }), &ctx).is_some());
+            // Nebo's secrets are as closed to a reviewer as to any employee.
             let cat = json!({ "command": format!("cat '{}'", home.join("settings.json").display()) });
             assert!(tools::safeguard::check_safeguard("run_command", &cat, &ctx).is_some());
             std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();

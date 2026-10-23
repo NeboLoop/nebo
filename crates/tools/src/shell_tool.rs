@@ -470,9 +470,9 @@ impl ShellTool {
     fn command(&self, input: &ShellInput, ctx: &ToolContext, installer: bool) -> Result<(tokio::process::Command, Vec<u16>), ToolResult> {
         let trusted_plugin_env = ctx.trusted_plugin_env;
         let default_cwd = ctx.cwd.as_deref();
-        // Every command is fenced, a workflow's command step included: it
-        // runs the installed plugins, so their programs and data are open to
-        // it (`NeboFiles::of`), and nothing else of Nebo's is. The command of
+        // Every command is fenced, a workflow's command step included: Nebo's
+        // secrets are closed to it (`NeboFiles::of`), the installed plugins
+        // are read-only, and the rest of Nebo's folder is open. The command of
         // an employee with Full access is not (`confine::Reach::unconfined`).
         let (fence, closed_ports) = if ctx.reach.unconfined || installer {
             (None, Vec::new())

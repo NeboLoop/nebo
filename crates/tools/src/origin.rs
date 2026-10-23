@@ -454,11 +454,9 @@ pub struct ToolContext {
     pub memory_matter: Option<String>,
     /// Engine-set ONLY (workflow command nodes — owner-authored deterministic
     /// steps): shell exec additionally injects each installed plugin's
-    /// resolved auth env, and the installed plugins' programs and data are
-    /// open to the command (`NeboFiles::of`), so `${plugin.X_BIN}`
-    /// invocations of env-auth plugins (e.g. odoo) work in command nodes.
-    /// The rest of Nebo's folder and its ports stay closed, as for every
-    /// command. NEVER set for model-driven shell — that would hand every
+    /// resolved auth env, so `${plugin.X_BIN}` invocations of env-auth
+    /// plugins (e.g. odoo) work in command nodes. Nebo's secrets
+    /// (`NeboFiles::of`) and its ports stay closed, as for every command. NEVER set for model-driven shell — that would hand every
     /// plugin credential to the model. Not forgeable from tool input: it
     /// lives on the context, not the payload.
     pub trusted_plugin_env: bool,
