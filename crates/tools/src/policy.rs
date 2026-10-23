@@ -268,7 +268,8 @@ pub fn is_read_only(cmd: &str) -> bool {
 /// the run's folder by the registry (`CallEffects::anchored`). What a
 /// command only knows when it runs (`rm -rf "$DIR"`) is named by the
 /// command itself. Removing scratch under the system temp folder is not
-/// removing anyone's work, and is not reported.
+/// removing anyone's work, and is not reported; Nebo's working copies
+/// (`config::copies_dir`) live there too, and removing one is.
 pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEffects {
     use std::path::{Path, PathBuf};
 
@@ -285,12 +286,23 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         let words: Vec<&str> = sub.words.iter().map(|w| w.as_deref().unwrap_or("…")).collect();
         format!("command:{}", words.join(" "))
     };
+    // Nebo's working copies, as named and with links resolved (`/tmp` is
+    // `/private/tmp` on a Mac): an employee's work that hasn't landed.
+    let copies: Vec<PathBuf> = config::copies_dir()
+        .map(|c| {
+            let real = std::fs::canonicalize(&c).unwrap_or_else(|_| c.clone());
+            vec![c, real]
+        })
+        .unwrap_or_default();
     let scratch = |named: &str| {
         named.strip_prefix("file:").is_some_and(|p| {
             let p = Path::new(p);
-            [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
-                .iter()
-                .any(|t| p.starts_with(t) && p != t)
+            let real = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            let a_copy = copies.iter().any(|c| p.starts_with(c) || real.starts_with(c));
+            !a_copy
+                && [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
+                    .iter()
+                    .any(|t| p.starts_with(t) && p != t)
         })
     };
     // The operands of a command: its words after the options (`--` ends them).
@@ -994,6 +1006,20 @@ mod tests {
         // Scratch under the temp folder is nobody's work.
         assert!(shell_effects("rm -rf /tmp/build-1 /private/tmp/x", None).deletes.is_empty());
         assert_eq!(shell_effects("rm -rf /tmp", None).deletes, vec!["file:/tmp"]);
+        // Nebo's working copies live there too, and are someone's work.
+        let copies = config::copies_dir().unwrap();
+        let copy = copies.join("worktrees/x");
+        assert_eq!(shell_effects(&format!("rm -rf {}", copy.display()), None).deletes, vec![format!("file:{}", copy.display())]);
+        assert_eq!(shell_effects(&format!("cd {} && rm -rf x", copies.join("worktrees").display()), None).deletes, vec![format!("file:{}", copy.display())]);
+        if let Ok(alias) = copies.strip_prefix("/private") {
+            // `/tmp/nebo-<uid>/…` on a Mac, where `/tmp` links to `/private/tmp`.
+            let own = copies.join(format!("policy-test-{}", std::process::id()));
+            std::fs::create_dir_all(&own).unwrap();
+            let named = std::path::Path::new("/").join(alias).join(own.file_name().unwrap());
+            let deletes = shell_effects(&format!("rm -rf {}", named.display()), None).deletes;
+            std::fs::remove_dir_all(&own).unwrap();
+            assert_eq!(deletes, vec![format!("file:{}", named.display())]);
+        }
 
         // Git: a working tree replaced, in the folder it runs in or `-C`.
         assert_eq!(shell_effects("cd /r && git checkout main && git rebase origin/main", None).overwrites, vec!["file:/r/.", "file:/r/."]);
