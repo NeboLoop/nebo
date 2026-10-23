@@ -162,7 +162,7 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
                         "share_menu": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "say": { "type": "string" }, "share": { "type": "boolean" } }, "required": ["label", "say"] }, "description": "The header's Share button: up to 6 of the app's own ways to share or export its work (label up to 40 characters); picking one sends its say into the app's chat as the owner's words. share: true makes it a link: the app answers with one file (its reply hands it over, or its page with nebo.share) and Nebo opens its Share dialog on it, where the owner picks who can open the link." }
                     }
                 },
-                "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]; device:motion for the gyroscope and accelerometer." }
+                "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]; device:motion for the gyroscope and accelerometer; filesystem:read:<folder> lets the page show the owner's files in that NeboAI folder (files.url)." }
             }
         },
         "ui": { "type": "object", "additionalProperties": { "type": "string" }, "description": "The app's page files: relative path → content, e.g. {\"index.html\": \"...\"}." },
@@ -851,6 +851,7 @@ mod tests {
         store.set_agent_napp_path(id, &folder.to_string_lossy()).unwrap();
         let ui = folder.join("ui");
         store.set_agent_app_fields(id, true, Some(&ui.to_string_lossy()), None, Some("{\"fullscreen\":true}")).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
         store.update_agent_input_values(id, "{\"level\":\"hard\"}").unwrap();
         store
             .upsert_agent_workflow(id, "nightly", "schedule", "0 3 * * *", Some("Nightly"), None, None, None, None, false)

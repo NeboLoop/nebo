@@ -1175,6 +1175,10 @@ pub struct Agent {
     /// they pick one. The roster sends the resolved shape, never this alone.
     #[serde(default)]
     pub shape: Option<String>,
+    /// 1 when the app was made on this bot, 0 when it was installed or
+    /// nothing says (`Store::set_agent_built_here`, `app_dev::is_own_app`).
+    #[serde(skip_serializing, default)]
+    pub built_here: i64,
 }
 
 fn default_input_values() -> String {

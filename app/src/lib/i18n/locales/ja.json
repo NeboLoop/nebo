@@ -4541,5 +4541,28 @@
 		"tellIt": "どうするか伝える",
 		"sending": "送信中…",
 		"sendFailed": "回答を送信できませんでした。"
+	},
+	"appPermissions": {
+		"title": "{name} が追加の許可を求めています",
+		"intro": "このアプリを信頼できる場合だけ許可してください。あとでアプリの設定から変更できます。",
+		"origin": "このアプリはここで作られたものではありません。あなたの会社の外の人が作りました。",
+		"wantsFiles": "{name} が {target} のファイルを見たいと言っています",
+		"wantsWeb": "{name} が {target} と通信したいと言っています",
+		"wantsWebAny": "{name} がどのウェブサイトとも通信したいと言っています",
+		"wantsHelper": "{name} が {target} に手伝いを頼みたいと言っています",
+		"wantsHelperAny": "{name} があなたの従業員の誰にでも手伝いを頼みたいと言っています",
+		"canFiles": "{target} のファイルを見る",
+		"canWeb": "{target} と通信する",
+		"canWebAny": "どのウェブサイトとも通信する",
+		"canHelper": "{target} に手伝いを頼む",
+		"canHelperAny": "あなたの従業員の誰にでも手伝いを頼む",
+		"allow": "許可する",
+		"deny": "許可しない",
+		"off": "オフ",
+		"notNow": "今はしない",
+		"sectionTitle": "このアプリができること",
+		"sectionHint": "このアプリはマーケットプレイスから入れたものです。許可したことだけができます。",
+		"ownHint": "このアプリはここで作られたので、求めることができます。",
+		"notAnswered": "未回答"
 	}
 }

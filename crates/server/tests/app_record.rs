@@ -145,6 +145,7 @@ async fn rig() -> Option<Rig> {
     store
         .set_agent_app_fields("app-motion", true, Some(ui.to_str().unwrap()), None, None)
         .unwrap();
+    store.set_agent_built_here("app-motion", true).unwrap();
     Some(Rig {
         data_dir: server.data_dir.clone(),
         record: tools::app_record::AppRecordTool::new(store.clone(), Some(manager.clone())),

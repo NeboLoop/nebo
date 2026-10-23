@@ -4541,5 +4541,28 @@
 		"tellIt": "Ne yapacağını söyle",
 		"sending": "Gönderiliyor…",
 		"sendFailed": "Yanıtın gönderilmedi."
+	},
+	"appPermissions": {
+		"title": "{name} daha fazlasını yapmak istiyor",
+		"intro": "Bu uygulamaya güveniyorsan evet de. Sonra uygulamanın ayarlarından değiştirebilirsin.",
+		"origin": "Bu uygulama burada yapılmadı. Şirketinin dışından biri yaptı.",
+		"wantsFiles": "{name}, {target} içindeki dosyaları görmek istiyor",
+		"wantsWeb": "{name}, {target} ile konuşmak istiyor",
+		"wantsWebAny": "{name} her web sitesiyle konuşmak istiyor",
+		"wantsHelper": "{name}, {target} kişisinden yardım istemek istiyor",
+		"wantsHelperAny": "{name} çalışanlarından herhangi birinden yardım istemek istiyor",
+		"canFiles": "{target} içindeki dosyaları görmek",
+		"canWeb": "{target} ile konuşmak",
+		"canWebAny": "Her web sitesiyle konuşmak",
+		"canHelper": "{target} kişisinden yardım istemek",
+		"canHelperAny": "Çalışanlarından herhangi birinden yardım istemek",
+		"allow": "İzin ver",
+		"deny": "İzin verme",
+		"off": "Kapalı",
+		"notNow": "Şimdi değil",
+		"sectionTitle": "Bu uygulamanın yapabildikleri",
+		"sectionHint": "Bu uygulama pazar yerinden geldi. Yalnızca izin verdiklerini yapabilir.",
+		"ownHint": "Bu uygulamayı burada sen yaptın, bu yüzden istediğini yapabilir.",
+		"notAnswered": "Yanıtlanmadı"
 	}
 }

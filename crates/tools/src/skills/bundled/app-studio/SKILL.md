@@ -138,7 +138,8 @@ create_employee(draft_id: "<the id it returned>")
 - `share_menu`: the header's Share button, up to 6 `{label, say}`, ways to
   share or export the work, each `say` sent to its chat (link: sdk-more.md).
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
-  or `network:*` (the proxy fetch), `device:motion` (tilt).
+  or `network:*` (the proxy fetch), `device:motion` (tilt),
+  `filesystem:read:<folder>` (sdk-more.md).
 
 The starter page, exactly:
 
@@ -163,8 +164,8 @@ The starter page, exactly:
 ```
 
 `../../../sdk/nebo.global.js` reaches the SDK from `ui/index.html` at all three
-addresses: copy it as written. The absolute `/sdk/nebo.global.js` loads on the
-desktop and fails in the mobile app.
+addresses: copy it as written. The absolute `/sdk/nebo.global.js` fails in the
+mobile app.
 
 **Check 1.** Run `app_status`. It names the folder the page is served from
 (`<data>/user/agents/<folder>/ui`); the app folder is the one above it. Write
@@ -309,7 +310,7 @@ the top level (`NeboAppSDK.identity` is `NeboAppSDK.nebo.identity`), but two
 are renamed there so they don't shadow the browser's: `nebo.fetch` is
 `NeboAppSDK.neboFetch`, `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
 The full top-level list is `nebo`, `identity`, `storage`, `agents`,
-`janus`, `decide`, `share`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
+`janus`, `decide`, `share`, `files`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
 `NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
 `setBaseUrl`. The canonical address is `/sdk/nebo.global.js`; from
 `ui/index.html` it is loaded as `../../../sdk/nebo.global.js`.
@@ -362,7 +363,7 @@ update_employee(name: "Deal Board", ui: { "app.tsx": "<the whole new file>" })
 A Lane B app changes in `src/`, then the build command, then Verify. The
 package (manifest, permissions, persona) changes only through update_employee
 in both lanes. The page is read from disk on every request; a manifest or
-persona change is picked up within seconds. Nothing to restart.
+persona change shows in seconds. Nothing to restart.
 
 Keep state in `storage`, not in the page: the window is closed and reopened
 and the page reloads on every rebuild.
@@ -401,7 +402,7 @@ Only when the owner asks ("publish yourself", or **Publish**): load the
 ## Deleting
 
 Only when the owner asks to remove the app for good: `delete_employee(name: "<name>")`.
-Deleting the folder by hand only deactivates the employee. Never delete to rename.
+Deleting the folder by hand only deactivates it. Never delete to rename.
 
 ## Vocabulary
 

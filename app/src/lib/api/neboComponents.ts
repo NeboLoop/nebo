@@ -176,6 +176,18 @@ export interface AppListing {
 	updatedAt: number
 }
 
+export interface AppPermission {
+	permission: string
+	kind: string
+	target: string
+	state: string
+}
+
+export interface AppPermissions {
+	own: boolean
+	permissions: AppPermission[]
+}
+
 export interface ApplyInstallResponse {
 	outcome: ImportOutcome
 }
