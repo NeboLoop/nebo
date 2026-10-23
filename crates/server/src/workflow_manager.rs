@@ -1971,7 +1971,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             &store,
                             &hub,
                             &chat_session,
-                            &format!("**Automation stopped at your limit** — {} ({}): {}", binding_name, trigger, why),
+                            &format!("**Automation stopped** — {} ({}): {}", binding_name, trigger, why),
                         );
                         hub.broadcast(
                             "workflow_run_stopped",

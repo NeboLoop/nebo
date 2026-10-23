@@ -729,7 +729,7 @@ fn validate_connections(def: &WorkflowDef) -> Result<(), WorkflowError> {
                 if let Some(source) = source {
                     if is_branching_type(&source.activity_type) {
                         return Err(WorkflowError::Validation(format!(
-                            "edges leaving '{}' ({}) must carry a branch label",
+                            "edges leaving '{}' ({}) must carry a branch label: draw its branches as labeled connections",
                             source.id, source.activity_type
                         )));
                     }

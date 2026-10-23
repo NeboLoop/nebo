@@ -121,7 +121,7 @@
     // employee paused or resumed. Never the per-token stream or the per-tool
     // event: while a chat runs those arrive every second, and each reload is
     // dozens of queries the server does not need while it is running the chat.
-    for (const ev of ['chat_created', 'subagent_start', 'subagent_complete', 'chat_complete', 'chat_error', 'chat_cancelled', 'ask_request', 'approval_request', 'permission_ask', 'permission_ask_resolved', 'agent_activated', 'agent_deactivated', 'workflow_run_started', 'workflow_activity_update', 'workflow_run_completed', 'workflow_run_failed', 'workflow_run_stopped', 'workflow_run_exited', 'agent_workflow_created', 'agent_workflow_deleted', 'team_created', 'team_removed']) {
+    for (const ev of ['chat_created', 'subagent_start', 'subagent_complete', 'chat_complete', 'chat_error', 'chat_cancelled', 'ask_request', 'approval_request', 'permission_ask', 'permission_ask_resolved', 'agent_activated', 'agent_deactivated', 'workflow_run_started', 'workflow_activity_update', 'workflow_run_completed', 'workflow_run_failed', 'workflow_run_stopped', 'workflow_run_cancelled', 'workflow_run_exited', 'agent_workflow_created', 'agent_workflow_deleted', 'team_created', 'team_removed']) {
       unsubs.push(ws.on(ev, scheduleLoad));
     }
     // The five-second progress snapshot lists every live run. It only earns a

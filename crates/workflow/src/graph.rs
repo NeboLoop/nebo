@@ -3892,10 +3892,38 @@ mod walk_tests {
         }
     }
 
-    /// In a fork, the run ends at the step that failed, not at the step
-    /// the failure passed through on its way out.
+    /// Branch `b` fails late with "X", branch `c` fails early with "Y". The
+    /// walk ends with the error first in edge order, b's, and the run ends
+    /// at b, the step that error rose in, not at c, which failed first.
+    struct ForkFails<'a> {
+        inner: ScriptedLoop<'a>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ActivityLoop for ForkFails<'_> {
+        async fn run_turn(&self, turn: crate::LoopTurn<'_>) -> Result<crate::LoopOutcome, WorkflowError> {
+            match turn.activity.id.as_str() {
+                "b" => {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    Err(WorkflowError::Provider("X".into()))
+                }
+                "c" => Err(WorkflowError::Provider("Y".into())),
+                _ => self.inner.run_turn(turn).await,
+            }
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            self.inner.acquire_tool_permit().await
+        }
+        fn cleanup(&self, run_id: &str) {
+            self.inner.cleanup(run_id)
+        }
+        fn context_chars(&self, agent_id: &str, level: Option<types::packs::Effort>) -> usize {
+            self.inner.context_chars(agent_id, level)
+        }
+    }
+
     #[tokio::test]
-    async fn a_fork_ends_at_the_branch_step_that_failed() {
+    async fn a_fork_ends_at_the_step_its_error_rose_in() {
         let provider = MockProvider::new(&[]);
         let def = parse_workflow(
             r#"{"version":"1.0","id":"t","name":"T","activities":[
@@ -3904,15 +3932,16 @@ mod walk_tests {
         )
         .expect("valid def");
         let store = test_store();
-        let looper = EndsAt::new(&provider, "c", || WorkflowError::Provider("upstream 500".into()));
-        crate::engine::execute_workflow(
+        let looper = ForkFails { inner: ScriptedLoop::new(&provider) };
+        let err = crate::engine::execute_workflow(
             &def, "", "test-owner", false, serde_json::json!({}), "manual", None, &store, None, &looper, &[],
             None, None, None, None, Vec::new(), None, None, None,
         )
         .await
         .unwrap_err();
+        assert_eq!(err.to_string(), "provider error: X", "edge order picks b's error");
         let run = &store.list_workflow_runs("t", 10, 0).unwrap()[0];
-        assert_eq!((run.status.as_str(), run.error_activity.as_deref()), ("failed", Some("c")));
+        assert_eq!((run.status.as_str(), run.error_activity.as_deref()), ("failed", Some("b")));
     }
 
     /// A loop that names no maxIterations runs every item: 150 here, past
