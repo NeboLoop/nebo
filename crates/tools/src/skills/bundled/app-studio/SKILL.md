@@ -59,6 +59,11 @@ the check passes. When looks matter, Design Depth adds the studio method.
   `assign_task(to: "<app name>", subject: ..., done_means: ...)`.
 - Nobody asks the owner for the install key or any other key, and nobody
   calls Nebo's API from the shell.
+- **To check an app works**, use `app_reload(check: true)`, `app_screenshot`,
+  `app_console`, or the browser on the app's page:
+  `browser_open(url: "http://127.0.0.1:27895/apps/<id>/ui/index.html")`
+  opens it under that app's own pass, so you can click, type and play-test.
+  Never search for keys or credentials, in Nebo's folder or anywhere else.
 - **Before asking the owner anything**, check it against this section and
   the hard rules. Never offer a choice that breaks them (a second path to
   files, files uploaded into storage as blobs, a page calling Nebo's API

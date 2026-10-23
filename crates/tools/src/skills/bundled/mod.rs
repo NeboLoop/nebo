@@ -361,6 +361,13 @@ mod bundled_skill_tests {
         assert!(content.contains("A page reaches only its own app"));
         assert!(content.contains("assign_task(to:"), "another employee hands the app's work to its employee");
         assert!(content.contains("install key"), "nobody asks the owner for the install key");
+        // How an app is checked, and never by finding a key (live 2026-10-22:
+        // an employee's browser landed on the sign-in and it searched Nebo's
+        // folder for the install key).
+        for way in ["app_reload(check: true)", "app_screenshot", "app_console", "browser_open(url: \"http://127.0.0.1:27895/apps/<id>/ui/index.html\")"] {
+            assert!(content.contains(way), "the skill checks an app with {way}");
+        }
+        assert!(content.contains("Never search for keys or credentials"));
         // What a confined page does instead of reaching past its app.
         let (_, _, page) = BUNDLED_SKILL_FILES
             .iter()
