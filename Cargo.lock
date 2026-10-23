@@ -5960,6 +5960,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
+ "url",
  "windows-sys 0.61.2",
 ]
 

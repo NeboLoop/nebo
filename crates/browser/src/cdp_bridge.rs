@@ -455,11 +455,12 @@ impl CdpBridge {
                     .map_err(|e| BrowserError::Other(format!("cdp viewport: {e}")))?;
                 Ok(json!({ "width": width, "height": height }))
             }
-            // The tab's pages stay at addresses under `prefix` from now on:
+            // The tab's page stays at addresses under `prefix` from now on:
             // any other page it would open (a link, a script setting
             // `location`, a form) is refused before it loads (`Fetch`
-            // interception of documents). A page opened for an employee to
-            // work on is never a door to another address.
+            // interception of documents), and a frame inside it loads only
+            // from the public web ([`kept_load`]). A page opened for an
+            // employee to work on is never a door to another address.
             "stay_within" => {
                 let prefix = args
                     .get("prefix")
@@ -477,11 +478,14 @@ impl CdpBridge {
                     .await
                     .map_err(|_| BrowserError::Timeout("cdp stay_within timed out".into()))?
                     .map_err(|e| BrowserError::Other(format!("cdp stay_within: {e}")))?;
+                // The tab's own frame keeps its id across navigations.
+                let main = page.mainframe().await.ok().flatten();
                 let watched = page.clone();
                 tokio::spawn(async move {
                     while let Some(ev) = paused.next().await {
                         let id = ev.request_id.clone();
-                        let answered = if within(&ev.request.url, &prefix) {
+                        let top = main.as_ref().is_none_or(|m| *m == ev.frame_id);
+                        let answered = if kept_load(&ev.request.url, &prefix, top) {
                             watched.execute(ContinueRequestParams::new(id)).await.map(|_| ())
                         } else {
                             warn!("a page kept to its own address tried to open another; refused");
@@ -749,6 +753,31 @@ fn within(url: &str, prefix: &str) -> bool {
     url.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
 }
 
+/// What a kept tab ("stay_within") lets a page load: its own page, at the
+/// top, only under `prefix`; a frame inside it under `prefix` or from the
+/// public web (an app's video or map embed), never this computer, its
+/// network or a cloud's metadata address (`types::public_net`, the one
+/// classifier). A name that resolves to a private address still passes:
+/// the browser resolves it, not this check.
+fn kept_load(url: &str, prefix: &str, top: bool) -> bool {
+    if within(url, prefix) {
+        return true;
+    }
+    if top {
+        return false;
+    }
+    let Ok(u) = url::Url::parse(url) else { return false };
+    if !matches!(u.scheme(), "http" | "https") {
+        return false;
+    }
+    match u.host() {
+        Some(url::Host::Ipv4(ip)) => types::public_net::is_public_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => types::public_net::is_public_ip(ip.into()),
+        Some(url::Host::Domain(d)) => !types::public_net::is_local_name(d),
+        None => false,
+    }
+}
+
 /// The viewport a call asks for: `width` and `height` (100 to 4000 CSS
 /// pixels, drawn one to one), and `mobile` (default: narrower than 768).
 fn viewport_size(args: &Value) -> Option<(u64, u64, bool)> {
@@ -890,6 +919,32 @@ mod tests {
             "about:blank",
         ] {
             assert!(!within(no, p), "{no}");
+        }
+    }
+
+    /// The page at the top stays under its address; a frame inside it also
+    /// loads from the public web, never this computer, its network or a
+    /// metadata address.
+    #[test]
+    fn a_kept_tab_loads_frames_from_the_public_web_alone() {
+        let p = "http://127.0.0.1:27895/k/av1/apps/a1/ui";
+        let own = format!("{p}/levels.html");
+        for (url, top, frame) in [
+            (own.as_str(), true, true),
+            ("https://www.youtube.com/embed/x", false, true),
+            ("https://93.184.216.34/", false, true),
+            ("http://169.254.169.254/latest/meta-data/", false, false),
+            ("http://127.0.0.1:8080/", false, false),
+            ("http://127.0.0.1:27895/api/v1/agents", false, false),
+            ("http://[::1]:3000/", false, false),
+            ("http://10.0.0.5/", false, false),
+            ("http://localhost:5173/", false, false),
+            ("http://app.localhost/", false, false),
+            ("file:///etc/passwd", false, false),
+            ("ftp://example.com/", false, false),
+        ] {
+            assert_eq!(kept_load(url, p, true), top, "top: {url}");
+            assert_eq!(kept_load(url, p, false), frame, "frame: {url}");
         }
     }
 

@@ -194,30 +194,52 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
         store.set_agent_app_fields(id, true, Some(ui.to_str().unwrap()), None, None).unwrap();
         store.set_agent_built_here(id, built_here).unwrap();
     };
+    // Another server on this computer, counting the requests that reach it
+    // (a connection the browser opens ahead and never asks on is not one):
+    // the page frames it, and the frame must never load.
+    let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let other_port = other.local_addr().unwrap().port();
+    let other_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits = other_hits.clone();
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = other.accept().await {
+            let hits = hits.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 16];
+                if let Ok(n) = conn.read(&mut buf).await
+                    && n > 0
+                {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+        }
+    });
     // The page asks, from its own address, for its own store, another
-    // app's, and Nebo's own API.
-    app(
-        "app-league",
-        "League",
-        true,
+    // app's, and Nebo's own API; it frames this computer's other server and
+    // a cloud's metadata address.
+    let league = format!(
         "<!doctype html><html><body>\
          <a id=\"out\" href=\"/\" style=\"position:fixed;left:0;top:0;width:300px;height:200px;display:block\">out</a>\
+         <iframe src=\"http://127.0.0.1:{other_port}/frame\"></iframe>\
+         <iframe src=\"http://169.254.169.254/latest/meta-data/\"></iframe>\
          <h1>League</h1><script>\
-         (async () => {\
-           const r = {};\
-           const ask = async (k, path, init) => {\
-             try { r[k] = (await fetch('../../../' + path, init)).ok; } catch (e) { r[k] = 'refused'; }\
-           };\
-           await ask('own', 'api/v1/apps/app-league/storage/score', { method: 'PUT',\
-             headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: 3 }) });\
+         (async () => {{\
+           const r = {{}};\
+           const ask = async (k, path, init) => {{\
+             try {{ r[k] = (await fetch('../../../' + path, init)).ok; }} catch (e) {{ r[k] = 'refused'; }}\
+           }};\
+           await ask('own', 'api/v1/apps/app-league/storage/score', {{ method: 'PUT',\
+             headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ value: 3 }}) }});\
            await ask('other', 'api/v1/apps/app-notes/storage');\
            await ask('nebo', 'api/v1/agents');\
-           await ask('where', 'api/v1/apps/app-league/storage/where', { method: 'PUT',\
-             headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: location.pathname }) });\
+           await ask('where', 'api/v1/apps/app-league/storage/where', {{ method: 'PUT',\
+             headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ value: location.pathname }}) }});\
            window.__asked = r;\
-         })();\
-         </script></body></html>",
+         }})();\
+         </script></body></html>"
     );
+    app("app-league", "League", true, &league);
     app("app-notes", "Notes", true, "<!doctype html><html><body>Notes</body></html>");
     app("app-bought", "Bought", false, "<!doctype html><html><body>Bought</body></html>");
 
@@ -255,6 +277,9 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
     assert!(asked.contains(r#""own":true"#), "its own routes: {asked}");
     assert!(!asked.contains(r#""other":true"#), "never another app's: {asked}");
     assert!(!asked.contains(r#""nebo":true"#), "never Nebo's API: {asked}");
+    // A frame of this computer's other server never loaded (nor the
+    // metadata address's): a frame loads from the public web alone.
+    assert_eq!(other_hits.load(std::sync::atomic::Ordering::SeqCst), 0, "a frame reached this computer's other server");
 
     // What a step answers names the page by its address alone.
     let at = run_js.execute_dyn(&ctx, json!({ "expression": "location.href" })).await;
