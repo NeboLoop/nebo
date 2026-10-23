@@ -12,15 +12,9 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // An app's page has one address, `/apps/<id>/ui/…` at the root
+    // (`lib.rs`), never a second one under `/api/v1`.
     Router::new()
-        .route(
-            "/apps/{agent_id}/ui/",
-            routing::get(apps::serve_app_ui_root),
-        )
-        .route(
-            "/apps/{agent_id}/ui/{*path}",
-            routing::get(apps::serve_app_ui),
-        )
         .route(
             "/apps/{agent_id}/api/{*path}",
             routing::any(apps::proxy_to_sidecar),
@@ -73,6 +67,12 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
         .route(
             "/apps/{agent_id}/share",
             routing::post(apps::share_file).layer(super::files::upload_limit(max_upload_bytes)),
+        )
+        // nebo.files: a file in a workspace folder the app's manifest
+        // grants (`filesystem:read:<folder>`), read only, with byte ranges.
+        .route(
+            "/apps/{agent_id}/files/{*path}",
+            routing::get(apps::serve_app_file),
         )
         .route(
             "/apps/{agent_id}/identity",

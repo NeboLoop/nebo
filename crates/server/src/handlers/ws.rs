@@ -213,38 +213,82 @@ pub async fn app_ws_handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !origin_is_trusted(&headers) && !from_its_desktop_window(&headers, &agent_id) {
+    // An app page holding its own pass (`napp::page_pass`) opens its own
+    // socket from wherever it runs: a sandboxed page's Origin is `null`.
+    if !crate::middleware::app_view_admits(&headers, &agent_id)
+        && !origin_is_trusted(&headers)
+        && !from_its_desktop_window(&headers, &agent_id)
+    {
         warn!(agent = %agent_id, "ws/app: rejected upgrade from untrusted origin");
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     match state.store.get_agent(&agent_id) {
         Ok(Some(agent)) if agent.is_app.unwrap_or(0) != 0 => {
-            ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state))
+            let pass = headers
+                .get(crate::middleware::APP_VIEW_PASS)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state, pass))
         }
         Ok(_) | Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-/// Whether a hub event belongs on app `agent_id`'s page. An event that
-/// names an app (`appId`: its data changed, a reload) or a surface of an
-/// employee (`agent:<id>:<view>`, an A2UI message) reaches only that app's
-/// page; one app never sees another's data or cards. Every other event
-/// passes as before.
+/// Whether a hub event belongs on app `agent_id`'s page. Only what is the
+/// app's own reaches it: an event that names the app (`appId`: its data
+/// changed, a reload), one of its surfaces (`agent:<id>:<view>`, an A2UI
+/// message or an action's status), and the turns of its own conversations
+/// (`session_id` of `agent:<id>:app[:<ctx>]` or `app:<id>:…`), their words
+/// alone ([`APP_CONVERSATION_EVENTS`]). Nothing else: never the owner's
+/// other conversations, his approvals, his roster, another app's data or
+/// cards, a tool's call or result.
 pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
     let p = &event.payload;
-    if let Some(app) = p.get("appId").and_then(|v| v.as_str()) {
+    let field = |k: &str| p.get(k).and_then(|v| v.as_str());
+    if let Some(app) = field("appId") {
         return app == agent_id;
     }
-    if event.event_type == "a2ui_message" {
-        let surface = p.get("surface_id").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(owner) = surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) {
-            return owner == agent_id;
-        }
+    if let Some(surface) = field("surface_id").or_else(|| field("surfaceId")) {
+        return is_app_surface(agent_id, surface);
     }
-    true
+    field("session_id").or_else(|| field("session_key")).is_some_and(|key| is_app_session(agent_id, key))
+        && APP_CONVERSATION_EVENTS.contains(&event.event_type.as_str())
 }
 
-async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
+/// What of its own conversations' turns reaches an app's page: the words
+/// and how the turn ends. Never a tool call, a tool's result, thinking or an
+/// approval request (they carry what the employee read with its tools).
+const APP_CONVERSATION_EVENTS: &[&str] = &[
+    "chat_ack",
+    "chat_user_message",
+    "chat_stream",
+    "chat_complete",
+    "chat_error",
+    "chat_cancelled",
+    "chat_taken_in",
+    "chat_created",
+];
+
+/// Whether `surface` is one of app `agent_id`'s own surfaces
+/// (`agent:<id>:<view>`).
+pub(crate) fn is_app_surface(agent_id: &str, surface: &str) -> bool {
+    surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) == Some(agent_id)
+}
+
+/// Whether `key` is one of app `agent_id`'s own conversations: its page's
+/// (`agent:<id>:app`, `agent:<id>:app:<ctx>`) or its SDK's (`app:<id>:…`).
+pub(crate) fn is_app_session(agent_id: &str, key: &str) -> bool {
+    let page = format!("agent:{agent_id}:app");
+    key == page || key.strip_prefix(&page).is_some_and(|r| r.starts_with(':')) || key.strip_prefix(&format!("app:{agent_id}:")).is_some()
+}
+
+/// How often an open app socket keeps its page's pass
+/// (`apps::PAGE_PASS_IDLE`): well inside it.
+const APP_PASS_KEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// `pass`: the page's pass the socket opened with, kept while it is open;
+/// once it is gone (revoked), the socket closes.
+async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState, pass: Option<String>) {
     info!(agent = %agent_id, "app ws client connected");
     // Open while this page is: `app_reload` tells its employee whether a
     // view is there to reload.
@@ -266,8 +310,18 @@ async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
         return;
     }
 
+    let mut keep = tokio::time::interval(APP_PASS_KEEP_EVERY);
+    keep.tick().await;
     loop {
         tokio::select! {
+            _ = keep.tick() => {
+                if let Some(pass) = &pass
+                    && !napp::page_pass::admits(pass, &napp::page_pass::Scope::App(agent_id.clone()))
+                {
+                    debug!(agent = %agent_id, "app ws: its page's pass is gone");
+                    break;
+                }
+            }
             result = hub_rx.recv() => {
                 match result {
                     Ok(event) => {
@@ -374,6 +428,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     &action,
                     &component_id,
                     &context,
+                    crate::a2ui_actions::ActionFrom::AppPage,
                 )
                 .await;
 
@@ -412,7 +467,9 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     prompt,
                     user_id: String::new(),
                     channel: "app".to_string(),
-                    origin: Origin::User,
+                    // The page wrote this action and its context, not the
+                    // owner: it runs as the app's input, as `invoke` does.
+                    origin: Origin::App,
                     door: types::permissions::Door::Chat,
                     narrow: None,
                     agent_id: agent_id.clone(),
@@ -933,6 +990,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                             &action_name,
                                             &component_id,
                                             &context,
+                                            crate::a2ui_actions::ActionFrom::Owner,
                                         ).await;
 
                                         if handled {
@@ -3139,8 +3197,9 @@ mod app_event_tests {
         HubEvent { event_type: kind.to_string(), payload }
     }
 
-    /// One app's data changes, reloads and cards reach that app's page only;
-    /// events that name no app pass as before.
+    /// One app's data changes, reloads and cards reach that app's page only,
+    /// and so do its own conversations' turns; nothing else of the owner's
+    /// reaches any app.
     #[test]
     fn an_app_page_hears_only_its_own_apps_events() {
         let changed = ev("app_data_changed", serde_json::json!({ "appId": "crm", "keys": ["contacts"] }));
@@ -3150,10 +3209,33 @@ mod app_event_tests {
         let card = ev("a2ui_message", serde_json::json!({ "surface_id": "agent:crm:main", "message": {} }));
         assert!(reaches_app("crm", &card));
         assert!(!reaches_app("notes", &card));
+        let status = ev("a2ui_action_status", serde_json::json!({ "surface_id": "agent:crm:main", "status": "running" }));
+        assert!(reaches_app("crm", &status));
+        assert!(!reaches_app("notes", &status));
 
         let other = ev("a2ui_message", serde_json::json!({ "surface_id": "chat-1", "message": {} }));
-        assert!(reaches_app("notes", &other));
-        assert!(reaches_app("crm", &ev("a2ui_action_status", serde_json::json!({ "surface_id": "x" }))));
+        assert!(!reaches_app("notes", &other));
+
+        for key in ["agent:crm:app", "agent:crm:app:doc-1", "app:crm:api"] {
+            let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
+            assert!(reaches_app("crm", &turn), "{key}");
+            assert!(!reaches_app("notes", &turn), "{key}");
+        }
+        for kind in ["tool_start", "tool_result", "thinking", "approval_request"] {
+            let own = ev(kind, serde_json::json!({ "session_id": "agent:crm:app", "input": "secret" }));
+            assert!(!reaches_app("crm", &own), "never its own turn's {kind}");
+        }
+        for key in ["agent:crm:web", "agent:crm:thread:t1", "agent:crm:apple", "agent:crmx:app", "default"] {
+            let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
+            assert!(!reaches_app("crm", &turn), "the owner's own conversation {key}");
+        }
+        for (kind, payload) in [
+            ("approval_request", serde_json::json!({ "id": "a1", "tool": "system" })),
+            ("agent_roster_changed", serde_json::json!({})),
+            ("notification", serde_json::json!({ "title": "x" })),
+        ] {
+            assert!(!reaches_app("crm", &ev(kind, payload)), "{kind}");
+        }
     }
 }
 

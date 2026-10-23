@@ -1546,7 +1546,7 @@ impl<'a> AppPage<'a> {
         let view = AppPage {
             executor,
             session: format!("app-page-{}", uuid::Uuid::new_v4().simple()),
-            pass: napp::app_view::grant(&app.id, ttl),
+            pass: napp::page_pass::grant(napp::page_pass::Scope::App(app.id.to_string()), ttl),
         };
         let url = format!(
             "http://127.0.0.1:{}/k/{}/apps/{}/ui/{page}",
@@ -1612,7 +1612,7 @@ impl<'a> AppPage<'a> {
     /// Close the tab and drop the pass.
     pub(crate) async fn close(self) {
         self.executor.close_session(&self.session).await;
-        napp::app_view::revoke(&self.pass);
+        napp::page_pass::revoke(&self.pass);
     }
 }
 

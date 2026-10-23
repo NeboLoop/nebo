@@ -450,6 +450,26 @@ pub async fn serve_file(
     let (canonical, canonical_root) = within_files_root(&files_root, &files_root.join(&file_path))
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    // Out of the workspace, the rule is asked again of what the path opens:
+    // a link or a name the disk reads another way never reaches a private
+    // folder.
+    if files_root == config::workspace_dir().map_err(to_error_response)?
+        && files_root != config::files_dir().map_err(to_error_response)?
+        && canonical.strip_prefix(&canonical_root).map_or(true, |rel| config::workspace_private(&rel.to_string_lossy()))
+    {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+
+    // A page opened without its folder's pass (the Work panel's frame, the
+    // owner opening a link): opened again under one. It runs sandboxed
+    // (`middleware::api_security_headers`), so the pictures and styles it
+    // loads from beside it carry that pass, and nothing else of the owner's.
+    if content_type_for(&canonical).starts_with("text/html")
+        && document_folder(&file_path).is_some()
+        && !opened_with_pass(&request, &file_path)
+    {
+        return Ok(with_folder_pass(&request, &file_path));
+    }
 
     if params.get("preview").map(String::as_str) == Some("pdf")
         && canonical
@@ -463,29 +483,66 @@ pub async fn serve_file(
     Ok(stream_file(&canonical, content_type_for(&canonical), request).await)
 }
 
+/// How long a document's folder pass outlives its last use: its page loads
+/// what is beside it as it opens, and a reload gets a new one.
+const DOCUMENT_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Whether the request carried a live pass for the folder `rel` is in.
+fn opened_with_pass(request: &axum::extract::Request, rel: &str) -> bool {
+    request
+        .extensions()
+        .get::<crate::middleware::PathCredential>()
+        .is_some_and(|c| napp::page_pass::admits(&c.0, &napp::page_pass::Scope::Folder(rel.to_string())))
+}
+
+/// The folder a document's pass may read beside it: the folder `rel` is in,
+/// when that is one of the owner's own folders. A document at the top of the
+/// workspace, or in anything private to it (`config::workspace_private`: the
+/// store's uploads and kept files, hidden or agent folders), gets no pass:
+/// it opens sandboxed and loads nothing of the owner's beside it.
+fn document_folder(rel: &str) -> Option<&str> {
+    rel.rsplit_once('/').map(|(f, _)| f).filter(|f| !f.is_empty() && !config::workspace_private(f))
+}
+
+/// A `303` to the document `rel` under a pass for its folder
+/// (`/k/<pass>/api/v1/files/<rel>`), relative to where it was asked for, so
+/// the tunnel's `/t/<bot>` stays; a credential the address carried (a pass
+/// gone with a restart) is replaced.
+fn with_folder_pass(request: &axum::extract::Request, rel: &str) -> axum::response::Response {
+    let folder = document_folder(rel).unwrap_or_default().to_string();
+    let pass = napp::page_pass::grant(napp::page_pass::Scope::Folder(folder), DOCUMENT_PASS_IDLE);
+    let uri = request
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|o| o.0.clone())
+        .unwrap_or_else(|| request.uri().clone());
+    let path = uri.path();
+    let replacing = request.extensions().get::<crate::middleware::PathCredential>().is_some();
+    let up = path.matches('/').count().saturating_sub(1) + if replacing { 2 } else { 0 };
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let location = format!("{}k/{pass}{path}{query}", "../".repeat(up));
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::SEE_OTHER)
+        .header(axum::http::header::LOCATION, location)
+        .header(axum::http::header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::empty())
+        .unwrap_or_default()
+}
+
 /// Where `/api/v1/files/<rel>` is on disk. Nebo's own entries (`.shared`,
-/// `work/blobs`, uploads, previews: `workspace_history::store_own`) are in the
+/// `work/blobs`, uploads, previews: `config::store_own`) are in the
 /// file store; the owner's files are in his workspace (`~/NeboAI`) when the
 /// file is there, else in the store, where every older link points. Hidden
 /// files and the coding agents' own folders in the workspace are never served.
 pub fn served_root(rel: &str) -> Result<std::path::PathBuf, types::NeboError> {
     let files = config::files_dir()?;
     let workspace = config::workspace_dir()?;
-    if workspace == files || workspace_private(rel) {
+    if workspace == files || config::workspace_private(rel) {
         return Ok(files);
     }
     Ok(if workspace.join(rel).exists() { workspace } else { files })
 }
 
-/// A workspace path that is never served or located: Nebo's own names, a
-/// hidden part, or a coding agent's folder.
-fn workspace_private(rel: &str) -> bool {
-    let mut parts = rel.split(['/', '\\']).filter(|p| !p.is_empty());
-    let Some(first) = parts.next() else { return true };
-    tools::workspace_history::store_own(first)
-        || tools::workspace_history::agent_folder(first)
-        || parts.any(|p| p.starts_with('.'))
-}
 
 /// The ONE containment check for anything read out of `<data_dir>/files`:
 /// resolve `..` and symlinks, then confirm the target is still inside the
@@ -683,6 +740,9 @@ pub(crate) fn content_type_for(path: &std::path::Path) -> &'static str {
         Some("wav") => "audio/wav",
         Some("ogg") => "audio/ogg",
         Some("aac") => "audio/aac",
+        // Captions: a browser takes a <track> only as text/vtt.
+        Some("vtt") => "text/vtt; charset=utf-8",
+        Some("srt") => "application/x-subrip",
         Some("flac") => "audio/flac",
         Some("pdf") => "application/pdf",
         Some("json") => "application/json; charset=utf-8",
@@ -955,6 +1015,14 @@ mod stream_file_tests {
         assert_eq!(header(&h, header::CONTENT_LENGTH), "1024");
         assert_eq!(header(&h, header::CONTENT_ENCODING), "");
         assert_eq!(header(&h, header::CONTENT_TYPE), "video/mp4");
+    }
+
+    #[test]
+    fn captions_get_their_types() {
+        for (name, want) in [("a.vtt", "text/vtt; charset=utf-8"), ("A.VTT", "text/vtt; charset=utf-8"), ("a.srt", "application/x-subrip")] {
+            assert_eq!(content_type_for(std::path::Path::new(name)), want, "{name}");
+            assert_eq!(crate::handlers::apps::mime_from_path(std::path::Path::new(name)), want, "an app's own {name}");
+        }
     }
 
     #[test]

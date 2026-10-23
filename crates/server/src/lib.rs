@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod a2ui_actions;
 pub mod agents_export;
 pub mod app_lifecycle;
+mod app_grants;
 pub mod backup_ship;
 mod artifact_updates;
 pub mod background;
@@ -2655,6 +2656,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                             &agent_id,
                             &loaded.source_path.to_string_lossy(),
                         );
+                        // Where it came from: a folder in user/agents is the
+                        // owner's own; an install is not (`app_dev::is_own_app`).
+                        let _ = store.set_agent_built_here(&agent_id, loaded.source == napp::AgentSource::User);
                         // The primary agent ("Nebo") is exposed to the loop by
                         // default. Set it once at row creation — the migration
                         // only covers installs that predate this row, so fresh
@@ -3821,7 +3825,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .nest(
             "/api/v1",
+            // An address under /api/v1 no route answers is a 404, never
+            // Nebo's page (the SPA fallback below): a pass that admits
+            // `/api/v1/apps/<id>/…` never opens Nebo's own page there.
             routes::api_routes(jwt_secret, state.config.runtime.max_upload_bytes())
+                .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
                 .layer(axum::middleware::from_fn(middleware::api_security_headers)),
         )
         .fallback(spa::spa_handler)
@@ -4195,6 +4203,7 @@ async fn handle_agent_fs_events(
                                 &agent_id,
                                 &loaded.source_path.to_string_lossy(),
                             );
+                            let _ = state.store.set_agent_built_here(&agent_id, loaded.source == napp::AgentSource::User);
                             // A seat hired after the packs exist reads them now (R15).
                             {
                                 let packs = state.packs.read().await.clone();
@@ -7924,12 +7933,18 @@ fn cors_layer() -> CorsLayer {
     .collect();
 
     CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, parts: &axum::http::request::Parts| {
             // Allow neboapp:// origins (Tauri custom protocol for app windows)
             if let Ok(s) = origin.to_str() {
                 if s.starts_with("neboapp://") {
                     return true;
                 }
+            }
+            // An app's sandboxed page (`Origin: null`) calling its own app
+            // with its pass: the one opaque origin let through, and only on
+            // what the pass opens. Its session cookie is never sent there.
+            if origin.as_bytes() == b"null" {
+                return middleware::pass_opens(parts.extensions.get::<middleware::PathCredential>(), &parts.method, parts.uri.path());
             }
             static_origins.contains(origin)
         }))

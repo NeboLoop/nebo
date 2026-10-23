@@ -1,6 +1,7 @@
 mod a2ui_surfaces;
 mod addressings;
 mod app_listings;
+mod app_permission_grants;
 mod assignments;
 mod advisors;
 mod agent_profile;

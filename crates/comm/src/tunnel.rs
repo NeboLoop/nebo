@@ -390,7 +390,7 @@ async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()>
         .split(' ')
         .nth(1)
         .unwrap_or("");
-    if is_blocked_path(path) {
+    if is_blocked_path(path.strip_prefix(UNVERIFIED_PREFIX).unwrap_or(path)) {
         debug!(path = %::types::redact::redact(path), "tunnel: refused blocked local surface");
         return deny(&mut stream, "not reachable through the tunnel").await;
     }
@@ -407,6 +407,21 @@ async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()>
     tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
     Ok(())
 }
+
+/// The header the tunnel stamps on a request the hub checked the owner on.
+pub const TUNNEL_AUTH_HEADER: &str = "x-nebo-tunnel-auth";
+
+/// The header the tunnel stamps, instead of [`TUNNEL_AUTH_HEADER`], on a
+/// request the hub forwarded without checking anyone ([`UNVERIFIED_PREFIX`]).
+pub const TUNNEL_UNVERIFIED_HEADER: &str = "x-nebo-tunnel-unverified";
+
+/// The path prefix the hub puts on a request it forwards WITHOUT checking
+/// the owner: an app page's own calls (`/k/<app pass>/…`), which run in an
+/// origin of their own and carry no hub sign-in. The tunnel takes it off and
+/// stamps [`TUNNEL_UNVERIFIED_HEADER`], so the local server asks the request
+/// for the app's pass and admits nothing else. A Nebo that predates this
+/// sees the prefix as an unknown page and serves nothing of the owner's.
+pub const UNVERIFIED_PREFIX: &str = "/tunnel-unverified";
 
 /// Per-boot secret the tunnel stamps onto requests it forwards to the local
 /// server (`X-Nebo-Tunnel-Auth`). A request carrying it was owner-authenticated
@@ -429,13 +444,33 @@ pub fn tunnel_auth_secret() -> &'static str {
 /// (stripping any inbound copy first; see [`tunnel_auth_secret`]) and, unless
 /// the request is a WebSocket upgrade, make the server close after one
 /// response — replacing any `Connection:` header, or inserting one if absent.
+///
+/// A request the hub marked unchecked ([`UNVERIFIED_PREFIX`] on its path)
+/// goes on without the prefix and stamped [`TUNNEL_UNVERIFIED_HEADER`]
+/// instead: it never carries the owner's stamp.
 fn forward_head(head: &str, upgrade: bool) -> String {
     let mut out = String::with_capacity(head.len() + 80);
     let mut wrote_conn = false;
-    for line in head.split_inclusive("\r\n") {
+    let mut stamp = "X-Nebo-Tunnel-Auth";
+    for (i, line) in head.split_inclusive("\r\n").enumerate() {
         let trimmed = line.trim_end_matches("\r\n");
         let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("x-nebo-tunnel-auth:") {
+        if i == 0 {
+            // The request line: `<METHOD> <target> <version>`.
+            let mut parts = trimmed.splitn(3, ' ');
+            let (method, target, version) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            if let Some(rest) = target.strip_prefix(UNVERIFIED_PREFIX)
+                && (rest.starts_with('/') || rest.is_empty())
+            {
+                stamp = "X-Nebo-Tunnel-Unverified";
+                let rest = if rest.is_empty() { "/" } else { rest };
+                out.push_str(&format!("{method} {rest} {version}\r\n"));
+                continue;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if lower.starts_with(&format!("{TUNNEL_AUTH_HEADER}:")) || lower.starts_with(&format!("{TUNNEL_UNVERIFIED_HEADER}:")) {
             continue; // never trust an inbound copy
         }
         if lower.starts_with("connection:") && !upgrade {
@@ -445,7 +480,7 @@ fn forward_head(head: &str, upgrade: bool) -> String {
             if !wrote_conn && !upgrade {
                 out.push_str("Connection: close\r\n");
             }
-            out.push_str(&format!("X-Nebo-Tunnel-Auth: {}\r\n", tunnel_auth_secret()));
+            out.push_str(&format!("{stamp}: {}\r\n", tunnel_auth_secret()));
             out.push_str(line); // the terminating \r\n
         } else {
             out.push_str(line);
@@ -536,6 +571,26 @@ mod tests {
                 tunnel_auth_secret()
             )
         );
+    }
+
+    /// A request the hub forwarded unchecked (an app page's own call) goes
+    /// on without the marker and never with the owner's stamp, whatever it
+    /// carried in; an inbound unverified stamp is stripped like the other.
+    #[test]
+    fn an_unchecked_request_never_carries_the_owners_stamp() {
+        let h = "GET /tunnel-unverified/k/av1/api/v1/apps/a1/storage HTTP/1.1\r\nHost: neboai.com\r\nX-Nebo-Tunnel-Auth: forged\r\nX-Nebo-Tunnel-Unverified: forged\r\n\r\n";
+        assert_eq!(
+            forward_head(h, false),
+            format!(
+                "GET /k/av1/api/v1/apps/a1/storage HTTP/1.1\r\nHost: neboai.com\r\nConnection: close\r\nX-Nebo-Tunnel-Unverified: {}\r\n\r\n",
+                tunnel_auth_secret()
+            )
+        );
+        // Only the whole prefix counts.
+        let out = forward_head("GET /tunnel-unverifiedx HTTP/1.1\r\nHost: a\r\n\r\n", false);
+        assert!(out.starts_with("GET /tunnel-unverifiedx ") && out.contains("X-Nebo-Tunnel-Auth: "));
+        // A blocked surface stays blocked behind the prefix.
+        assert!(is_blocked_path("/tunnel-unverified/ws/extension".strip_prefix(UNVERIFIED_PREFIX).unwrap()));
     }
 
     #[test]

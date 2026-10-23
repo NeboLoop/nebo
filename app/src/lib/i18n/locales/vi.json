@@ -4541,5 +4541,28 @@
 		"tellIt": "Bảo nó cần làm gì",
 		"sending": "Đang gửi…",
 		"sendFailed": "Câu trả lời của bạn chưa được gửi."
+	},
+	"appPermissions": {
+		"title": "{name} muốn làm thêm",
+		"intro": "Chỉ đồng ý nếu bạn tin ứng dụng này. Bạn có thể đổi ý sau trong phần cài đặt của ứng dụng.",
+		"origin": "Ứng dụng này không được làm ở đây. Một người ngoài công ty bạn đã tạo ra nó.",
+		"wantsFiles": "{name} muốn xem các tệp trong {target}",
+		"wantsWeb": "{name} muốn trò chuyện với {target}",
+		"wantsWebAny": "{name} muốn trò chuyện với bất kỳ trang web nào",
+		"wantsHelper": "{name} muốn nhờ {target} giúp",
+		"wantsHelperAny": "{name} muốn nhờ bất kỳ nhân viên nào của bạn giúp",
+		"canFiles": "Xem các tệp trong {target}",
+		"canWeb": "Trò chuyện với {target}",
+		"canWebAny": "Trò chuyện với bất kỳ trang web nào",
+		"canHelper": "Nhờ {target} giúp",
+		"canHelperAny": "Nhờ bất kỳ nhân viên nào của bạn giúp",
+		"allow": "Cho phép",
+		"deny": "Không cho phép",
+		"off": "Tắt",
+		"notNow": "Để sau",
+		"sectionTitle": "Những gì ứng dụng này được làm",
+		"sectionHint": "Ứng dụng này đến từ marketplace. Nó chỉ được làm những gì bạn cho phép.",
+		"ownHint": "Bạn đã tạo ứng dụng này ở đây, nên nó được làm những gì nó yêu cầu.",
+		"notAnswered": "Chưa trả lời"
 	}
 }

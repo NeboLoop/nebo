@@ -43,6 +43,13 @@ pub fn routes() -> Router<AppState> {
             "/agents/{id}/permissions",
             axum::routing::get(handlers::permissions::get_agent_permissions),
         )
+        // What an app from the marketplace may do beyond its own page: the
+        // owner's answers (`app_grants`).
+        .route(
+            "/agents/{id}/app-permissions",
+            axum::routing::get(handlers::permissions::get_app_permissions)
+                .put(handlers::permissions::answer_app_permission),
+        )
         .route(
             "/agents/{id}/permissions",
             axum::routing::put(handlers::permissions::update_agent_permissions),
