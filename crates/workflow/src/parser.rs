@@ -487,9 +487,10 @@ pub fn validate_workflow(def: &WorkflowDef) -> Result<(), WorkflowError> {
     }
 
     validate_activities(def)?;
-    if !def.connections.is_empty() {
-        validate_connections(def)?;
-    }
+    // The graph the walker runs: a definition without connections is held
+    // to the same rules as its chain (a condition or loop in one has no
+    // labeled branch to take).
+    validate_connections(&def.as_graph())?;
 
     // Wiring: conditions that cannot parse, `${nodes...}` placeholders, data
     // read from steps that are not upstream, unreachable steps. Errors only:
@@ -512,13 +513,6 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
         def.activities.iter().map(|a| a.id.as_str()).collect();
 
     for activity in &def.activities {
-        // A chain's edges carry no branch: routing needs its edges drawn.
-        if def.connections.is_empty() && is_branching_type(&activity.activity_type) {
-            return Err(WorkflowError::Validation(format!(
-                "{} activity '{}' needs a connected workflow (its branches as labeled connections)",
-                activity.activity_type, activity.id
-            )));
-        }
         match activity.activity_type.as_str() {
             "condition" => {
                 if param_str(activity, "expression").trim().is_empty() {
@@ -1150,7 +1144,7 @@ mod tests {
             r#"{"id":"x","type":"loop","params":{"source":"inputs.items"}}"#,
         ] {
             let err = wf(&format!("[{typed}]"), "[]").unwrap_err().to_string();
-            assert!(err.contains("needs a connected workflow"), "{err}");
+            assert!(err.contains("edges leaving 'x'") && err.contains("must carry a branch label"), "{err}");
         }
     }
 

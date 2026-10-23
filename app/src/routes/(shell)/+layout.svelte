@@ -827,6 +827,7 @@
     onWsEvent('nebo:workflow_run_started', () => refreshRuns());
     onWsEvent('nebo:workflow_run_completed', () => refreshRuns());
     onWsEvent('nebo:workflow_run_failed', () => refreshRuns());
+    onWsEvent('nebo:workflow_run_stopped', () => refreshRuns());
 
     return () => {
       for (const off of wsUnsubs) off();

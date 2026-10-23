@@ -90,8 +90,6 @@ pub enum WorkflowError {
     /// re-enters under its own id; Stop ends it. The text says what was used.
     #[error("paused at its limit: {0}")]
     ProjectLimit(String),
-    #[error("circuit breaker tripped: {0}")]
-    CircuitBreak(String),
     #[error("{0}")]
     Other(String),
 }
