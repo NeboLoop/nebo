@@ -4464,7 +4464,7 @@
 			"needs_decision": "Kararınız gerekiyor: {items}",
 			"stopped_by_owner": "Sizin tarafınızdan durduruldu; açık sorunlar: {open, plural, other {#}}",
 			"stalled": "İlerleme durdu; açık sorunlar: {open, plural, other {#}}",
-			"no_checks": "Hiçbir test veya derleme çalıştırılamadı",
+			"no_checks": "Çalıştığını kanıtlayan bir şey olmadı: projede çalıştırılacak derleme, tür denetimi veya test yok",
 			"landed_unreviewed": "İncelemeyi geçmeden, sizin tercihinizle aktarıldı",
 			"edits_in_way": "Henüz aktarılmadı: düzenlemeleriniz hâlâ yolda",
 			"kept_own_edits": "Aktarılmadı: kendi düzenlemelerinizi tuttunuz, değişiklik kendi kopyasında bekliyor",

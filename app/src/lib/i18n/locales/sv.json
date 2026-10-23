@@ -4464,7 +4464,7 @@
 			"needs_decision": "Behöver ditt beslut: {items}",
 			"stopped_by_owner": "Stoppad av dig; öppna problem: {open, plural, other {#}}",
 			"stalled": "Slutade göra framsteg; öppna problem: {open, plural, other {#}}",
-			"no_checks": "Inga tester eller byggen kunde köras",
+			"no_checks": "Inget visade att det fungerar: projektet har inget bygge, ingen typkontroll och inga tester att köra",
 			"landed_unreviewed": "Infört utan godkänd granskning, enligt ditt val",
 			"edits_in_way": "Inte infört än: dina ändringar är fortfarande i vägen",
 			"kept_own_edits": "Inte infört: du behöll dina egna ändringar, och ändringen väntar i sin kopia",

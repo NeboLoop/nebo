@@ -4464,7 +4464,7 @@
 			"needs_decision": "Precisa da sua decisão: {items}",
 			"stopped_by_owner": "Interrompido por si; problemas em aberto: {open, plural, other {#}}",
 			"stalled": "Deixou de avançar; problemas em aberto: {open, plural, other {#}}",
-			"no_checks": "Não foi possível correr testes nem build",
+			"no_checks": "Nada provou que funciona: o projeto não tem build, verificação de tipos nem testes para correr",
 			"landed_unreviewed": "Integrado sem passar na revisão, por sua escolha",
 			"edits_in_way": "Ainda não integrado: as suas edições continuam no caminho",
 			"kept_own_edits": "Não integrado: manteve as suas próprias edições, e a alteração espera na sua cópia",

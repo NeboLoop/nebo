@@ -1896,6 +1896,8 @@ export interface Verification {
 	landedAt?: number
 	createdAt: number
 	finishedAt?: number
+	deployedApps: string[]
+	deployUnchecked: boolean
 }
 
 export interface VerificationList {

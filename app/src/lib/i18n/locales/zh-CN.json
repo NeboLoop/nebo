@@ -4464,7 +4464,7 @@
 			"needs_decision": "需要你的决定：{items}",
 			"stopped_by_owner": "已由你停止，未解决的问题：{open, plural, other {# 个}}",
 			"stalled": "不再有进展，未解决的问题：{open, plural, other {# 个}}",
-			"no_checks": "没有可运行的测试或构建",
+			"no_checks": "没有任何检查证明它能正常工作：该项目没有可运行的构建、类型检查或测试",
 			"landed_unreviewed": "未通过审查，按你的选择已并入",
 			"edits_in_way": "尚未并入：你的编辑仍有冲突",
 			"kept_own_edits": "未并入：你保留了自己的编辑，此更改在其副本中等待",

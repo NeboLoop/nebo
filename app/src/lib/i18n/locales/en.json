@@ -4464,7 +4464,7 @@
 			"needs_decision": "Needs your decision: {items}",
 			"stopped_by_owner": "Stopped by you with {open, plural, one {# open issue} other {# open issues}}",
 			"stalled": "Stopped making progress with {open, plural, one {# open issue} other {# open issues}}",
-			"no_checks": "No tests or build could run",
+			"no_checks": "Nothing proved it works: the project has no build, type check or tests to run",
 			"landed_unreviewed": "Landed without passing review, at your choice",
 			"edits_in_way": "Not landed yet: your edits are still in the way",
 			"kept_own_edits": "Not landed: you kept your own edits, and the change waits in its copy",

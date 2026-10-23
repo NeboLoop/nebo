@@ -4464,7 +4464,7 @@
 			"needs_decision": "Cần quyết định của bạn: {items}",
 			"stopped_by_owner": "Bạn đã dừng lại; vấn đề còn mở: {open, plural, other {#}}",
 			"stalled": "Không còn tiến triển; vấn đề còn mở: {open, plural, other {#}}",
-			"no_checks": "Không thể chạy kiểm thử hay bản dựng nào",
+			"no_checks": "Không có gì chứng minh nó hoạt động: dự án không có bản dựng, kiểm tra kiểu hay kiểm thử nào để chạy",
 			"landed_unreviewed": "Đã đưa vào mà chưa qua xem xét, theo lựa chọn của bạn",
 			"edits_in_way": "Chưa đưa vào: các chỉnh sửa của bạn vẫn đang cản trở",
 			"kept_own_edits": "Không đưa vào: bạn giữ chỉnh sửa của riêng mình, và thay đổi này chờ trong bản sao của nó",

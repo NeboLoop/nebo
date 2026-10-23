@@ -4464,7 +4464,7 @@
 			"needs_decision": "Necesita tu decisión: {items}",
 			"stopped_by_owner": "Detenido por ti; problemas abiertos: {open, plural, other {#}}",
 			"stalled": "Dejó de avanzar; problemas abiertos: {open, plural, other {#}}",
-			"no_checks": "No se pudieron ejecutar pruebas ni compilación",
+			"no_checks": "Nada demostró que funcione: el proyecto no tiene compilación, comprobación de tipos ni pruebas que ejecutar",
 			"landed_unreviewed": "Integrado sin pasar la revisión, por decisión tuya",
 			"edits_in_way": "Aún no integrado: tus cambios siguen en medio",
 			"kept_own_edits": "No integrado: conservaste tus propios cambios, y este espera en su copia",
