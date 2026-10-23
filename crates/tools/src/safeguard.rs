@@ -375,10 +375,22 @@ fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
     // before it runs. Under Full access this is the only fence; otherwise
     // the command itself runs confined as well (`confine`), so a path only
     // known when it runs still can't be read.
-    if let Some(fence) = run.fence
-        && let Some(path) = fence.named_in(text, run.cwd).or_else(|| fence.reached_by(text, run.cwd))
-    {
-        return Some(nebo_file_refusal(&path, fence));
+    if let Some(fence) = run.fence {
+        if let Some(path) = fence.named_in(text, run.cwd) {
+            return Some(nebo_file_refusal(&path, fence));
+        }
+        match fence.reached_by(text, run.cwd) {
+            Some(crate::nebo_files::Reached::Nebo(path)) => return Some(nebo_file_refusal(&path, fence)),
+            Some(crate::nebo_files::Reached::Unplaced(word)) => {
+                return Some(format!(
+                    "BLOCKED: this command moves to a folder only running it can tell (a `cd` to a variable, `$PWD`, \
+                     `cd -`, `CDPATH`, a `-C` folder, `eval` or `source` of a value), so the relative path {word:?} \
+                     after it can't be checked: it could be one of Nebo's own files. Name the folder and the file by \
+                     their absolute paths instead."
+                ));
+            }
+            None => {}
+        }
     }
     let lower = text.to_lowercase();
     if has_sudo(&lower) && run.cloud {
@@ -955,6 +967,30 @@ mod tests {
         refused("if false; then cd notes && :; fi; cat ../settings.json", Some(&workspace));
         refused("f() { cd notes && :; }; cat ../settings.json", Some(&workspace));
         refused("cd notes && : || cat ../settings.json", Some(&workspace));
+        // A `cd` to a pattern goes where the pattern matches.
+        refused("cd ../nebo-home/files/no?es && cat ../../settings.json", None);
+        refused("pushd ../nebo-home/f[i]les && cat ../settings.json", None);
+        // `~+` is the folder the command stands in.
+        refused("cd ../nebo-home/files/notes && cat ~+/../../settings.json", None);
+        // `CDPATH` searches its folders for a bare name.
+        refused("CDPATH=.. cd nebo-home && cat settings.json", None);
+        refused("export CDPATH=..; cd nebo-home && cat settings.json", None);
+        refused("export CDPATH=\"$X\"; cd nebo-home && cat ./settings.json", None);
+        // A command's own folder option.
+        refused("tar -C .. -cf - nebo-home/settings.json | tar -xOf -", None);
+        refused("git -C .. show HEAD:nebo-home/settings.json; cat -- ../nebo-home/settings.json", None);
+        refused("make -C ../nebo-home", None);
+        refused("tar -C \"$D\" -cf - ./settings.json", None);
+        // `eval` runs its script in this shell; a value it runs, or a script
+        // `source`d, moves it where only running knows.
+        refused("eval cd .. && cat nebo-home/settings.json", None);
+        refused("eval \"$STEP\" && cat ../settings.json", Some(&workspace));
+        refused("source env.sh && cat ./settings.json", None);
+        // `$PWD` is only known when it runs.
+        refused("cd $PWD/.. && cat nebo-home/settings.json", None);
+        refused("cd ${PWD%/*} && cat nebo-home/settings.json", None);
+        refused("cd - && cat ../settings.json", None);
+        refused("cat ~-/settings.json", None);
         // The call's own folder inside the closed part.
         refused("ls", Some(&root.join("logs")));
         refused("cat nebo.log", Some(&root.join("logs")));
@@ -1037,6 +1073,15 @@ mod tests {
             // A move inside a subshell ends with it: `ls ..` runs in `proj`.
             "(cd ../nebo-home/files) && ls ..",
             "echo $(cd ../nebo-home/files) && ls ..",
+            // Moves the text can't place, then nothing relative it could miss.
+            "cd \"$PROJECT\" && pnpm build",
+            "cd $PWD && git status",
+            // Folder options, patterns and `eval` inside the project.
+            "git -C sub status",
+            "tar -C sub -czf ../out.tgz .",
+            "cd s?b && cd .. && cat README.md",
+            "eval echo hi && cat README.md",
+            "CDPATH=sub cd x 2>/dev/null; cat README.md",
         ] {
             let r = check(ok, None);
             assert!(r.is_none(), "{ok:?} must be allowed: {r:?}");

@@ -308,8 +308,11 @@ impl NeboFiles {
     /// the command reads or writes, so a plugin's skill is reached freely,
     /// but a hard link to one is refused: it is a second name for the file
     /// that every fence misses. What only running the command knows (`$X`,
-    /// `$(…)`) is not seen here.
-    pub fn reached_by(&self, cmd: &str, cwd: Option<&Path>) -> Option<String> {
+    /// `$(…)`) is not seen here; but a command that may stand where only
+    /// running it knows (`Placed::lost`, or a `-C` folder only running it
+    /// knows) names a relative path the check can't place: that is refused
+    /// too ([`Reached::Unplaced`]), and an absolute path works instead.
+    pub fn reached_by(&self, cmd: &str, cwd: Option<&Path>) -> Option<Reached> {
         let start = lexical(&absolute(cwd.unwrap_or(Path::new(".")), None));
         let placed = crate::policy::located(cmd, Some(&start.to_string_lossy()));
         let known = |here: &Option<PathBuf>| here.as_deref().map(lexical);
@@ -321,7 +324,7 @@ impl NeboFiles {
         for link in &links {
             let access = if link.symbolic { Access::Read } else { Access::Write };
             if through(&link.to, &links).iter().any(|to| self.closes(to, None, access) || (link.symbolic && self.above(to))) {
-                return Some(link.target.clone());
+                return Some(Reached::Nebo(link.target.clone()));
             }
         }
         let reaches = |path: &Path| through(path, &links).iter().any(|p| self.closes(p, None, Access::Read));
@@ -332,26 +335,49 @@ impl NeboFiles {
                 .map(str::to_string)
         };
         for p in &placed {
-            let here = reach(p);
+            let mut here = reach(p);
+            // A command's own folder option (`tar -C dir`, `git -C dir`,
+            // `make -C dir`, `--directory=dir`): its paths are taken from
+            // there too.
+            let (folders, unknown) = own_folders(p.sub.words());
+            for f in &folders {
+                let more: Vec<PathBuf> = here.iter().filter_map(|h| crate::policy::reached(Some(h), f)).map(|d| lexical(&d)).collect();
+                here.extend(more);
+            }
             // A redirect on a subshell around the command is taken from
             // where that subshell was entered.
             let around: Vec<PathBuf> = here.iter().cloned().chain(p.outer.iter().filter_map(known)).collect();
             if let Some(folder) = around.iter().find(|f| reaches(f)) {
-                return Some(folder.to_string_lossy().into_owned());
+                return Some(Reached::Nebo(folder.to_string_lossy().into_owned()));
             }
+            // Standing where the text can't place it, a relative path is
+            // nowhere the check can see.
+            let lost = p.lost || unknown;
+            let unplaced = |word: &str| {
+                path_words(word).into_iter().find(|w| w.starts_with("~-") || (lost && relative_path(w))).map(str::to_string)
+            };
             for word in p.sub.words().iter().flatten() {
                 if let Some(named) = from(&here, word) {
-                    return Some(named);
+                    return Some(Reached::Nebo(named));
+                }
+                if let Some(word) = unplaced(word) {
+                    return Some(Reached::Unplaced(word));
                 }
             }
             for target in p.sub.redirects().iter().flatten() {
                 if let Some(named) = from(&around, target) {
-                    return Some(named);
+                    return Some(Reached::Nebo(named));
+                }
+                if let Some(word) = unplaced(target) {
+                    return Some(Reached::Unplaced(word));
                 }
             }
             for pattern in p.sub.patterns() {
                 if let Some(found) = around.iter().find_map(|f| self.matched(pattern, f)) {
-                    return Some(found);
+                    return Some(Reached::Nebo(found));
+                }
+                if lost && !Path::new(pattern).is_absolute() && !pattern.starts_with('~') {
+                    return Some(Reached::Unplaced(pattern.clone()));
                 }
             }
         }
@@ -365,11 +391,7 @@ impl NeboFiles {
     fn matched(&self, pattern: &str, folder: &Path) -> Option<String> {
         let mut budget = MAX_PATTERN_ENTRIES;
         for word in braces(pattern) {
-            let anchored = match word.strip_prefix('~').filter(|rest| rest.is_empty() || rest.starts_with('/')) {
-                Some(rest) => format!("{}{rest}", glob::Pattern::escape(&dirs::home_dir()?.to_string_lossy())),
-                None if Path::new(&word).is_absolute() => word.clone(),
-                None => format!("{}/{word}", glob::Pattern::escape(&folder.to_string_lossy())),
-            };
+            let anchored = anchored(&word, folder)?;
             let written = PathBuf::from(unbracket(&anchored));
             if self.closes(&written, None, Access::Read) {
                 return Some(written.to_string_lossy().into_owned());
@@ -380,6 +402,49 @@ impl NeboFiles {
         }
         None
     }
+}
+
+/// What a command reaches that the fence keeps it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reached {
+    /// One of Nebo's own files, as the command names or reaches it.
+    Nebo(String),
+    /// A relative path (this word) the command names while standing where
+    /// only running it knows: it could be one of Nebo's own files.
+    Unplaced(String),
+}
+
+/// The folders a command's own folder options name (`-C dir`, `-Cdir`,
+/// `--directory=dir`, `--directory dir`), and whether one is only known when
+/// it runs.
+fn own_folders(words: &[Option<String>]) -> (Vec<String>, bool) {
+    let mut out = Vec::new();
+    let mut unknown = false;
+    let mut i = 1;
+    while i < words.len() {
+        let value = match words[i].as_deref() {
+            Some("-C" | "--directory") => {
+                i += 1;
+                Some(words.get(i).cloned().flatten())
+            }
+            Some(w) if w.starts_with("--directory=") => Some(Some(w["--directory=".len()..].to_string())),
+            Some(w) if w.starts_with("-C") && w.len() > 2 && w.is_char_boundary(2) => Some(Some(w[2..].to_string())),
+            _ => None,
+        };
+        match value {
+            Some(Some(v)) => out.push(v),
+            Some(None) => unknown = true,
+            None => {}
+        }
+        i += 1;
+    }
+    (out, unknown)
+}
+
+/// Whether `word` reads as a relative path the shell would take from where
+/// it stands: one with a folder in it, or one starting with `.`.
+fn relative_path(word: &str) -> bool {
+    !word.starts_with(['/', '~', '-', '$']) && !Path::new(word).is_absolute() && (word.contains('/') || word.starts_with('.'))
 }
 
 /// A link a command makes.
@@ -499,6 +564,30 @@ fn through(path: &Path, links: &[Link]) -> Vec<PathBuf> {
         i += 1;
     }
     out
+}
+
+/// The pattern `word` (one of a pattern's brace words) as an absolute
+/// pattern, standing in `folder`: `~` is the home folder.
+fn anchored(word: &str, folder: &Path) -> Option<String> {
+    Some(match word.strip_prefix('~').filter(|rest| rest.is_empty() || rest.starts_with('/')) {
+        Some(rest) => format!("{}{rest}", glob::Pattern::escape(&dirs::home_dir()?.to_string_lossy())),
+        None if Path::new(word).is_absolute() => word.to_string(),
+        None => format!("{}/{word}", glob::Pattern::escape(&folder.to_string_lossy())),
+    })
+}
+
+/// The folders a filename pattern (`syntax::ShellCommand::patterns`)
+/// standing in `folder` matches, for a `cd` to it: `None` when matching it
+/// would read more than [`MAX_PATTERN_ENTRIES`] folder entries, or it
+/// matches nothing (the `cd` then goes where only running it knows, or
+/// fails).
+pub(crate) fn folders_matching(pattern: &str, folder: &Path) -> Option<Vec<PathBuf>> {
+    let mut budget = MAX_PATTERN_ENTRIES;
+    let mut out = Vec::new();
+    for word in braces(pattern) {
+        out.extend(expand(&anchored(&word, folder)?, &mut budget).into_iter().filter(|p| p.is_dir()));
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// How many folder entries one pattern may look through. A pattern that

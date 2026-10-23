@@ -177,10 +177,13 @@ fn collect_subcommands(script: &str, depth: usize, scope: &[(usize, usize)], out
         unwrap_wrappers(&mut sub);
         match inline_script(&sub.words) {
             Some(Some(inner)) => {
-                // The inner script runs in a shell of its own: a subshell
-                // no other command shares.
+                // A shell's script (`bash -c`) runs in a shell of its own: a
+                // subshell no other command shares. `eval` runs its script
+                // in this shell, so a `cd` in it moves this one.
                 let mut inner_scope = sub.scopes.clone();
-                inner_scope.push((depth + 1, usize::MAX - out.len()));
+                if sub.words.first().is_some_and(|w| w.as_deref() != Some("eval")) {
+                    inner_scope.push((depth + 1, usize::MAX - out.len()));
+                }
                 collect_subcommands(&inner, depth + 1, &inner_scope, out)
             }
             Some(None) => out.push(Subcommand::unknown()),
@@ -330,6 +333,11 @@ pub struct Placed {
     /// The folders the subshells around it were entered from, outermost
     /// first: where a redirect on one of them is taken from.
     pub outer: Vec<Option<std::path::PathBuf>>,
+    /// It may stand in a folder the text can't place: a move before it went
+    /// where only running the command knows (`cd "$D"`, `cd $PWD/..`, `cd -`,
+    /// a `cd` through `CDPATH`, a script it `source`s, an `eval` of a value).
+    /// A relative path it names is then nowhere the check can see.
+    pub lost: bool,
     pub sub: Subcommand,
 }
 
@@ -348,7 +356,25 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
         pushed: Vec<Option<PathBuf>>,
         wide: Vec<PathBuf>,
         narrow: Vec<PathBuf>,
+        lost: bool,
     }
+    // `CDPATH` makes a `cd` to a bare name search its folders first: the
+    // folders the shell's own `CDPATH` and the script's (`CDPATH=..`,
+    // `export CDPATH=..`) name, or `None` once one is only known when it
+    // runs.
+    let cdpath: Option<Vec<String>> = {
+        static SET: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r#"CDPATH=("[^"]*"|'[^']*'|[^\s;&|)]*)"#).expect("valid"));
+        let mut all: Vec<String> = std::env::var("CDPATH").map(|v| v.split(':').map(str::to_string).collect()).unwrap_or_default();
+        let mut known = true;
+        for set in SET.captures_iter(cmd) {
+            let value = set[1].trim_matches(['"', '\'']);
+            known &= !value.contains(['$', '`']);
+            all.extend(value.split(':').map(str::to_string));
+        }
+        known &= cmd.matches("CDPATH").count() == SET.find_iter(cmd).count();
+        known.then_some(all)
+    };
     let merge = |into: &mut Vec<PathBuf>, from: Vec<PathBuf>| {
         for f in from {
             if into.len() < MAX_REACH && !into.contains(&f) {
@@ -368,6 +394,7 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
     // landed.
     let mut narrow: Vec<PathBuf> = vec![start];
     let mut last: Option<(Vec<(usize, usize)>, usize)> = None;
+    let mut lost = false;
     let mut entered: Vec<Entered> = Vec::new();
     let mut out = Vec::new();
     for sub in subcommands(cmd) {
@@ -378,6 +405,7 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             pushed = left.pushed;
             wide = left.wide;
             narrow = left.narrow;
+            lost = left.lost;
         }
         for scope in &sub.scopes[shared..] {
             entered.push(Entered {
@@ -386,6 +414,7 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
                 pushed: pushed.clone(),
                 wide: wide.clone(),
                 narrow: narrow.clone(),
+                lost,
             });
         }
         let at = (sub.scopes.clone(), sub.stmt);
@@ -397,6 +426,7 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
         last = Some(at);
         let before = here.clone();
         let before_reach = narrow.clone();
+        let before_lost = lost;
         if let Some(Some(program)) = sub.words.first() {
             // The folder named, past `cd`'s options (`-P`, `-L`, `--`).
             let mut args = sub.words[1..].iter().skip_while(|w| {
@@ -413,11 +443,35 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             };
             // Where this move lands from each of `from`, or `None` when only
             // running the command knows (`cd -`, `cd "$D"`).
+            // A move to a pattern (`cd no?es`) goes to the folders it matches.
+            let pattern = match named {
+                Some(None) => sub.patterns.first(),
+                _ => None,
+            };
+            // A bare name goes through `CDPATH`'s folders as well as its own.
+            let bare = |d: &str| !d.starts_with(['/', '~', '.']) && !types::pathres::expand(d).is_absolute();
             let targets = |from: &[PathBuf]| -> Option<Vec<PathBuf>> {
                 match named {
                     None => Some(vec![lexical(&types::pathres::expand("~"))]),
                     Some(Some(d)) if d != "-" && !d.starts_with(['+', '-']) => {
-                        Some(from.iter().filter_map(|f| reached(Some(f), d)).map(|p| lexical(&p)).collect())
+                        let mut to: Vec<PathBuf> = from.iter().filter_map(|f| reached(Some(f), d)).map(|p| lexical(&p)).collect();
+                        if bare(d) {
+                            for entry in cdpath.as_ref().filter(|c| !c.is_empty()).into_iter().flatten() {
+                                let entry = if entry.is_empty() { "." } else { entry.as_str() };
+                                to.extend(from.iter().filter_map(|f| reached(Some(f), entry)).map(|base| lexical(&base.join(d))));
+                            }
+                            if cdpath.is_none() {
+                                return None;
+                            }
+                        }
+                        Some(to)
+                    }
+                    Some(None) => {
+                        let mut all = Vec::new();
+                        for f in from {
+                            all.extend(crate::nebo_files::folders_matching(pattern?, f)?.iter().map(|p| lexical(p)));
+                        }
+                        Some(all)
                     }
                     _ => None,
                 }
@@ -430,25 +484,36 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
                     } else {
                         merge(&mut narrow, to_narrow);
                     }
+                    true
+                } else {
+                    false
                 }
             };
             match program.as_str() {
                 "cd" => {
-                    step();
+                    lost |= !step();
                     here = moved(&here);
                 }
                 // `pushd` alone swaps the top two folders.
-                "pushd" if named.is_none() => here = None,
+                "pushd" if named.is_none() => {
+                    here = None;
+                    lost = true;
+                }
                 "pushd" => {
-                    step();
+                    lost |= !step();
                     pushed.push(here.clone());
                     here = moved(&here);
                 }
                 // `popd` goes back to a folder `wide` already holds.
                 "popd" => {
                     here = if named.is_none() { pushed.pop().flatten() } else { None };
+                    lost |= named.is_some();
                     narrow = wide.clone();
                 }
+                // A script run in this shell, or a value it runs, may move
+                // it anywhere.
+                "source" | "." => lost = true,
+                "eval" if sub.words[1..].iter().any(Option::is_none) => lost = true,
                 _ => {}
             }
         }
@@ -456,6 +521,7 @@ pub fn located(cmd: &str, cwd: Option<&str>) -> Vec<Placed> {
             here: before,
             reach: before_reach,
             outer: entered.iter().map(|e| e.here.clone()).collect(),
+            lost: before_lost,
             sub,
         });
     }
@@ -487,6 +553,19 @@ fn lexical(path: &std::path::Path) -> std::path::PathBuf {
 /// relative path taken from `here`; `None` when `here` is unknown and the
 /// path relative.
 pub fn reached(here: Option<&std::path::Path>, path: &str) -> Option<std::path::PathBuf> {
+    // `~+` is the folder it stands in; `~name` that user's home, beside
+    // this one's. (`~-`, the folder before, only running knows.)
+    if let Some(rest) = path.strip_prefix("~+").filter(|r| r.is_empty() || r.starts_with('/')) {
+        return here.map(|h| h.join(rest.trim_start_matches('/')));
+    }
+    if path.starts_with("~-") {
+        return None;
+    }
+    if let Some(named) = path.strip_prefix('~').filter(|r| !r.is_empty() && !r.starts_with('/')) {
+        let (user, rest) = named.split_once('/').unwrap_or((named, ""));
+        let homes = dirs::home_dir()?.parent()?.to_path_buf();
+        return Some(homes.join(user).join(rest));
+    }
     let path = types::pathres::expand(path);
     if path.is_absolute() { Some(path) } else { here.map(|h| h.join(path)) }
 }
@@ -541,9 +620,9 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
     // the text can't prove ran leaves more than one): each place it may
     // reach. A target only running the command knows, or a command whose
     // folder only running it knows, is named by the command.
-    let trees = |here: &Option<PathBuf>, reach: &[PathBuf], sub: &Subcommand, target: Option<&str>| -> Vec<String> {
+    let trees = |here: &Option<PathBuf>, reach: &[PathBuf], lost: bool, sub: &Subcommand, target: Option<&str>| -> Vec<String> {
         let Some(target) = target else { return vec![unread(sub)] };
-        if here.is_none() && !types::pathres::expand(target).is_absolute() {
+        if (here.is_none() || lost) && !types::pathres::expand(target).is_absolute() {
             return vec![unread(sub)];
         }
         let mut from: Vec<Option<&Path>> = reach.iter().map(|f| Some(f.as_path())).collect();
@@ -567,7 +646,7 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
         ops.into_iter().map(|o| o.or_else(|| patterns.next().cloned())).collect()
     };
 
-    for Placed { here, reach, sub, .. } in located(cmd, cwd) {
+    for Placed { here, reach, sub, lost, .. } in located(cmd, cwd) {
         let Some(Some(program)) = sub.words.first() else { continue };
         let args = &sub.words[1..];
         match program.as_str() {
@@ -587,7 +666,7 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                 }
                 if recursive {
                     for target in targets(&sub, operands(args, &[])) {
-                        fx.removes_trees.extend(trees(&here, &reach, &sub, target.as_deref()));
+                        fx.removes_trees.extend(trees(&here, &reach, lost, &sub, target.as_deref()));
                     }
                 }
             }
@@ -604,7 +683,7 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                     .collect();
                 let starts = if starts.is_empty() { vec![Some(".".to_string())] } else { targets(&sub, starts) };
                 for start in starts {
-                    fx.removes_trees.extend(trees(&here, &reach, &sub, start.as_deref()));
+                    fx.removes_trees.extend(trees(&here, &reach, lost, &sub, start.as_deref()));
                 }
             }
             // `xargs rm -r`: what it removes comes from its input.
@@ -1244,6 +1323,7 @@ mod tests {
         assert_eq!(trees("rm -rf *"), vec!["file:/w/*"]);
         assert_eq!(trees("rm -rf \"$DIR\""), vec!["command:rm -rf …"]);
         assert_eq!(trees("cd \"$D\" && rm -rf build"), vec!["command:rm -rf build"]);
+        assert_eq!(trees("export CDPATH=$X; cd site && rm -rf build"), vec!["command:rm -rf build"], "a move only running knows");
         assert_eq!(trees("ls | xargs rm -rf"), vec!["command:xargs rm -rf"]);
         assert!(trees("rm -f a.txt").is_empty() && trees("xargs -r rm").is_empty() && trees("find . -name x").is_empty());
 
@@ -1266,6 +1346,19 @@ mod tests {
         assert_eq!(destructive_warning("terraform destroy"), Some(W::DestroysInfrastructure));
         assert_eq!(destructive_warning("ls -la"), None);
         assert_eq!(destructive_warning("echo rm -rf x"), None);
+    }
+
+    /// `~+` is where a command stands, `~name` that user's home beside
+    /// this one's; `~-` (the folder before) only running knows.
+    #[test]
+    fn tilde_forms_are_placed() {
+        let here = std::path::Path::new("/w/a");
+        assert_eq!(reached(Some(here), "~+/../x"), Some(std::path::PathBuf::from("/w/a/../x")));
+        assert_eq!(reached(Some(here), "~+"), Some(std::path::PathBuf::from("/w/a/")));
+        assert_eq!(reached(Some(here), "~-/x"), None);
+        let homes = dirs::home_dir().unwrap().parent().unwrap().to_path_buf();
+        assert_eq!(reached(Some(here), "~someone/Library/x"), Some(homes.join("someone/Library/x")));
+        assert_eq!(reached(Some(here), "~someone"), Some(homes.join("someone").join("")));
     }
 
     #[test]
