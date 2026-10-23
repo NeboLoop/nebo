@@ -901,7 +901,7 @@ async fn an_employee_command_is_refused_by_nebo_own_api() {
     // pass reaches its own app's data, never another app's; the owner's
     // session, carried from the page's opaque origin, opens no app's data,
     // and a Referer naming the page proves nothing.
-    let pass = napp::app_view::grant("design-a", std::time::Duration::from_secs(60));
+    let pass = napp::page_pass::grant(napp::page_pass::Scope::App("design-a".into()), std::time::Duration::from_secs(60));
     let app_store = |app: &str, credential: Option<&str>, referer: Option<String>| {
         let prefix = credential.map(|c| format!("/k/{c}")).unwrap_or_default();
         let mut req = browser
@@ -920,7 +920,7 @@ async fn an_employee_command_is_refused_by_nebo_own_api() {
     assert_eq!(app_store("design-b", Some(&pass), None).await.unwrap().status(), 401, "one app's page never reads another's");
     assert_eq!(app_store("design-a", None, page_of("design-a")).await.unwrap().status(), 401, "the session and a Referer prove nothing");
     assert_eq!(app_store("design-a", None, None).await.unwrap().status(), 401, "a request naming no pass");
-    napp::app_view::revoke(&pass);
+    napp::page_pass::revoke(&pass);
     let bare = browser.get(format!("http://localhost:{}/", nebo.port)).header("accept", "text/html").send().await.unwrap();
     assert_eq!(bare.status(), 401);
     assert!(bare.text().await.unwrap().contains("nebo open"), "a browser with no session is told how to sign in");

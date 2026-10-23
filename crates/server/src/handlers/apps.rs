@@ -25,7 +25,7 @@ use db;
 ///
 /// - The app's page, wherever it is open (a browser, the mobile app through
 ///   the tunnel, the desktop window, Nebo's headless browser), carries the
-///   app's pass (`napp::app_view`) as its path credential, and
+///   app's pass (`napp::page_pass`) as its path credential, and
 ///   `middleware::path_credential` shows it here (`app_view_admits`). A pass
 ///   is minted for one app and opens that app alone.
 /// - The app's sidecar sends its `NEBO_APP_TOKEN` as `Authorization: Bearer`.
@@ -293,11 +293,12 @@ pub async fn serve_app_ui(
     serve_app_ui_inner(&state, &agent_id, &path, &uri, &headers).await
 }
 
-/// How long an app page's pass lasts (`napp::app_view`): longer than a page
-/// stays open between reloads. Each open gets a new one, and a reload of a
-/// page whose pass is gone (the bot restarted) gets a new one too
+/// How long an app page's pass (`napp::page_pass`) outlives its last use:
+/// the page's requests keep it, and so does its open socket
+/// (`ws::handle_app_ws`). Each open gets a new one, and a reload of a page
+/// whose pass is gone (left unused, or the bot restarted) gets a new one too
 /// ([`with_pass`]).
-pub const PAGE_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+pub const PAGE_PASS_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// The Content-Security-Policy every file of an app's page goes out with:
 /// a sandbox without `allow-same-origin`, so the page runs in an origin of
@@ -346,7 +347,7 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, uri: &
     // the owner's sign-in, and everything it asks for proves itself with
     // the pass.
     if is_html(&target) && !crate::middleware::app_view_admits(headers, agent_id) {
-        let pass = napp::app_view::grant(agent_id, PAGE_PASS_TTL);
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_IDLE);
         let mut r = Response::new(Body::empty());
         *r.status_mut() = StatusCode::SEE_OTHER;
         let replacing = crate::middleware::carried_path_credential(headers);
@@ -416,7 +417,7 @@ struct Devtools<'a> {
 #[derive(Debug, Clone, Copy)]
 struct DesktopPage<'a> {
     app_id: &'a str,
-    /// A pass for this one app's socket (`napp::app_view`): the window's
+    /// A pass for this one app's socket (`napp::page_pass`): the window's
     /// WebSocket goes to this server directly, carrying no session.
     pass: &'a str,
     port: u16,
@@ -445,7 +446,7 @@ struct DesktopApp {
     /// folder scan alone never finds it (live 2026-10-05: "App not found"
     /// for Design Studio on the desktop).
     ui_dir: Option<PathBuf>,
-    /// The app's pass (`napp::app_view`, [`PAGE_PASS_TTL`]): the one
+    /// The app's pass (`napp::page_pass`, [`PAGE_PASS_IDLE`]): the one
     /// credential the window's requests carry. The shell's proxy sends the
     /// page's calls on with it, never the install key, and the page reaches
     /// this server with it directly (its socket, a film it streams). Empty
@@ -466,7 +467,7 @@ pub async fn desktop_app(
     let store = &state.store;
     let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
     let is_app = matches!(store.get_agent(&agent_id), Ok(Some(a)) if a.is_app.unwrap_or(0) != 0);
-    let pass = if is_app { napp::app_view::grant(&agent_id, PAGE_PASS_TTL) } else { String::new() };
+    let pass = if is_app { napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_IDLE) } else { String::new() };
     axum::Json(DesktopApp {
         offers_publish: developer && store.app_developer_mode() && own_app(store, &agent_id).is_some(),
         developer_script: desktop_script(store, state.config.port, &agent_id, &pass),
@@ -1907,22 +1908,22 @@ fn share_requested_event(agent_id: &str, req: &ShareRequest, artifact: &str, tit
     origin.stamp(serde_json::json!({ "agentId": agent_id, "chatId": req.thread, "artifact": artifact, "title": title }))
 }
 
-/// A file or folder name an app may write into Work: one plain segment,
-/// no separators, not hidden, at most 120 characters. The file needs an
-/// extension so it opens in the right viewer.
-fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
+/// A file name an app may hand the owner: one plain segment, no
+/// separators, not hidden, at most 120 characters, with an extension so it
+/// opens in the right viewer.
+fn work_segment(name: &str) -> Option<String> {
     let name = name.trim();
     let ok = !name.is_empty()
         && name.chars().count() <= 120
         && !name.starts_with('.')
         && !name.contains(['/', '\\', '\0'])
-        && (!needs_ext || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty()));
+        && name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
     ok.then(|| name.to_string())
 }
 
 /// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
-/// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
-/// replaced when shared again), and the owner's open chat shows the one
+/// a file to share. The file is kept like every file handed to him
+/// (`.shared/<content hash>/<name>`), and the owner's open chat shows the one
 /// Share dialog on it. The page never calls the share API: who can open the
 /// link, and until when, is his choice there.
 pub async fn share_file(
@@ -1934,11 +1935,10 @@ pub async fn share_file(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let app_name = match validate_app_agent(&state.store, &agent_id, None) {
-        Ok((_, name)) => name,
-        Err(e) => return to_error_response(e).into_response(),
-    };
-    let Some(name) = work_segment(&body.name, true) else {
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    let Some(name) = work_segment(&body.name) else {
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
             "error": "name must be a file name with an extension, like \"Launch deck.html\""
         }))).into_response();
@@ -1946,21 +1946,34 @@ pub async fn share_file(
     if body.content.is_empty() {
         return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "content is empty" }))).into_response();
     }
-    let folder = work_segment(&app_name, false).unwrap_or_else(|| agent_id.clone());
-    let dir = match config::files_dir() {
-        Ok(d) => d.join(&folder),
-        Err(e) => return to_error_response(e).into_response(),
+    // Kept the way every file handed to the owner is
+    // (`chat_dispatch::keep_shared_file`): `.shared/<content hash>/<name>`,
+    // in the store, never a folder of the owner's that shares the app's
+    // name, and never over another file. Its page opens sandboxed with no
+    // folder pass (`files::document_folder`).
+    let Ok(files_dir) = config::files_dir() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if let Err(e) = fs::create_dir_all(&dir).await {
-        warn!(error = %e, "app share: cannot make the Work folder");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    if let Err(e) = fs::write(dir.join(&name), body.content.as_bytes()).await {
-        warn!(error = %e, "app share: cannot write the file");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    // The same unencoded reference a run's own Work files carry.
-    let artifact = format!("/api/v1/files/{folder}/{name}");
+    let staging = std::env::temp_dir().join(format!("nebo-app-share-{}", uuid::Uuid::new_v4()));
+    let staged = staging.join(&name);
+    let kept = match fs::create_dir_all(&staging).await {
+        Ok(()) => match fs::write(&staged, body.content.as_bytes()).await {
+            Ok(()) => crate::chat_dispatch::keep_shared_file(&files_dir, &staged),
+            Err(e) => {
+                warn!(error = %e, "app share: cannot write the file");
+                None
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, "app share: cannot stage the file");
+            None
+        }
+    };
+    let _ = fs::remove_dir_all(&staging).await;
+    let artifact: String = match kept {
+        Some(artifact) => artifact,
+        None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
     axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }
@@ -2069,6 +2082,9 @@ pub fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("m4a") => "audio/mp4",
         Some("aac") => "audio/aac",
         Some("flac") => "audio/flac",
+        // Captions: a browser takes a <track> only as text/vtt.
+        Some("vtt") => "text/vtt; charset=utf-8",
+        Some("srt") => "application/x-subrip",
         Some("glb") => "model/gltf-binary",
         Some("gltf") => "model/gltf+json",
         _ => "application/octet-stream",
@@ -2181,11 +2197,11 @@ mod connection_origin_tests {
         h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
         assert!(!app_connection_origin_allowed(&h, "app-a"));
         // The app's own sandboxed page (`Origin: null`) with its pass.
-        let pass = napp::app_view::grant("app-a", std::time::Duration::from_secs(60));
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         h.insert(crate::middleware::APP_VIEW_PASS, pass.parse().unwrap());
         assert!(app_connection_origin_allowed(&h, "app-a"));
         assert!(!app_connection_origin_allowed(&h, "app-b"), "another app's pass");
-        napp::app_view::revoke(&pass);
+        napp::page_pass::revoke(&pass);
     }
 
     /// A sidecar is sent the request's own headers, never a credential the
@@ -2273,7 +2289,7 @@ mod developer_mode_tests {
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
 
-        let pass = napp::app_view::grant("app-a", std::time::Duration::from_secs(60));
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         assert_eq!(desktop_script(&store, 27895, "app-m", "p"), "", "installed: no developer tooling");
         assert_eq!(desktop_script(&store, 27895, "nope", "p"), "");
 
@@ -3171,16 +3187,15 @@ mod developer_console_tests {
 mod share_tests {
     use super::*;
 
-    /// `nebo.share` writes one plain file into the app's Work folder:
-    /// nothing that climbs out of it, hides, or has no extension.
+    /// `nebo.share` hands the owner one plain named file: nothing that
+    /// climbs out of its folder, hides, or has no extension.
     #[test]
     fn a_shared_file_is_one_plain_named_file() {
-        assert_eq!(work_segment("  Launch deck.html ", true).as_deref(), Some("Launch deck.html"));
-        assert_eq!(work_segment("Design Studio", false).as_deref(), Some("Design Studio"));
-        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html"] {
-            assert_eq!(work_segment(bad, true), None, "{bad:?}");
+        assert_eq!(work_segment("  Launch deck.html ").as_deref(), Some("Launch deck.html"));
+        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html", "Design Studio"] {
+            assert_eq!(work_segment(bad), None, "{bad:?}");
         }
-        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120)), true), None);
+        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120))), None);
     }
 
     fn asked(client: &str) -> ShareRequest {

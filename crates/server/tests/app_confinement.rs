@@ -1,7 +1,7 @@
 //! An app's page is confined to its own app.
 //!
 //! The page runs in an origin of its own (a CSP sandbox, so its origin is
-//! opaque) and proves itself with its app's pass (`napp::app_view`) alone:
+//! opaque) and proves itself with its app's pass (`napp::page_pass`) alone:
 //! in a browser on this computer, through the tunnel (where the hub forwards
 //! its calls unchecked), and in Nebo's own headless browser. The pass opens
 //! that app's routes and nothing of the owner's: not his agents, not
@@ -73,7 +73,7 @@ async fn an_app_page_reaches_its_own_app_alone() {
         .and_then(|r| r.split('/').next())
         .unwrap()
         .to_string();
-    assert!(napp::app_view::admits(&pass, APP) && !napp::app_view::admits(&pass, OTHER));
+    assert!(napp::page_pass::admits(&pass, &napp::page_pass::Scope::App(APP.to_string())) && !napp::page_pass::admits(&pass, &napp::page_pass::Scope::App(OTHER.to_string())));
 
     // The page, under its pass: sandboxed, readable by its own opaque origin,
     // and its files load with the pass its address carries.
@@ -145,6 +145,28 @@ async fn an_app_page_reaches_its_own_app_alone() {
     let data = http.get(own(&format!("/api/v1/apps/{APP}/storage"))).send().await.unwrap();
     assert!(data.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox "));
 
+    // What it hands the owner (`nebo.share`) is kept with every file handed
+    // to him, never in a folder of his named like the app; opened, it runs
+    // sandboxed with no pass to anything beside it.
+    let workspace = config::workspace_dir().unwrap();
+    std::fs::create_dir_all(workspace.join("CRM")).unwrap();
+    std::fs::write(workspace.join("CRM/clients.txt"), b"the owner's own").unwrap();
+    let shared: serde_json::Value = http
+        .post(own(&format!("/api/v1/apps/{APP}/share")))
+        .header("origin", "null")
+        .json(&serde_json::json!({ "name": "Deck.html", "content": "<img src=\"../../CRM/clients.txt\">", "thread": "", "client": "" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let artifact = shared["artifact"].as_str().unwrap().to_string();
+    assert!(artifact.starts_with("/api/v1/files/.shared/") && artifact.ends_with("/Deck.html"), "{artifact}");
+    let opened = http.get(format!("{base}/k/{}{artifact}", server.key)).send().await.unwrap();
+    assert_eq!(opened.status(), StatusCode::OK, "no pass to mint: {artifact}");
+    assert!(opened.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox allow-scripts"));
+
     // The owner's signed-in browser session, carried by a page of opaque
     // origin (`Origin: null`), opens nothing, even with Fetch Metadata that
     // says otherwise.
@@ -202,7 +224,7 @@ async fn an_app_page_reaches_its_own_app_alone() {
 
     // A page whose pass is gone (the bot restarted), reopened by the owner:
     // a new pass in the old one's place.
-    napp::app_view::revoke(&pass);
+    napp::page_pass::revoke(&pass);
     let reopened = http
         .get(format!("{base}/k/{pass}/apps/{APP}/ui/index.html"))
         .header("cookie", &session)
@@ -232,7 +254,7 @@ async fn an_unchecked_tunnel_request_opens_only_its_apps_routes() {
     let server = TestServer::boot().await;
     let base = format!("http://127.0.0.1:{}", server.port);
     let http = client();
-    let pass = napp::app_view::grant(APP, std::time::Duration::from_secs(60));
+    let pass = napp::page_pass::grant(napp::page_pass::Scope::App(APP.to_string()), std::time::Duration::from_secs(60));
     let unchecked = |req: reqwest::RequestBuilder| {
         req.header("host", "neboai.com")
             .header(comm::tunnel::TUNNEL_UNVERIFIED_HEADER, comm::tunnel::tunnel_auth_secret())
@@ -277,5 +299,5 @@ async fn an_unchecked_tunnel_request_opens_only_its_apps_routes() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
-    napp::app_view::revoke(&pass);
+    napp::page_pass::revoke(&pass);
 }

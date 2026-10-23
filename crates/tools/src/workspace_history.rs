@@ -39,11 +39,6 @@ pub const BLOBS_DIR: &str = "work/blobs";
 /// The file store's own folder of Nebo's (work versions and their blobs):
 /// never in the history, when the store is the workspace.
 const WORK_DIR: &str = "work";
-/// The coding agents' own folders at the workspace's top (`~/NeboAI/claude-code`,
-/// `codex-2`, `gemini-cli`: nebo-runtimes `AcpAgent::KNOWN` keys, plus a suffix
-/// for a second one): their projects keep their own history (git), never ours.
-/// ponytail: matched by name; an owner folder named `codex-notes` is left out too.
-const AGENT_FOLDERS: &[&str] = &["claude-code", "codex", "gemini", "opencode"];
 /// Folders never in the history, at any depth: installed packages, build
 /// output and caches, rebuilt from their sources. Hidden entries (`.git`,
 /// `.shared`, `.previews`, a write's `.part`) are left out too.
@@ -162,13 +157,9 @@ fn left_out(entry: &walkdir::DirEntry, work: &Path) -> bool {
         return true;
     }
     entry.file_type().is_dir()
-        && (SKIPPED_DIRS.contains(&name.as_ref()) || entry.path() == work || (entry.depth() == 1 && agent_folder(&name)))
+        && (SKIPPED_DIRS.contains(&name.as_ref()) || entry.path() == work || (entry.depth() == 1 && config::agent_folder(&name)))
 }
 
-/// A coding agent's own folder at the workspace's top (`AGENT_FOLDERS`).
-pub fn agent_folder(name: &str) -> bool {
-    AGENT_FOLDERS.iter().any(|a| name == *a || name.starts_with(&format!("{a}-")))
-}
 
 /// A file's place in the workspace, '/'-separated; None for a name that
 /// isn't UTF-8 (it couldn't be named back to restore it).
@@ -286,15 +277,6 @@ pub struct Moved {
     pub adopted: usize,
 }
 
-/// A name at the file store's top that is Nebo's own, never the owner's
-/// work: hidden folders (`.shared`, `.previews`), work versions and their
-/// blobs, uploads, the media cast, and the tools' screen captures.
-pub fn store_own(name: &str) -> bool {
-    name.starts_with('.')
-        || matches!(name, "work" | "uploads" | "cast")
-        || name.starts_with("screenshot-")
-        || name.starts_with("capture-")
-}
 
 /// Copy the owner's work from the old workspace (`from`, the file store) into
 /// the new one (`to`), once, when the workspace moves out of the store.
@@ -313,7 +295,7 @@ pub fn move_workspace(store: &db::Store, from: &Path, to: &Path) -> Result<Moved
     std::fs::create_dir_all(to).map_err(|e| format!("could not make {}: {e}", to.display()))?;
     let mut made: HashSet<String> = HashSet::new();
     let walk = walkdir::WalkDir::new(from).follow_links(false).into_iter().filter_entry(|e| {
-        e.depth() != 1 || !store_own(&e.file_name().to_string_lossy())
+        e.depth() != 1 || !config::store_own(&e.file_name().to_string_lossy())
     });
     for entry in walk {
         let Ok(entry) = entry else { continue };

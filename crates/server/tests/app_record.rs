@@ -297,7 +297,7 @@ async fn a_picture_that_did_not_load_fails_both_tools_by_name(rig: &Rig) {
 
     // The server: an asset the app does not have is 404, never the entry
     // page; the app's own files and its routes are served.
-    let pass = napp::app_view::grant("app-motion", std::time::Duration::from_secs(60));
+    let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-motion".to_string()), std::time::Duration::from_secs(60));
     let client = reqwest::Client::new();
     let get = |path: &str| {
         client
@@ -317,7 +317,7 @@ async fn a_picture_that_did_not_load_fails_both_tools_by_name(rig: &Rig) {
         assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/html"), "route {route:?}");
         assert!(r.text().await.unwrap().contains("<h1>Motion</h1>"), "route {route:?} is the entry page");
     }
-    napp::app_view::revoke(&pass);
+    napp::page_pass::revoke(&pass);
 }
 
 /// `app_console` shows what a page logged and threw after it rewrote

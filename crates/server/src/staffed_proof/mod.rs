@@ -306,10 +306,10 @@ impl Nebo {
     /// A POST from app `app`'s own page: it proves itself with its app's
     /// pass (`/k/<pass>/…`), as every app page does, never the owner's key.
     pub async fn post_as_page(&self, app: &str, path: &str, body: &Value) -> (u16, Value) {
-        let pass = napp::app_view::grant(app, std::time::Duration::from_secs(60));
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(app.to_string()), std::time::Duration::from_secs(60));
         let url = format!("http://127.0.0.1:{}/k/{pass}/api/v1{}", self.port, path);
         let out = Self::read(self.client.post(url).header("origin", "null").json(body).send().await.expect("POST")).await;
-        napp::app_view::revoke(&pass);
+        napp::page_pass::revoke(&pass);
         out
     }
 
