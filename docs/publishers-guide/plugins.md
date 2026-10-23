@@ -344,6 +344,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 | `triggers` | string[] | No | Trigger keywords for search matching (e.g., `["payment", "invoice", "billing"]`) |
 | `channel` | object | No | Channel bridge declaration. Its presence is what makes a plugin a **channel plugin** (Slack, Discord, etc.). See [Channel Plugins](channel-plugins.md) |
 | `setup` | object | No | Optional multi-step setup wizard rendered by the frontend (e.g., generate a Slack app manifest) before the plugin can be used |
+| `reads` | string[] | No | The commands that only read. See [Declaring Reads](#declaring-reads) |
 
 > **Important:** The `id` field is required for all plugins. Without it, `PluginManifest` deserialization fails and the plugin cannot be resolved. Use the slug as the id (e.g., `"id": "gws"`).
 
@@ -595,7 +596,6 @@ capabilities:
       description: "Search Gmail emails"
       command: "search --query {query}"
       input_schema: { type: object, properties: { query: { type: string } } }
-      approval: false
       timeout_seconds: 30
   hooks:
     - hook: tool.pre_execute
@@ -649,7 +649,6 @@ Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-valid
             "label": { "type": "string", "description": "Gmail label filter" }
           }
         },
-        "approval": true,
         "timeoutSeconds": 120
       }
     ]
@@ -665,7 +664,6 @@ Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-valid
 | `description` | string | required | Description for the model to understand when to use this tool |
 | `command` | string | required | CLI args appended to the plugin binary (e.g., `"gmail +triage"`) |
 | `inputSchema` | object | generic object | JSON Schema for typed input validation |
-| `approval` | bool | `true` | Whether this tool requires user approval before execution |
 | `timeoutSeconds` | number | `120` | Maximum execution time in seconds |
 
 #### How Typed Tools Work
@@ -915,6 +913,30 @@ permissions:
 | `envDeny` | string[] | `[]` | Env vars always stripped before execution (security blocklist) |
 | `network` | bool | `false` | Whether the plugin needs network access |
 | `maxTimeoutSeconds` | number | `300` | Hard cap on any single execution in seconds |
+
+### Declaring Reads
+
+In Ask mode Nebo asks the owner before every plugin call that changes something. A call is treated as a change unless the manifest's `reads` declares it a read, so a plugin that declares nothing asks for every call, its reads included.
+
+Each entry is a command's words, then the flags it may carry:
+
+```json
+{
+  "reads": [
+    "invoice get --realm-id --json",
+    "find --filters --realm-id --json",
+    "read -o --output --format --sheet --rows",
+    "xlsx sheet --get"
+  ]
+}
+```
+
+A call is a read when:
+
+1. Its first arguments are the entry's words, compared whole: `invoice list` never matches `invoice list-and-delete`, and `--json invoice list` (a flag first) matches nothing.
+2. Every flag it carries — in `command` or in `args` — is one the entry names. Any other flag makes it not a read: `xlsx sheet book.xlsx --get 2` is a read, `xlsx sheet book.xlsx --replace 2` is not. List both spellings of a flag that has a short form (`-o --output`).
+
+Arguments after the words that are not flags (a file, an id, a flag's value) are the call's own. Declare whole commands, not groups: an entry `invoice` would admit `invoice delete 5`. Messaging ops (`reply`, `post`, `upload`, `dm`) are never reads. The marketplace review shows the declared reads to the reviewer and flags an entry whose words name a write (create, update, delete, send, ...).
 
 ---
 
@@ -1335,14 +1357,12 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
             "label": { "type": "string", "description": "Gmail label to filter" }
           }
         },
-        "approval": true,
         "timeoutSeconds": 120
       },
       {
         "name": "gws.calendar.create",
         "description": "Create a Google Calendar event",
         "command": "calendar +create",
-        "approval": true,
         "timeoutSeconds": 30
       }
     ],
