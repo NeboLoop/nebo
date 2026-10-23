@@ -1142,9 +1142,11 @@ impl Helpers {
         let session_key = helper_key(parent_key, &task_id);
         let parent_seat = &turn.seat;
 
-        let mut isolation = match spec.isolation {
-            Some(Isolation::Worktree) => Some(isolate(&self.store, parent_seat, grant, &task_id, None).await?),
-            None => None,
+        // An isolated helper's copy is of the project its parent works on;
+        // with none, there is nothing to copy and it gets no copy.
+        let mut isolation = match (spec.isolation, active_project(&self.store, parent_key, parent_seat)) {
+            (Some(Isolation::Worktree), Some(project)) => Some(isolate(&self.store, grant, &task_id, project).await?),
+            _ => None,
         };
         let mut brief = spec.prompt.clone();
         if let Some(iso) = &isolation {
@@ -1616,8 +1618,10 @@ impl Helpers {
                     unfinished: held.unfinished,
                 },
                 None => {
-                    let project = row_inputs(&self.store, &row).and_then(|v| v.get("project")?.as_str().map(std::path::PathBuf::from));
-                    Held { iso: isolate(&self.store, &turn.seat, grant, task_id, project).await?, unfinished: None }
+                    let project = row_inputs(&self.store, &row)
+                        .and_then(|v| v.get("project")?.as_str().map(std::path::PathBuf::from))
+                        .ok_or_else(|| format!("Helper {task_id} has no project to copy again."))?;
+                    Held { iso: isolate(&self.store, grant, task_id, project).await?, unfinished: None }
                 }
             };
             // A landing or discard that began meanwhile owns the copy: it
@@ -2924,23 +2928,35 @@ fn landing_message(description: &str) -> String {
     format!("{first}{}", chars.as_str())
 }
 
-/// Fence an isolated helper to its own copy of `project` (a follow-up's:
-/// the one it was started on), or else of the parent's. A fenced parent may
-/// only isolate a project inside its fence: the copy is merged back there.
+/// The project a parent works on, which an isolated helper of its copies:
+/// the one its conversation's code check is building, else the one around
+/// its working folder (a copy it works in is its project). Never the
+/// folder Nebo itself runs from: with neither, there is none.
+fn active_project(store: &db::Store, session_key: &str, parent: &SeatRequest) -> Option<std::path::PathBuf> {
+    let live = store
+        .list_verifications(&db::VerificationQuery { session_key: Some(session_key), live: true, ..Default::default() })
+        .unwrap_or_default();
+    live.into_iter()
+        .map(|v| v.project_root)
+        .find(|root| !root.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let cwd = std::path::Path::new(parent.cwd.as_deref()?);
+            crate::harness::verify::project::code_folder(cwd, &[]).map(|f| f.path().to_path_buf())
+        })
+}
+
+/// Fence an isolated helper to its own copy of `project`. A fenced parent
+/// may only isolate a project inside its fence: the copy is merged back
+/// there.
 async fn isolate(
     store: &db::Store,
-    parent: &SeatRequest,
     grant: Option<&Grant>,
     task_id: &str,
-    project: Option<std::path::PathBuf>,
+    workspace: std::path::PathBuf,
 ) -> Result<crate::worktree::Isolation, String> {
     // Code work begins: the owner hears once if git can't do it.
     crate::worktree::git_notice(store, std::path::Path::new("git")).await;
-    let workspace = match (project, parent.cwd.as_deref()) {
-        (Some(project), _) => project,
-        (None, Some(cwd)) => std::path::PathBuf::from(cwd),
-        (None, None) => std::env::current_dir().map_err(|e| format!("No project folder to isolate: {e}"))?,
-    };
     let strings = |v: &[std::path::PathBuf]| -> Vec<String> { v.iter().map(|p| p.to_string_lossy().into_owned()).collect() };
     let target = [workspace.to_string_lossy().into_owned()];
     let folders = grant.map(|g| g.folders()).unwrap_or_default();
@@ -4094,6 +4110,44 @@ mod tests {
             speed: None,
             report_limit: None,
         }
+    }
+
+    /// An isolated helper's copy is of the project its parent works on:
+    /// the one its conversation's code check builds, over the folder it
+    /// stands in. With no project, it gets no copy, and never one of the
+    /// folder Nebo itself runs from.
+    #[test]
+    fn an_isolated_helpers_copy_is_of_its_parents_project() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                // No project: no copy, and nothing of the process's folder.
+                let mut owner = rig.owner_turn("agent:bookkeeper:web");
+                owner.seat.cwd = None;
+                rig.helpers.launch(&owner, None, &[], isolated_spec("no project")).await.unwrap();
+                let child = rig.next_turn().await;
+                assert_eq!(child.request.seat.cwd, None, "no copy without a project");
+                child.answer("Done.").await;
+
+                // The project its code check builds, wherever it stands.
+                let elsewhere = tempfile::tempdir().unwrap();
+                let key = "agent:bookkeeper:chat";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(elsewhere.path().to_string_lossy().into_owned());
+                let root = repo.to_string_lossy().into_owned();
+                rig.store
+                    .create_verification(
+                        &db::NewVerification { id: "v-1", agent_id: "bookkeeper", session_key: key, project_root: &root, work_dir: &root, isolation: "worktree", work_kind: "isolated", ..Default::default() },
+                        1,
+                    )
+                    .unwrap();
+                rig.helpers.launch(&owner, None, &[], isolated_spec("from the check")).await.unwrap();
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().expect("a copy"));
+                assert!(copy != repo && copy.join("a.txt").exists(), "a copy of the project: {}", copy.display());
+                child.answer("Done.").await;
+            })
+        })
     }
 
     /// An isolated helper's changes are held in its copy, never merged on
