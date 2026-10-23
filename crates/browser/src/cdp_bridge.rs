@@ -45,6 +45,9 @@ const NEW_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const NAV_TIMEOUT: Duration = Duration::from_secs(45);
 const EVAL_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest a kept tab's frame waits on its host's name being looked up
+/// ("stay_within"); a name that takes longer is refused.
+const FRAME_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 /// The page side of reads and ref actions: the extension's tree format and
 /// ref resolution (see the file's header).
 const PAGE_TREE_JS: &str = include_str!("page_tree.js");
@@ -485,7 +488,7 @@ impl CdpBridge {
                     while let Some(ev) = paused.next().await {
                         let id = ev.request_id.clone();
                         let top = main.as_ref().is_none_or(|m| *m == ev.frame_id);
-                        let answered = if kept_load(&ev.request.url, &prefix, top) {
+                        let answered = if kept_load(&ev.request.url, &prefix, top).await {
                             watched.execute(ContinueRequestParams::new(id)).await.map(|_| ())
                         } else {
                             warn!("a page kept to its own address tried to open another; refused");
@@ -757,9 +760,11 @@ fn within(url: &str, prefix: &str) -> bool {
 /// top, only under `prefix`; a frame inside it under `prefix` or from the
 /// public web (an app's video or map embed), never this computer, its
 /// network or a cloud's metadata address (`types::public_net`, the one
-/// classifier). A name that resolves to a private address still passes:
-/// the browser resolves it, not this check.
-fn kept_load(url: &str, prefix: &str, top: bool) -> bool {
+/// classifier). A frame's host name is looked up while its load waits, and
+/// every address it has must be public (a name like `10.0.0.5.nip.io` is
+/// refused). The browser looks the name up again itself, so a name whose
+/// owner answers differently the second time is not covered.
+async fn kept_load(url: &str, prefix: &str, top: bool) -> bool {
     if within(url, prefix) {
         return true;
     }
@@ -773,8 +778,22 @@ fn kept_load(url: &str, prefix: &str, top: bool) -> bool {
     match u.host() {
         Some(url::Host::Ipv4(ip)) => types::public_net::is_public_ip(ip.into()),
         Some(url::Host::Ipv6(ip)) => types::public_net::is_public_ip(ip.into()),
-        Some(url::Host::Domain(d)) => !types::public_net::is_local_name(d),
+        Some(url::Host::Domain(d)) => {
+            !types::public_net::is_local_name(d) && resolves_public(d, u.port_or_known_default().unwrap_or(80)).await
+        }
         None => false,
+    }
+}
+
+/// Whether `host` has addresses, all of them public, found within
+/// [`FRAME_LOOKUP_TIMEOUT`].
+async fn resolves_public(host: &str, port: u16) -> bool {
+    match tokio::time::timeout(FRAME_LOOKUP_TIMEOUT, tokio::net::lookup_host((host, port))).await {
+        Ok(Ok(addrs)) => {
+            let addrs: Vec<_> = addrs.collect();
+            !addrs.is_empty() && addrs.iter().all(|a| types::public_net::is_public_ip(a.ip()))
+        }
+        _ => false,
     }
 }
 
@@ -924,14 +943,14 @@ mod tests {
 
     /// The page at the top stays under its address; a frame inside it also
     /// loads from the public web, never this computer, its network or a
-    /// metadata address.
-    #[test]
-    fn a_kept_tab_loads_frames_from_the_public_web_alone() {
+    /// metadata address, nor a name with no public address. (A name with
+    /// public addresses needs the network, so none is tried here.)
+    #[tokio::test]
+    async fn a_kept_tab_loads_frames_from_the_public_web_alone() {
         let p = "http://127.0.0.1:27895/k/av1/apps/a1/ui";
         let own = format!("{p}/levels.html");
         for (url, top, frame) in [
             (own.as_str(), true, true),
-            ("https://www.youtube.com/embed/x", false, true),
             ("https://93.184.216.34/", false, true),
             ("http://169.254.169.254/latest/meta-data/", false, false),
             ("http://127.0.0.1:8080/", false, false),
@@ -942,10 +961,73 @@ mod tests {
             ("http://app.localhost/", false, false),
             ("file:///etc/passwd", false, false),
             ("ftp://example.com/", false, false),
+            ("http://example.invalid/", false, false),
         ] {
-            assert_eq!(kept_load(url, p, true), top, "top: {url}");
-            assert_eq!(kept_load(url, p, false), frame, "frame: {url}");
+            assert_eq!(kept_load(url, p, true).await, top, "top: {url}");
+            assert_eq!(kept_load(url, p, false).await, frame, "frame: {url}");
         }
+    }
+
+    /// In a real Chromium, a kept tab's own page loads, and its top frame
+    /// never leaves: not by a redirect from its own address, and not to a
+    /// name, which is refused before any lookup (`ERR_BLOCKED_BY_CLIENT`,
+    /// never `ERR_NAME_NOT_RESOLVED`). CI has a Chromium, so it runs there.
+    #[tokio::test]
+    async fn a_kept_tab_never_leaves_by_a_redirect_or_a_name() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Some(bridge) = chromium_bridge("kept") else {
+            assert!(std::env::var_os("CI").is_none(), "CI runs this with a Chromium");
+            eprintln!("no Chromium found — skipping");
+            return;
+        };
+        // Where the redirect points, counting the requests that reach it
+        // (a connection opened ahead and never asked on is not one).
+        let away = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let away_port = away.local_addr().unwrap().port();
+        let away_hits = Arc::new(AtomicU64::new(0));
+        let hits = away_hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = away.accept().await {
+                let hits = hits.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 16];
+                    if conn.read(&mut buf).await.is_ok_and(|n| n > 0) {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        // The tab's own address: its page, and `/kept/go`, which redirects away.
+        let own = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let prefix = format!("http://127.0.0.1:{}/kept", own.local_addr().unwrap().port());
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = own.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = conn.read(&mut buf).await.unwrap_or(0);
+                    let answer = if String::from_utf8_lossy(&buf[..n]).starts_with("GET /kept/go ") {
+                        format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{away_port}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    } else {
+                        let body = "<!doctype html><title>kept</title>";
+                        format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                    };
+                    let _ = conn.write_all(answer.as_bytes()).await;
+                });
+            }
+        });
+        let sid = "kept";
+        bridge.execute("stay_within", &json!({ "prefix": prefix }), sid).await.expect("stay_within");
+        bridge.execute("navigate", &json!({ "url": format!("{prefix}/") }), sid).await.expect("its own page opens");
+
+        let redirected = bridge.execute("navigate", &json!({ "url": format!("{prefix}/go") }), sid).await;
+        let e = redirected.expect_err("a redirect away is refused").to_string();
+        assert!(e.contains("ERR_BLOCKED_BY_CLIENT"), "{e}");
+        assert_eq!(away_hits.load(Ordering::SeqCst), 0, "the redirect never reached its target");
+
+        let named = bridge.execute("navigate", &json!({ "url": "http://example.invalid/" }), sid).await;
+        let e = named.expect_err("another address is refused").to_string();
+        assert!(e.contains("ERR_BLOCKED_BY_CLIENT") && !e.contains("ERR_NAME_NOT_RESOLVED"), "{e}");
+        bridge.shutdown().await;
     }
 
     fn try_bridge() -> Option<CdpBridge> {
