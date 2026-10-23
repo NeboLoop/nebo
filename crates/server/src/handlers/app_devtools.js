@@ -55,6 +55,9 @@
   // API, and its socket's server: the desktop's app window is told both, on
   // different origins). Another site's failure (analytics, a CDN, no
   // network) is noted, never counted as the app's error.
+  // The page's own scheme and host: a custom scheme's (`neboapp:`) origin
+  // can read "null", so the page's own addresses are matched by these.
+  var here = location.protocol + '//' + location.host;
   var neboOrigins = [api, socketUrl.replace(/^ws(s?):/, 'http$1:')].map(function (base) {
     try {
       return new URL(base, location.href).origin;
@@ -69,7 +72,7 @@
     } catch (e) {
       return true;
     }
-    if (u.protocol === 'data:' || u.protocol === 'blob:' || u.origin === location.origin) return true;
+    if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol + '//' + u.host === here) return true;
     return neboOrigins.indexOf(u.origin) >= 0 && /\/(api\/v1\/apps|apps|ws\/app)\//.test(u.pathname);
   }
   // A failure: the app's own is an error; another site's is a note.
@@ -80,7 +83,7 @@
 
   // The page's ui/ folder as the browser addresses it: the bot's
   // `<prefix>/apps/<id>/ui/`, or the desktop window's own root.
-  var uiRoot = location.origin + (m ? prefix + '/apps/' + m[2] + '/ui/' : '/');
+  var uiRoot = here + (m ? prefix + '/apps/' + m[2] + '/ui/' : '/');
   function decoded(s) {
     try {
       return decodeURIComponent(s);
@@ -91,7 +94,8 @@
   // The file a load of the page's own asked for, for the bot to read its
   // cause against ui/: relative to ui/, or the page's own path outside it
   // from `/` (the prefix taken off); '' for another origin or Nebo's routes
-  // (`/api/`, `/ws/`), judged first: the desktop window's ui/ is its root.
+  // (`/api/`, `/ws/`), judged first: the desktop window's ui/ is its root,
+  // so there a ui/ folder named api/ or ws/ gets no cause.
   function fileOf(url) {
     var u;
     try {
@@ -99,11 +103,11 @@
     } catch (e) {
       return '';
     }
-    if (u.origin !== location.origin) return '';
+    if (u.protocol + '//' + u.host !== here) return '';
     var own = prefix && u.pathname.indexOf(prefix) === 0 ? u.pathname.slice(prefix.length) : u.pathname;
     if (/^\/(api|ws)\//.test(own)) return '';
     if (own === '/sdk/nebo.global.js') return own;
-    var at = u.origin + u.pathname;
+    var at = here + u.pathname;
     if (at.indexOf(uiRoot) === 0) return decoded(at.slice(uiRoot.length));
     return decoded(own);
   }

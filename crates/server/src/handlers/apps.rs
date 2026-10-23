@@ -1259,7 +1259,7 @@ async fn keep_page_errors(state: &AppState, agent_id: &str, body: &[u8]) {
         page.entries.into_iter().take(DEVLOG_MAX_BATCH).filter(|e| e.level == "error").collect();
     let causes = devlog_causes(state, agent_id, &errors).await;
     // What the ring holds is read after the causes, with no wait before the
-    // write: a batch that lands meanwhile is seen, and nothing is kept twice.
+    // write, so a batch that landed while they were read is seen.
     let held = tools::app_console::recent(agent_id, None, tools::app_console::RING_CAPACITY);
     let (new, causes): (Vec<&DevlogEntry>, Vec<String>) = errors
         .iter()

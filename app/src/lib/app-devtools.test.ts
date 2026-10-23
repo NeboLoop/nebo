@@ -6,10 +6,14 @@ import { describe, expect, it, vi } from "vitest";
 /** The developer script the bot injects into an app's entry page
  *  (crates/server/src/handlers/app_devtools.js), run against a stand-in
  *  page: what the bot's live check relies on. */
-const SCRIPT = readFileSync(
+const SOURCE = readFileSync(
   fileURLToPath(new URL("../../../crates/server/src/handlers/app_devtools.js", import.meta.url)),
   "utf8",
-).replace("__NEBO_DEVTOOLS_CONFIG__", JSON.stringify({ employee: "Kart", console: false }));
+);
+
+/** Where the stand-in page is: the bot's `/apps/app-1/ui/` by default. */
+type Where = { pathname: string; origin: string; protocol: string; host: string; config?: Record<string, unknown> };
+const BOT: Where = { pathname: "/apps/app-1/ui/", origin: "http://127.0.0.1", protocol: "http:", host: "127.0.0.1" };
 
 type Listener = (ev: unknown) => void;
 
@@ -29,7 +33,7 @@ class FakeWorker {
 
 /** A page at /apps/app-1/ui/ opened as view `live-1`; `sent` are the
  *  devlog bodies that reached the bot, `land` lets the pending ones land. */
-function page() {
+function page(where: Where = BOT) {
   const sent: { entries: { level: string; message: string; view: string }[] }[] = [];
   const pending: (() => void)[] = [];
   const windowListeners: Record<string, Listener[]> = {};
@@ -49,7 +53,8 @@ function page() {
   const ctx = {
     window: win,
     document: { readyState: "loading", addEventListener: () => {}, querySelectorAll: () => [] },
-    location: { pathname: "/apps/app-1/ui/", origin: "http://127.0.0.1", protocol: "http:", host: "127.0.0.1" },
+    location: { ...where, href: where.origin + where.pathname },
+    URL,
     console: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
     navigator: {},
     WebSocket: class {
@@ -69,7 +74,8 @@ function page() {
     Node: { DOCUMENT_POSITION_PRECEDING: 2 },
     getComputedStyle: () => ({}),
   };
-  runInNewContext(SCRIPT, ctx);
+  const config = { employee: "Kart", console: false, ...where.config };
+  runInNewContext(SOURCE.replace("__NEBO_DEVTOOLS_CONFIG__", JSON.stringify(config)), ctx);
   const land = () => pending.splice(0).forEach((f) => f());
   return { win, ctx, sent, land, windowListeners };
 }
@@ -117,5 +123,39 @@ describe("the developer script", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /** The `file` a failed load of `url` sends (the bot reads its cause
+   *  against ui/ from it), on a page at `where`. */
+  async function fileSent(where: Where, url: string) {
+    const p = page(where);
+    const target = { nodeType: 1, src: url, getAttribute: (n: string) => (n === "src" ? url : null) };
+    (p.windowListeners.error ?? []).forEach((f) => f({ target }));
+    const flushed = (p.win.__neboDevtoolsFlush as () => Promise<unknown>)();
+    p.land();
+    await flushed;
+    const entries = p.sent.flatMap((b) => b.entries) as { source: string; file?: string }[];
+    return entries.find((e) => e.source === "resource")?.file;
+  }
+
+  it("names a failed load's file against ui/, never one of Nebo's own routes, on the bot and in the desktop window", async () => {
+    const tunnel: Where = { ...BOT, pathname: "/t/bot/k/pass/apps/app-1/ui/index.html" };
+    const at = (path: string) => BOT.origin + "/t/bot/k/pass" + path;
+    expect(await fileSent(tunnel, at("/apps/app-1/ui/css/style.css"))).toBe("css/style.css");
+    expect(await fileSent(tunnel, at("/style.css"))).toBe("/style.css");
+    expect(await fileSent(tunnel, at("/sdk/nebo.global.js"))).toBe("/sdk/nebo.global.js");
+    expect(await fileSent(tunnel, at("/api/v1/files/App/x.png"))).toBe("");
+    expect(await fileSent(tunnel, at("/api/v1/apps/app-1/x.png"))).toBe("");
+
+    const desktop: Where = {
+      pathname: "/index.html",
+      origin: "neboapp://app-1",
+      protocol: "neboapp:",
+      host: "app-1",
+      config: { appId: "app-1", api: "http://127.0.0.1:27895/api/v1/apps/app-1", socket: "ws://127.0.0.1:27895/ws/app/app-1" },
+    };
+    expect(await fileSent(desktop, "neboapp://app-1/style.css")).toBe("style.css");
+    expect(await fileSent(desktop, "neboapp://app-1/sdk/nebo.global.js")).toBe("/sdk/nebo.global.js");
+    expect(await fileSent(desktop, "neboapp://app-1/api/v1/apps/app-1/x")).toBe("");
   });
 });
