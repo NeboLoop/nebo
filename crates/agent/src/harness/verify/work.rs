@@ -1092,7 +1092,7 @@ mod tests {
         let mut input = json!({"command": "cd /x/site && ls src/*.ts && cat /x/site/src/a.ts"});
         assert!(rewrite(&mut input, "/x/site", &copy.to_string_lossy()));
         if cfg!(unix) {
-            let out = std::process::Command::new("sh").arg("-c").arg(input["command"].as_str().unwrap()).output().unwrap();
+            let out = command::new::<std::process::Command>("sh", command::Console::Hidden).arg("-c").arg(input["command"].as_str().unwrap()).output().unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
             assert_eq!(String::from_utf8_lossy(&out.stdout), "src/a.ts\nx");
         }
