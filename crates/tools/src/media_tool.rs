@@ -2553,8 +2553,10 @@ mod tests {
         for (id, name) in [("app-own", "Racer"), ("app-bought", "Bought")] {
             store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
             store.set_agent_app_fields(id, true, Some(&format!("/tmp/{id}/ui")), None, None).unwrap();
+            store.set_agent_built_here(id, true).unwrap();
         }
         store.set_agent_napp_path("app-bought", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-bought", false).unwrap();
         let tool = GenerateMediaTool::new(Media::new(String::new(), String::new(), None), store);
         let ctx = ToolContext::default();
 
@@ -3129,6 +3131,7 @@ mod tests {
         store
             .set_agent_app_fields("app-own", true, Some(&ui.to_string_lossy()), None, None)
             .unwrap();
+        store.set_agent_built_here("app-own", true).unwrap();
         let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None), store);
         (tool, ui)
     }

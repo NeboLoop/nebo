@@ -21,6 +21,7 @@
   import Volume2 from 'lucide-svelte/icons/volume-2';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import PermissionsSection from './PermissionsSection.svelte';
+  import AppPermissionsSection from './AppPermissionsSection.svelte';
   import HandlesSection from './HandlesSection.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
@@ -2190,6 +2191,7 @@
     <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('permissions.title')}</div>
     <div class="text-xs text-base-content/70 mt-1">{$t('permissions.employeeDescription', { values: { name: agent?.name ?? '' } })}</div>
   </div>
+  {#if agent?.isApp && agentId}<AppPermissionsSection {agentId} name={agent?.name ?? ''} />{/if}
   <PermissionsSection {agentId} name={agent?.name ?? ''} />
 {/snippet}
 

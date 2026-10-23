@@ -72,37 +72,8 @@ async fn validate_app_token(
     Ok(())
 }
 
-/// Check that the app has `network:{domain}` permission for the target URL.
-async fn check_network_permission(
-    state: &AppState,
-    agent_id: &str,
-    url: &str,
-) -> Result<(), Response> {
-    let domain = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(String::from));
-    let domain = match domain {
-        Some(d) => d,
-        None => {
-            return Err((StatusCode::BAD_REQUEST, "invalid URL").into_response());
-        }
-    };
-
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(agent_id) {
-        let perm = format!("network:{}", domain);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
-    }
-    Ok(())
-}
-
-/// Check that the app has `subagent:{target}` permission to invoke another agent.
+/// Check that the app holds `subagent:{target}` to invoke another agent
+/// (`app_grants`): refused when it does not, however it runs.
 async fn check_subagent_permission(
     state: &AppState,
     app_agent_id: &str,
@@ -112,18 +83,16 @@ async fn check_subagent_permission(
     if app_agent_id == target_agent_id {
         return Ok(());
     }
-    let lifecycles = state.app_lifecycles.read().await;
-    if let Some(lifecycle) = lifecycles.get(app_agent_id) {
-        let perm = format!("subagent:{}", target_agent_id);
-        if !lifecycle.has_permission(&perm).await {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("app lacks permission: {}", perm),
-            )
-                .into_response());
-        }
+    holds(state, app_agent_id, &format!("subagent:{target_agent_id}")).await
+}
+
+/// `Ok` when app `agent_id` holds `perm` now (`app_grants::granted`), else
+/// 403 naming it.
+async fn holds(state: &AppState, agent_id: &str, perm: &str) -> Result<(), Response> {
+    if napp::manifest::permission_covers(&crate::app_grants::granted(state, agent_id).await, perm) {
+        return Ok(());
     }
-    Ok(())
+    Err((StatusCode::FORBIDDEN, format!("app lacks permission: {perm}")).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,10 +123,8 @@ pub struct JanusRequest {
 /// page to be shown (`device:motion`, `window.isolated`); a row the loader
 /// does not hold is read from the window stored with it.
 async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, napp::manifest::AppWindow)> {
-    // By its id alone: an app's pass names its id, so a name that happens
-    // to equal another app's id must never serve that app's page.
-    let agents = state.agent_loader.list().await;
-    let fs_match = agents.iter().find(|a| a.id.as_deref() == Some(agent_id));
+    let fs_match = loaded_app(state, agent_id).await;
+    let fs_match = fs_match.as_ref();
     let window = fs_match.and_then(|a| a.app_window());
     if let Some(p) = fs_match.and_then(|a| a.app_ui_path.clone()) {
         let window = window.unwrap_or_else(|| super::agents::stored_app_window(None));
@@ -171,6 +138,19 @@ async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, na
         }
     }
     None
+}
+
+/// The app `agent_id` as the loader holds its files: its `ui/`, its window
+/// and its manifest's permissions. By its id alone, never a name: an app's
+/// pass names its id, so a name that happens to equal another app's id must
+/// never serve that app's page or grants.
+pub(crate) async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
+    state
+        .agent_loader
+        .list()
+        .await
+        .into_iter()
+        .find(|a| a.id.as_deref() == Some(agent_id))
 }
 
 /// The one folder an app's page is served from: its `ui/`. A recorded path
@@ -1594,7 +1574,10 @@ async fn run_agent_collect(
     while let Some(event) = rx.recv().await {
         match event.event_type {
             ai::StreamEventType::Text => text.push_str(&event.text),
-            ai::StreamEventType::ToolCall | ai::StreamEventType::ToolResult => {
+            // Which tools its employee called, never what they gave back: a
+            // result carries what the employee read, which the page holds
+            // no grant to.
+            ai::StreamEventType::ToolCall => {
                 if let Some(tool_call) = event.tool_call {
                     if let Ok(value) = serde_json::to_value(tool_call) {
                         tools.push(value);
@@ -1623,6 +1606,11 @@ async fn run_agent_sse(
         match start_app_agent_run(&state, &agent_id, &agent_name, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1729,6 +1717,11 @@ async fn run_janus_sse(
         match start_janus_stream(&state, body).await {
             Ok(mut events) => {
                 while let Some(event) = events.recv().await {
+                    // The words and errors alone, never a tool's result
+                    // (see `run_agent_collect`).
+                    if !matches!(event.event_type, ai::StreamEventType::Text | ai::StreamEventType::Error) {
+                        continue;
+                    }
                     let data = serde_json::json!({
                         "text": event.text,
                         "done": false,
@@ -1808,54 +1801,52 @@ pub async fn http_proxy(
         None => return (StatusCode::BAD_REQUEST, "missing url field").into_response(),
     };
 
-    // Enforce network: permission from manifest
-    if let Err(r) = check_network_permission(&state, &agent_id, &url).await {
-        return r;
+    // The app's `network:` grants (`app_grants`), asked of the address and
+    // of every redirect, through the one checked fetch the web tool uses
+    // (`tools::web_tool::fetch_checked`): never this computer, the network
+    // it is on, or a cloud's metadata address, whatever a name resolves to.
+    let granted = crate::app_grants::granted(&state, &agent_id).await;
+    let allowed = |u: &url::Url| {
+        let host = u.host_str().unwrap_or_default();
+        if napp::manifest::permission_covers(&granted, &format!("network:{host}")) {
+            Ok(())
+        } else {
+            Err(format!("app lacks permission: network:{host}"))
+        }
+    };
+    if let Err(e) = url::Url::parse(&url).map_err(|e| e.to_string()).and_then(|u| allowed(&u)) {
+        return (StatusCode::FORBIDDEN, e).into_response();
     }
 
-    let method = body
-        .get("method")
-        .and_then(|v| v.as_str())
-        .unwrap_or("GET")
-        .to_uppercase();
-
-    let headers: Vec<(String, String)> = body
-        .get("headers")
-        .and_then(|h| h.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
-
-    let client = match tls::http_client().build() {
-        Ok(client) => client,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
-    };
-    let mut req = match method.as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "PATCH" => client.patch(&url),
+    let method = match body.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
         _ => return (StatusCode::BAD_REQUEST, "unsupported method").into_response(),
     };
 
-    for (k, v) in &headers {
-        req = req.header(k.as_str(), v.as_str());
+    let mut req_headers = reqwest::header::HeaderMap::new();
+    for (k, v) in body.get("headers").and_then(|h| h.as_object()).into_iter().flatten() {
+        if let (Ok(name), Ok(value)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v.as_str().unwrap_or("")),
+        ) {
+            req_headers.insert(name, value);
+        }
     }
-
     // Add identifying header
-    req = req.header("X-Nebo-App", &agent_id);
-
-    if let Some(b) = req_body {
-        req = req.body(b);
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&agent_id) {
+        req_headers.insert("x-nebo-app", v);
     }
+    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
 
-    match req.send().await {
+    let client = match tools::web_tool::checked_client().build() {
+        Ok(client) => client,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
+    };
+    match tools::web_tool::fetch_checked(&client, method, &url, req_headers, req_body, allowed).await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let resp_headers: Vec<(String, String)> = resp
@@ -1919,6 +1910,85 @@ fn work_segment(name: &str) -> Option<String> {
         && !name.contains(['/', '\\', '\0'])
         && name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
     ok.then(|| name.to_string())
+}
+
+/// GET/HEAD /apps/{agent_id}/files/{*path} — `nebo.files.url`: a file of the
+/// owner's workspace (`~/NeboAI`) inside a folder the app holds
+/// (`filesystem:read:<folder>`, `app_grants`: as its manifest asks for an
+/// app built here, once the owner allows it for one from the marketplace),
+/// so a page shows the owner's pictures and plays his films. It is the
+/// app's own route, so its page reaches it wherever it is open, with its
+/// pass, by the rule every app route admits its caller
+/// (`validate_app_token`). Read only. A path no grant covers is 403 naming
+/// the permission; a file that is missing, hidden, or outside the granted
+/// folder once `..` and symlinks are resolved is 404, the same answer, so
+/// nothing learns what else is on the disk. The file streams with the files
+/// route's own range and type rules (`files::stream_file`).
+pub async fn serve_app_file(
+    State(state): State<AppState>,
+    Path((agent_id, path)): Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, request.headers()).await {
+        return r;
+    }
+    let permissions = crate::app_grants::granted(&state, &agent_id).await;
+    let grants: Vec<&str> = permissions.iter().filter_map(|p| napp::manifest::file_read_folder(p)).collect();
+    let Some(grant) = covering_grant(&grants, &path) else {
+        let refusal = format!(
+            "{path} is in no folder this app may read: its manifest asks for a folder with {}<folder>, and an app from the marketplace reads it once the owner allows it",
+            napp::manifest::FILESYSTEM_READ
+        );
+        return (StatusCode::FORBIDDEN, refusal).into_response();
+    };
+    let Ok(workspace) = config::workspace_dir() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match granted_file(&workspace, grant, &path).await {
+        Some(file) => super::files::stream_file(&file, super::files::content_type_for(&file), request).await,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The grant whose folder holds `rel` (a path inside the workspace), part by
+/// part: `Media/Projects` holds `Media/Projects/a/b.mp4`, never
+/// `Media/ProjectsOld/b.mp4`. A path with an empty, `.` or `..` part, or a
+/// `\`, `:` (a Windows stream, `a.mp4:secret`) or NUL anywhere, is covered
+/// by nothing.
+fn covering_grant<'a>(grants: &[&'a str], rel: &str) -> Option<&'a str> {
+    if rel.contains(['\\', ':', '\0']) {
+        return None;
+    }
+    let parts: Vec<&str> = rel.split('/').collect();
+    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+        return None;
+    }
+    grants.iter().copied().find(|grant| {
+        let folder: Vec<&str> = grant.split('/').collect();
+        parts.len() > folder.len() && parts[..folder.len()] == folder[..]
+    })
+}
+
+/// The file `rel` names under `grant`'s folder of `workspace`, resolved:
+/// `None` when it is missing or a folder, when the one rule for what of the
+/// workspace any route serves says no (`config::workspace_private`: a
+/// hidden part anywhere, a coding agent's folder, Nebo's own names), or
+/// when a symlink takes it, or the granted folder itself, out of the folder
+/// or the workspace (`files::within_files_root`).
+async fn granted_file(workspace: &StdPath, grant: &str, rel: &str) -> Option<PathBuf> {
+    let below = rel.strip_prefix(grant)?.strip_prefix('/')?;
+    if config::workspace_private(rel) {
+        return None;
+    }
+    let (folder, root) = super::files::within_files_root(workspace, &workspace.join(grant)).await?;
+    let (file, _) = super::files::within_files_root(&folder, &folder.join(below)).await?;
+    // The rule again, of what the path opens: a link, or a name the disk
+    // reads another way (`Claude-Code`, `CLAUDE~1`), never reaches a private
+    // folder.
+    if config::workspace_private(&file.strip_prefix(&root).ok()?.to_string_lossy()) {
+        return None;
+    }
+    fs::metadata(&file).await.ok()?.is_file().then_some(file)
 }
 
 /// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
@@ -2271,6 +2341,7 @@ mod developer_mode_tests {
     fn app(store: &db::Store, id: &str, name: &str) {
         store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
         store.set_agent_app_fields(id, true, Some("/tmp/ui"), None, None).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
     }
 
     const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
@@ -2288,6 +2359,7 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
 
         let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         assert_eq!(desktop_script(&store, 27895, "app-m", "p"), "", "installed: no developer tooling");
@@ -2506,6 +2578,7 @@ mod developer_mode_tests {
         app(&store, "app-a", "Racer");
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+        store.set_agent_built_here("app-m", false).unwrap();
         store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
 
         assert_eq!(devlog_target(&store, "app-a"), Ok(()), "an own app, mode off");
@@ -2559,6 +2632,109 @@ mod developer_mode_tests {
         assert!(prompt.contains("Uncaught TypeError") && prompt.contains("/track.json"), "{prompt}");
         assert!(!prompt.contains("booted"), "only errors are sent");
         assert_eq!(devlog_send_prompt("Kart Racer", &[]), None);
+    }
+}
+
+#[cfg(test)]
+mod app_file_tests {
+    use super::*;
+
+    /// The owner's workspace: a granted folder with a film, its hidden
+    /// proxies and a folder, a sibling folder whose name starts the same, a
+    /// secret beside the folder, and one outside the workspace.
+    fn workspace() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("NeboAI");
+        let project = ws.join("Media/Projects/reel");
+        std::fs::create_dir_all(project.join(".proxies")).unwrap();
+        std::fs::create_dir_all(ws.join("Media/ProjectsOld")).unwrap();
+        std::fs::write(project.join("render.mp4"), b"film").unwrap();
+        std::fs::write(project.join(".proxies/render-proxy.mp4"), b"proxy").unwrap();
+        std::fs::write(project.join(".env"), b"KEY=1").unwrap();
+        std::fs::write(ws.join("Media/ProjectsOld/old.mp4"), b"old").unwrap();
+        std::fs::write(ws.join("Media/secret.txt"), b"secret").unwrap();
+        std::fs::write(tmp.path().join("outside.txt"), b"outside").unwrap();
+        (tmp, ws)
+    }
+
+    #[test]
+    fn a_grant_covers_its_folder_part_by_part() {
+        let grants = ["Media/Projects", "Docs"];
+        assert_eq!(covering_grant(&grants, "Media/Projects/reel/render.mp4"), Some("Media/Projects"));
+        assert_eq!(covering_grant(&grants, "Docs/a.pdf"), Some("Docs"));
+        for refused in [
+            // An ungranted folder, and one whose name only starts the same.
+            "Media/secret.txt",
+            "Media/ProjectsOld/old.mp4",
+            // The folder itself is not a file.
+            "Media/Projects",
+            // Climbing, absolute, and odd parts.
+            "Media/Projects/../secret.txt",
+            "Media/Projects/reel/../../../outside.txt",
+            "/Media/Projects/reel/render.mp4",
+            "Media/Projects//reel/render.mp4",
+            "Media/Projects/./reel/render.mp4",
+            "Media/Projects/reel\\..\\..\\secret.txt",
+            "Media/Projects/reel/render.mp4\0",
+            // A Windows alternate data stream.
+            "Media/Projects/reel/render.mp4:hidden",
+            "Media/Projects/reel/render.mp4::$DATA",
+        ] {
+            assert_eq!(covering_grant(&grants, refused), None, "{refused}");
+        }
+        assert_eq!(covering_grant(&[], "Media/Projects/reel/render.mp4"), None);
+    }
+
+    #[tokio::test]
+    async fn only_a_visible_file_inside_the_granted_folder_is_served() {
+        let (_tmp, ws) = workspace();
+        let got = granted_file(&ws, "Media/Projects", "Media/Projects/reel/render.mp4").await.unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"film");
+        for refused in [
+            // Hidden below the grant: proxies, secrets.
+            "Media/Projects/reel/.proxies/render-proxy.mp4",
+            "Media/Projects/reel/.env",
+            // A folder, and a file that isn't there.
+            "Media/Projects/reel",
+            "Media/Projects/reel/gone.mp4",
+        ] {
+            assert_eq!(granted_file(&ws, "Media/Projects", refused).await, None, "{refused}");
+        }
+        // The one servability rule holds even where a grant names the
+        // folder: nothing hidden, no coding agent's folder.
+        let proxies = "Media/Projects/reel/.proxies";
+        assert_eq!(granted_file(&ws, proxies, "Media/Projects/reel/.proxies/render-proxy.mp4").await, None);
+        std::fs::create_dir_all(ws.join("claude-code/repo")).unwrap();
+        std::fs::write(ws.join("claude-code/repo/main.rs"), b"code").unwrap();
+        assert_eq!(granted_file(&ws, "claude-code", "claude-code/repo/main.rs").await, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_never_leads_out_of_the_granted_folder() {
+        let (tmp, ws) = workspace();
+        let project = ws.join("Media/Projects/reel");
+        // A file and a folder that point out of the granted folder.
+        std::os::unix::fs::symlink(ws.join("Media/secret.txt"), project.join("secret.mp4")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), project.join("up")).unwrap();
+        // A link inside the folder to a file inside it is fine.
+        std::os::unix::fs::symlink(project.join("render.mp4"), project.join("latest.mp4")).unwrap();
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/secret.mp4").await, None);
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/up/outside.txt").await, None);
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/up/outside.txt").await, None);
+        assert!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/latest.mp4").await.is_some());
+        // The granted folder itself a link out of the workspace: nothing.
+        std::fs::create_dir_all(tmp.path().join("elsewhere")).unwrap();
+        std::fs::write(tmp.path().join("elsewhere/a.mp4"), b"a").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("elsewhere"), ws.join("Linked")).unwrap();
+        assert_eq!(granted_file(&ws, "Linked", "Linked/a.mp4").await, None);
+        // A granted folder that is a link to a private one inside the
+        // workspace is judged by what it opens.
+        std::fs::create_dir_all(ws.join("claude-code/repo")).unwrap();
+        std::fs::write(ws.join("claude-code/repo/main.rs"), b"code").unwrap();
+        std::os::unix::fs::symlink(ws.join("claude-code"), ws.join("Code")).unwrap();
+        assert_eq!(granted_file(&ws, "Code", "Code/repo/main.rs").await, None);
+        assert_eq!(granted_file(&ws, "Claude-Code", "Claude-Code/repo/main.rs").await, None, "whatever its case");
     }
 }
 

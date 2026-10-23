@@ -103,25 +103,16 @@ pub fn app_location(row: &db::models::Agent) -> Option<String> {
     served_dir(row).map(|dir| location_line(&row.name, dir))
 }
 
-/// Whether an app is the owner's own: made on this bot (a loose package in
-/// `user/agents/`, or a database-only row), never one installed from the
-/// marketplace (a sealed `.napp`, or a package under `nebo/agents/`). Only
-/// the owner's own apps carry developer tooling and build themselves.
+/// Whether an app is the owner's own: made on this bot (his employees
+/// built it, or he put its folder in `user/agents/` himself), never one
+/// installed from the store, a loop or an install code. Read from the one
+/// record of where it came from, set when its row is made
+/// (`Store::set_agent_built_here`; a duplicate keeps its source's); nothing
+/// recorded means installed. Only the owner's own apps carry developer
+/// tooling, build themselves, and hold what they ask for without his OK
+/// (`app_grants`).
 pub fn is_own_app(row: &db::models::Agent) -> bool {
-    if row.is_app.unwrap_or(0) == 0 {
-        return false;
-    }
-    let installed_root = config::nebo_dir().ok().map(|d| d.join("agents"));
-    !row
-        .napp_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(Path::new)
-        .is_some_and(|p| {
-            p.extension().is_some_and(|e| e == "napp")
-                || installed_root.as_deref().is_some_and(|root| p.starts_with(root))
-        })
+    row.is_app.unwrap_or(0) != 0 && row.built_here == 1
 }
 
 /// Whether `caller` may use the developer pack on `app`: only ever one of
@@ -974,6 +965,26 @@ mod tests {
         store
             .set_agent_app_fields(id, true, Some(&ui.to_string_lossy()), None, None)
             .unwrap();
+        store.set_agent_built_here(id, true).unwrap();
+    }
+
+    /// Whether an app is his own is what its row records, never where its
+    /// folder is: a copy of an installed app in `user/agents/` stays
+    /// installed.
+    #[test]
+    fn an_app_is_his_own_only_when_its_row_says_it_was_made_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        store.create_agent("app-1", None, "Mine", "", "", "{}", None, None).unwrap();
+        store.set_agent_app_fields("app-1", true, Some("/data/ui1"), None, None).unwrap();
+        let row = || store.get_agent("app-1").unwrap().unwrap();
+        assert!(!is_own_app(&row()), "nothing recorded: installed");
+        store.set_agent_napp_path("app-1", "/data/user/agents/Mine").unwrap();
+        assert!(!is_own_app(&row()), "its folder alone says nothing");
+        store.set_agent_built_here("app-1", true).unwrap();
+        assert!(is_own_app(&row()));
+        store.set_agent_napp_path("app-1", "/data/nebo/agents/mine.napp").unwrap();
+        assert!(is_own_app(&row()), "the record holds wherever its folder is");
     }
 
     /// app_status names the entry page's scripts and styles, flags the one
@@ -1243,6 +1254,7 @@ mod tests {
         store
             .set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp")
             .unwrap();
+        store.set_agent_built_here("app-9", false).unwrap();
         assert!(withheld(&store, "app-1").is_empty(), "mode off: the app builds itself");
         assert_eq!(withheld(&store, "dev-1").len(), TOOLS.len(), "mode off: not its teammate");
         assert_eq!(withheld(&store, "app-9").len(), TOOLS.len(), "never an installed app");

@@ -498,6 +498,39 @@ pub struct ActivityRow {
     pub verdict: String,
 }
 
+/// One permission that needs the owner's OK, as his screens show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPermission {
+    /// As the manifest asks for it (`filesystem:read:Media/Projects`).
+    pub permission: String,
+    /// `files`, `web` or `helper`.
+    pub kind: String,
+    /// What it names, ready to show: `NeboAI › Media › Projects`, a
+    /// website's name, an employee's name. Empty when it names everything
+    /// of its kind (`network:*`).
+    pub target: String,
+    /// `allowed`, `refused`, or `asking` (not answered yet).
+    pub state: String,
+}
+
+/// An app's permissions that need the owner's OK, and whether it is his own
+/// (then each is allowed, and there is nothing to answer).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPermissions {
+    pub own: bool,
+    pub permissions: Vec<AppPermission>,
+}
+
+/// The owner's answer to one permission an app asks for.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPermissionAnswer {
+    pub permission: String,
+    pub allowed: bool,
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────
 
 /// GET /api/v1/agents/{id}/permissions
@@ -518,6 +551,28 @@ pub async fn update_agent_permissions(
     let connected = connected(&state);
     update(&state.store, Some(&id), &body, &connected).map_err(to_error_response)?;
     page(&state.store, Some(&id), &connected).map(Json).map_err(to_error_response)
+}
+
+/// GET /api/v1/agents/{id}/app-permissions: what app `id` asks for that
+/// needs the owner's OK (`app_grants`), and his answer to each. An app's
+/// own pass never reaches this: it opens only the app's own routes.
+pub async fn get_app_permissions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<AppPermissions> {
+    crate::app_grants::listing_for(&state, &id).await.map(Json).map_err(to_error_response)
+}
+
+/// PUT /api/v1/agents/{id}/app-permissions: the owner allows one of the
+/// app's requests, refuses it, or takes it back. Only a request the app's
+/// manifest makes, of an app installed from the marketplace or a loop.
+pub async fn answer_app_permission(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AppPermissionAnswer>,
+) -> HandlerResult<AppPermissions> {
+    crate::app_grants::answer(&state, &id, &body.permission, body.allowed).await.map_err(to_error_response)?;
+    crate::app_grants::listing_for(&state, &id).await.map(Json).map_err(to_error_response)
 }
 
 /// DELETE /api/v1/agents/{id}/permissions/items/{rule_id}

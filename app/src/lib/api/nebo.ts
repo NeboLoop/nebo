@@ -328,6 +328,20 @@ export function revokeAgentApiKey(id: string, keyId: string) {
 }
 
 /**
+ * @description "Get app permissions"
+ */
+export function getAppPermissions(id: string) {
+	return webapi.get<components.AppPermissions>(`/api/v1/agents/${id}/app-permissions`)
+}
+
+/**
+ * @description "Answer app permission"
+ */
+export function answerAppPermission(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.AppPermissions>(`/api/v1/agents/${id}/app-permissions`, req)
+}
+
+/**
  * @description "Apply agent update"
  */
 export function applyAgentUpdate(id: string, req: Record<string, unknown> = {}) {

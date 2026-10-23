@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod a2ui_actions;
 pub mod agents_export;
 pub mod app_lifecycle;
+mod app_grants;
 pub mod backup_ship;
 mod artifact_updates;
 pub mod background;
@@ -2655,6 +2656,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                             &agent_id,
                             &loaded.source_path.to_string_lossy(),
                         );
+                        // Where it came from: a folder in user/agents is the
+                        // owner's own; an install is not (`app_dev::is_own_app`).
+                        let _ = store.set_agent_built_here(&agent_id, loaded.source == napp::AgentSource::User);
                         // The primary agent ("Nebo") is exposed to the loop by
                         // default. Set it once at row creation — the migration
                         // only covers installs that predate this row, so fresh
@@ -4199,6 +4203,7 @@ async fn handle_agent_fs_events(
                                 &agent_id,
                                 &loaded.source_path.to_string_lossy(),
                             );
+                            let _ = state.store.set_agent_built_here(&agent_id, loaded.source == napp::AgentSource::User);
                             // A seat hired after the packs exist reads them now (R15).
                             {
                                 let packs = state.packs.read().await.clone();
