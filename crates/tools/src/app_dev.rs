@@ -141,7 +141,9 @@ pub fn not_yours(app: &db::models::Agent) -> String {
 pub fn self_build_line(row: &db::models::Agent) -> Option<String> {
     is_own_app(row).then(|| {
         "You build and publish yourself. After changing your files, app_reload refreshes every open view of you and \
-         app_console shows what you logged; app_status says what is served. When the owner asks to publish you \
+         app_console shows what you logged; app_status says what is served. Before you change how your page loads \
+         the SDK, keeps its data or links its styles, read the app-studio skill: it is the SDK's one contract. When the \
+         owner asks to publish you \
          (\"publish yourself\"), draft the listing with app_listing, add screenshots with app_screenshot, show it, \
          and send it with app_submit once they say so. Fix the smallest thing that's broken; never rewrite working code \
          to fix a bug, and say what you'll change and why before any large change. Your history is saved automatically: \
@@ -178,6 +180,45 @@ pub fn withheld(store: &db::Store, agent_id: &str) -> Vec<String> {
         TOOLS.iter().map(|t| t.to_string()).collect()
     }
 }
+
+/// What `find_tools` adds when `query` names developer tools the seat
+/// `agent_id` is not offered because it does not build that app
+/// ([`withheld`]; `run_withheld` is what the run leaves out): whose tools
+/// they are and who does the work, so a seat never takes them for missing
+/// and opens the app some other way (live 2026-10-22: Jetson, told "no
+/// deferred tool matches", opened the app in the plain browser and went
+/// looking for the install key).
+pub fn withheld_note(
+    store: &db::Store,
+    agent_id: &str,
+    query: &str,
+    run_withheld: Option<&HashSet<String>>,
+) -> Option<String> {
+    let run_withheld = run_withheld?;
+    let asked = |w: &&str| TOOLS.contains(w) && run_withheld.contains(*w);
+    let words = || query.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+    if !words().any(|w| asked(&w)) {
+        return None;
+    }
+    let pack_withheld = withheld(store, agent_id);
+    let named: Vec<&str> = words()
+        .filter(|w| asked(w) && pack_withheld.iter().any(|t| t.as_str() == *w))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    (!named.is_empty()).then(|| {
+        format!(
+            "{} are an app's own tools, not yours: each app's employee builds, checks and publishes its own page. Send \
+             it the work (assign_task or send_message). With App Developer mode on (Bot settings, Developer), its \
+             teammates get them too. {SEE_IT_RUN}",
+            named.join(", ")
+        )
+    })
+}
+
+/// How an app is seen running, said by every developer tool that shows it.
+pub const SEE_IT_RUN: &str = "To see an app running, use app_reload(check: true) or app_screenshot: they open its page \
+     with its own pass. Never curl its address, and never look for keys, tokens or credentials.";
 
 /// The code tool (`code`: outline, parse_check, diagnostics, definition,
 /// references): an app employee's way into its own sources.
@@ -411,8 +452,9 @@ impl DynTool for AppReloadTool {
          check: true instead loads the page fresh on a phone and a desktop, in a view of its own in this bot's browser (the open \
          views are not reloaded), and fails with every console error, uncaught exception, unhandled rejection, failed request of \
          the app's own, or a page that drew nothing; another site's failures are listed, not counted. It is the live check that \
-         verifies app work: run it after a change or a deploy, and fix what it reports."
+         verifies app work: run it after a change or a deploy, and fix what it reports.\n"
             .to_string()
+            + SEE_IT_RUN
     }
 
     fn schema(&self) -> Value {
@@ -1319,5 +1361,46 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// Live 2026-10-22: an employee opened its app in the plain browser,
+    /// got a sign-in page, and went looking for the install key. Every tool
+    /// that shows an app says how to see it running, and never to hunt for
+    /// a key.
+    #[test]
+    fn the_tools_that_show_an_app_say_how_to_see_it_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(store(dir.path()));
+        let mut described: Vec<(String, String)> = tools(store.clone(), None, None)
+            .iter()
+            .map(|t| (t.name().to_string(), t.description()))
+            .collect();
+        let shot = crate::app_publish::AppScreenshotTool::new(store, None);
+        described.push((shot.name().to_string(), shot.description()));
+        for (name, text) in described.iter().filter(|(n, _)| n != APP_STATUS) {
+            assert!(text.contains("use app_reload(check: true) or app_screenshot"), "{name}: {text}");
+            assert!(text.contains("never look for keys, tokens or credentials"), "{name}: {text}");
+        }
+        assert_eq!(described.len(), 4, "app_reload, app_status, app_console, app_screenshot");
+    }
+
+    /// A seat that asks for developer tools it is not offered hears whose
+    /// they are and who does the work, never only "no match".
+    #[test]
+    fn asking_for_an_apps_own_tools_says_whose_they_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        app_row(&store, "app-1", "Tracker", &dir.path().join("ui"));
+        store.create_agent("acct-1", None, "Accountant", "", "", "{}", None, None).unwrap();
+        let held: HashSet<String> = TOOLS.iter().map(|t| t.to_string()).collect();
+        let note = withheld_note(&store, "acct-1", "select:app_status,app_reload,code", Some(&held)).unwrap();
+        assert!(note.starts_with("app_reload, app_status are an app's own tools"), "{note}");
+        assert!(note.contains("assign_task") && note.contains("App Developer mode"), "{note}");
+        assert!(note.contains("never look for keys"), "{note}");
+        assert_eq!(withheld_note(&store, "acct-1", "app screenshot console", Some(&held)), None, "keywords name no tool");
+        assert_eq!(withheld_note(&store, "acct-1", "select:app_status", Some(&HashSet::new())), None, "offered");
+        assert_eq!(withheld_note(&store, "acct-1", "select:app_status", None), None);
+        // The app itself, its tool scope leaving one out: not another app's.
+        assert_eq!(withheld_note(&store, "app-1", "select:app_reload", Some(&held)), None, "its own, scoped out");
     }
 }

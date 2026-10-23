@@ -55,6 +55,9 @@
   // API, and its socket's server: the desktop's app window is told both, on
   // different origins). Another site's failure (analytics, a CDN, no
   // network) is noted, never counted as the app's error.
+  // The page's own scheme and host: a custom scheme's (`neboapp:`) origin
+  // can read "null", so the page's own addresses are matched by these.
+  var here = location.protocol + '//' + location.host;
   var neboOrigins = [api, socketUrl.replace(/^ws(s?):/, 'http$1:')].map(function (base) {
     try {
       return new URL(base, location.href).origin;
@@ -69,20 +72,55 @@
     } catch (e) {
       return true;
     }
-    if (u.protocol === 'data:' || u.protocol === 'blob:' || u.origin === location.origin) return true;
+    if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol + '//' + u.host === here) return true;
     return neboOrigins.indexOf(u.origin) >= 0 && /\/(api\/v1\/apps|apps|ws\/app)\//.test(u.pathname);
   }
   // A failure: the app's own is an error; another site's is a note.
-  function failed(url, message, source) {
-    if (ours(url)) push('error', message, source);
+  function failed(url, message, source, extra) {
+    if (ours(url)) push('error', message, source, extra);
     else push('warn', message + " (another site's, not counted)", source);
   }
 
-  function push(level, message, source) {
+  // The page's ui/ folder as the browser addresses it: the bot's
+  // `<prefix>/apps/<id>/ui/`, or the desktop window's own root.
+  var uiRoot = here + (m ? prefix + '/apps/' + m[2] + '/ui/' : '/');
+  function decoded(s) {
+    try {
+      return decodeURIComponent(s);
+    } catch (e) {
+      return s;
+    }
+  }
+  // The file a load of the page's own asked for, for the bot to read its
+  // cause against ui/: relative to ui/, or the page's own path outside it
+  // from `/` (the prefix taken off); '' for another origin or Nebo's routes
+  // (`/api/`, `/ws/`), judged first: the desktop window's ui/ is its root,
+  // so there a ui/ folder named api/ or ws/ gets no cause.
+  function fileOf(url) {
+    var u;
+    try {
+      u = new URL(String(url || ''), location.href);
+    } catch (e) {
+      return '';
+    }
+    if (u.protocol + '//' + u.host !== here) return '';
+    var own = prefix && u.pathname.indexOf(prefix) === 0 ? u.pathname.slice(prefix.length) : u.pathname;
+    if (/^\/(api|ws)\//.test(own)) return '';
+    if (own === '/sdk/nebo.global.js') return own;
+    var at = here + u.pathname;
+    if (at.indexOf(uiRoot) === 0) return decoded(at.slice(uiRoot.length));
+    return decoded(own);
+  }
+
+  function push(level, message, source, extra) {
     if (busy) return;
     busy = true;
     try {
       var e = { level: level, message: String(message).slice(0, 2000), source: source, time: Date.now(), view: VIEW };
+      if (extra) {
+        e.file = String(extra.file || '').slice(0, 500);
+        e.written = String(extra.written || '').slice(0, 500);
+      }
       logs.push(e);
       if (logs.length > KEEP) logs.shift();
       if (level === 'error') unseen++;
@@ -156,7 +194,11 @@
   function onError(ev) {
     var t = ev.target;
     if (t && t !== window && t.nodeType === 1) {
-      failed(t.src || t.href || '', 'Failed to load ' + short(t.src || t.href || t.tagName), 'resource');
+      // The address asked for, the file it is in ui/, and the reference as
+      // the served page writes it: the bot reads the cause against ui/.
+      var asked = t.src || t.href || '';
+      var written = t.getAttribute('src') || t.getAttribute('href') || '';
+      failed(asked, 'Failed to load ' + short(asked || t.tagName), 'resource', { file: fileOf(asked), written: written });
       return;
     }
     var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';

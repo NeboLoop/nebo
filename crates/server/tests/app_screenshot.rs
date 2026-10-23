@@ -349,3 +349,90 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
     let bought = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-bought") })).await;
     assert!(bought.is_error && bought.content.contains("installed from the marketplace"), "{}", bought.content);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_paths() {
+    if !common::in_own_process().await {
+        return;
+    }
+    let server = TestServer::boot().await;
+    if browser::chrome::find_chrome().is_none() {
+        eprintln!("no Chrome or Chromium on this machine — skipping");
+        return;
+    }
+    let manager = Arc::new(browser::Manager::new(
+        browser::BrowserConfig::default(),
+        server.data_dir.to_string_lossy().into_owned(),
+    ));
+    let store = Arc::new(server.db_store());
+    let app = |id: &str, name: &str, files: &[(&str, &str)]| {
+        let ui = server.data_dir.join("apps").join(id).join("ui");
+        for (path, text) in files {
+            let file = ui.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        store.create_agent(id, None, name, "An app", "", "", None, None).unwrap();
+        store.set_agent_app_fields(id, true, Some(ui.to_str().unwrap()), None, None).unwrap();
+        store.set_agent_built_here(id, true).unwrap();
+    };
+    app(
+        "app-league",
+        "League",
+        &[(
+            "index.html",
+            "<!doctype html><html><head><script src=\"../../../sdk/nebo.global.js\"></script></head><body>\
+             <h1 id=\"saved\">loading</h1><script>\
+             const { nebo } = window.NeboAppSDK;\
+             nebo.storage.getItem('never-saved').then(v => {\
+               document.getElementById('saved').textContent = v === null ? 'saved: null' : 'saved: ' + JSON.stringify(v);\
+               if (v !== null) console.error('a key never saved read ' + JSON.stringify(v));\
+             });\
+             </script></body></html>",
+        )],
+    );
+    app(
+        "app-styled",
+        "Styled",
+        &[
+            (
+                "index.html",
+                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./style.css\"></head>\
+                 <body><h1>Styled</h1><img src=\"../../../api/v1/no-such-route.png\"></body></html>",
+            ),
+            ("css/style.css", "h1 { color: teal }"),
+        ],
+    );
+
+    let reload = tools::app_dev::tools(store, None, Some(manager))
+        .into_iter()
+        .find(|t| t.name() == tools::app_dev::APP_RELOAD)
+        .unwrap();
+    let check = |id: &'static str| {
+        let ctx = tools::ToolContext {
+            origin: tools::origin::Origin::User,
+            session_key: format!("agent:{id}:web"),
+            ..Default::default()
+        };
+        let reload = &reload;
+        async move { reload.execute_dyn(&ctx, json!({ "check": true })).await }
+    };
+
+    let league = check("app-league").await;
+    assert!(!league.is_error, "a key never saved is no error: {}", league.content);
+    assert_eq!(league.payload.as_ref().unwrap()["passed"], true);
+
+    let styled = check("app-styled").await;
+    assert!(styled.is_error, "{}", styled.content);
+    assert!(
+        styled.content.contains("the page asked for ui/style.css (the served page writes \"./style.css\"), and there is no such file")
+            && styled.content.contains("ui/css/style.css is there"),
+        "both paths named: {}",
+        styled.content
+    );
+    // A failed load of one of Nebo's own routes is never read as a file
+    // of ui/.
+    assert!(styled.content.contains("no-such-route.png"), "{}", styled.content);
+    assert!(!styled.content.contains("asked for /api/"), "{}", styled.content);
+    assert!(!styled.content.contains("asked for ui/api/"), "{}", styled.content);
+}

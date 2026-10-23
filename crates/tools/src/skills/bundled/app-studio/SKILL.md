@@ -79,7 +79,7 @@ the check passes. When looks matter, Design Depth adds the studio method.
    `app_data` and `decide` are tools, never shell commands.** Load them once with
    `find_tools(query: "select:app_status,app_reload,app_console,app_screenshot,generate_media,code")`
    at the start of every build or fix: `code` is how you read and check code.
-   A tool missing from your list is not loaded yet; it is never "not available".
+   See the app run only with these: never curl it, never look for a key.
 4. **Never install a runtime.** No `brew install`, no `curl ... | bash`, no bun or
    node downloads (Step 2 says what each lane needs).
 5. **`ui/` holds what the page serves and nothing else.** No `package.json`,
@@ -262,7 +262,7 @@ The full Vite lane: `read_skill_file(name: "app-studio", path:
    It loads the page under a prefix, as the mobile app does, so it catches
    every address mistake; it says what it shows and ends with that load's
    console, word for word. `app_console` reads the owner's open views too,
-   the desktop window included. A game is proved in play: screenshot
+   the desktop window included. `app_status` when a file is MISSING or "(outside the app)". A game is proved in play: screenshot
    `index.html?play=1`, never the menu (3D: `references/games.md` 7a).
 6. Report only when the console has zero errors AND the screenshot shows
    the change. Otherwise fix and loop: known failures and their fixes are in
@@ -280,8 +280,9 @@ checks go in `checks/` beside `ui/`, never in it.
 ## Your App's Data
 
 The page's `storage` and the employee's `app_data` tool are one store: same
-keys, same values. After a `set` or `delete` every open view hears it:
-`storage.onChange(() => load())`.
+keys, same values: the one place an app keeps data, on all the owner's
+devices. Never `localStorage`. After a `set` or `delete` every open view
+hears it: `storage.onChange(() => load())`.
 
 ```
 app_data(action: "set", key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
@@ -298,7 +299,8 @@ work"): the owner hears silence.
 
 ## The SDK Global
 
-The page reads the SDK from `NeboAppSDK`. `NeboAppSDK.nebo` (a
+The page reads the SDK from `NeboAppSDK`, once:
+`const { nebo } = window.NeboAppSDK;`. `NeboAppSDK.nebo` (a
 `NeboAppSDK.NeboSDK`) holds every module, each also at the top level, but
 two are renamed there: `nebo.fetch` is `NeboAppSDK.neboFetch`,
 `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`. The full top-level list is
@@ -306,12 +308,14 @@ two are renamed there: `nebo.fetch` is `NeboAppSDK.neboFetch`,
 `files`, `plugins`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`, `NeboSDK`,
 `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
 `setBaseUrl`. Nebo sets the app and its address on every page it serves;
-a page never sets them.
+a page never sets them. Nebo serves the SDK itself at `/sdk/nebo.global.js`
+(there is no such file on disk); from `ui/index.html` it is loaded as
+`../../../sdk/nebo.global.js`.
 
 | Call | Does |
 |------|------|
 | `identity.get(): Promise<{id, name, displayName, description, persona, model, skills, inputValues}>` | Who this app's employee is. Cached; `identity.invalidate()` clears it. |
-| `storage.getItem(key): Promise<any \| null>` | Read one key of the app's store. JSON comes back parsed. |
+| `storage.getItem(key): Promise<any \| null>` | Read one key. JSON comes back parsed; `null` for a key never saved (a first run, not an error). |
 | `storage.setItem(key, value): Promise<void>` | Write one key. Non-strings are JSON-encoded. |
 | `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
 | `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write: `source` is `"employee"` (`app_data`) or `"page"` (another open view). Returns an unsubscribe. |

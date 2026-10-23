@@ -1738,8 +1738,9 @@ impl DynTool for AppScreenshotTool {
          - `path`: a page or route inside the app (default index.html, e.g. \"index.html#/scores\").\n\
          - `width`/`height`: the viewport (default the app's window, else a phone at 390x844). Use a phone, a tablet and a desktop size for a listing.\n\
          - `for_listing: true` adds it to the app's marketplace listing (3 to 5 make a good listing; the first is the card image).\n\
-         - You get a written reading of the picture; the file is saved in the workspace under app-screenshots/."
+         - You get a written reading of the picture; the file is saved in the workspace under app-screenshots/.\n"
             .to_string()
+            + crate::app_dev::SEE_IT_RUN
     }
 
     fn schema(&self) -> Value {

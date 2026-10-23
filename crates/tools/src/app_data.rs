@@ -389,7 +389,11 @@ impl AppDataTool {
             "get" => {
                 need_key()?;
                 let Some(raw) = read(&self.store, &app.id, key)? else {
-                    return Ok(format!("No key '{key}' in {}'s data.", app.name));
+                    return Ok(format!(
+                        "No key '{key}' in {}'s data yet. The page's nebo.storage.getItem('{key}') reads null for it: normal \
+                         until something saves it.",
+                        app.name
+                    ));
                 };
                 let value = decode(&raw);
                 Ok(match path {
