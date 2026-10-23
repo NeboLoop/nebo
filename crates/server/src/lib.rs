@@ -40,6 +40,7 @@ mod plugin_provider;
 mod preflight;
 pub mod proposed_change;
 pub mod process;
+mod power;
 mod redact;
 pub mod routes;
 pub mod run_display;
@@ -1419,6 +1420,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Full speed with no window in front: every engine holds it (the desktop
     // app's, `nebo-cli serve`, dev).
     process::hold_full_speed();
+    // Hear the computer going to sleep before it does, so the connections
+    // to NeboAI close cleanly first (`power`).
+    power::start();
     std::sync::LazyLock::force(&STARTED_AT);
     let host = cfg.host.clone();
     // The port is taken first and held until the server serves on it, so
@@ -3401,12 +3405,16 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Reconnect watcher with jittered backoff (comm::reconnect) + wall-clock
     // drift detection.
-    // Uses dual select: periodic poll OR instant notification from wait_disconnect().
-    // Wall-clock drift detects system sleep/wake (tokio timers freeze during sleep).
+    // Selects on: periodic poll, instant notification from wait_disconnect(),
+    // or the OS saying the computer is about to sleep (`power`): the
+    // connection closes with 1001 "sleep" and nothing is dialed until it
+    // wakes. Wall-clock drift catches a sleep the OS did not announce
+    // (tokio timers freeze during sleep); both wakes go through one path.
     if cfg.is_neboai_enabled() {
         let reconnect_state = state.clone();
         let mcp_refresh_wake = mcp_refresh_wake.clone();
         let plugin_refresh_wake = plugin_refresh_wake.clone();
+        let mut power = power::process().watch();
         tokio::spawn(async move {
             // Boot connects on its own; this watcher takes over after a
             // minute — or at once when the hub refused this process the bot
@@ -3429,6 +3437,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             loop {
                 let before_sleep = std::time::SystemTime::now();
                 let mut dropped = None;
+                let mut slept = false;
 
                 tokio::select! {
                     // Branch 1: periodic poll, or the wait before a retry
@@ -3438,6 +3447,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         info!(ended = ?how, "neboai: disconnected, will reconnect");
                         dropped = Some(how);
                     }
+                    // Branch 3: the computer is about to sleep. Close with
+                    // 1001 "sleep" so the hub shows the bot offline now,
+                    // then wait for the wake instead of redialing.
+                    () = power.sleeping() => {
+                        reconnect_state
+                            .comm_manager
+                            .shutdown(Some(comm::reconnect::Disconnect::Sleep))
+                            .await;
+                        power.sleep_through().await;
+                        slept = true;
+                    }
                 }
 
                 // Detect wall-clock drift — if elapsed >> expected, system was asleep
@@ -3445,7 +3465,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     .duration_since(before_sleep)
                     .unwrap_or_default();
                 let drift = elapsed_wall.saturating_sub(wait);
-                let was_asleep = drift > std::time::Duration::from_secs(10);
+                let was_asleep = slept || drift > std::time::Duration::from_secs(10);
 
                 if was_asleep {
                     info!(
@@ -3458,8 +3478,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     mcp_refresh_wake.notify_one();
                     plugin_refresh_wake.notify_one();
                     // Tear down stale connection (read/write loops may still be blocked)
-                    reconnect_state.comm_manager.shutdown().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    reconnect_state.comm_manager.shutdown(None).await;
+                    // Waking is a fresh start: redial within half a second,
+                    // from the start of the backoff (comm::reconnect).
+                    tokio::time::sleep(backoff.wait(comm::reconnect::Disconnect::Sleep, connected_at.elapsed())).await;
                 } else {
                     // A dropped connection is redialed after its jittered
                     // wait: up to 500 ms for a hub drain, up to 5 s for a
@@ -3512,6 +3534,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if cfg.is_neboai_enabled() && !cfg.neboai.tunnel_url.is_empty() {
         let tunnel_state = state.clone();
         let local_addr = format!("127.0.0.1:{}", cfg.port);
+        let mut power = power::process().watch();
         tokio::spawn(async move {
             let mut backoff = comm::reconnect::Backoff::new();
             loop {
@@ -3532,7 +3555,21 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 // a session that ended any other way, or a
                 // dial that failed, waits a jittered backoff that starts
                 // over once a session has been up 10 s (comm::reconnect).
-                let delay = match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
+                // The computer going to sleep closes the session with 1001
+                // "sleep"; nothing is dialed until it wakes, then at once.
+                let ended = comm::tunnel::run(
+                    &hub_url,
+                    &token,
+                    &local_addr,
+                    &tunnel_state.tunnel_online,
+                    power.sleeping(),
+                )
+                .await;
+                let delay = match ended {
+                    Ok(how @ comm::reconnect::Disconnect::Sleep) => {
+                        power.sleep_through().await;
+                        backoff.wait(how, started.elapsed())
+                    }
                     Ok(how) => {
                         info!(ended = ?how, "tunnel: closed by hub, redialing");
                         backoff.wait(how, started.elapsed())
@@ -3546,7 +3583,15 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         backoff.wait(comm::reconnect::Disconnect::Dropped, std::time::Duration::ZERO)
                     }
                 };
-                tokio::time::sleep(delay).await;
+                // Asleep with no session open: nothing to close, and the
+                // wake redials at once.
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    () = power.sleeping() => {
+                        power.sleep_through().await;
+                        tokio::time::sleep(backoff.wait(comm::reconnect::Disconnect::Sleep, std::time::Duration::ZERO)).await;
+                    }
+                }
             }
         });
     }
@@ -3954,7 +3999,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             backup_ship::commit_on_drain(&shutdown_store, &shutdown_state).await;
             comm::lease::process().release();
             info!("bot state settled, disconnecting comm plugins...");
-            shutdown_comm.shutdown().await;
+            shutdown_comm.shutdown(None).await;
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             info!("comm plugins disconnected");

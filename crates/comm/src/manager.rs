@@ -69,7 +69,7 @@ impl PluginManager {
         let mut inner = self.inner.write().await;
         if let Some(ref active) = inner.active {
             if active.name() == name {
-                let _ = active.disconnect().await;
+                let _ = active.disconnect(None).await;
                 inner.active = None;
             }
         }
@@ -89,7 +89,7 @@ impl PluginManager {
         // Disconnect current if different
         if let Some(ref active) = inner.active {
             if active.name() != name {
-                if let Err(e) = active.disconnect().await {
+                if let Err(e) = active.disconnect(None).await {
                     warn!(plugin = active.name(), error = %e, "failed to disconnect plugin");
                 }
             }
@@ -410,12 +410,14 @@ impl PluginManager {
         }
     }
 
-    /// Disconnect all plugins.
-    pub async fn shutdown(&self) {
+    /// Disconnect all plugins. `how` is passed to each plugin's
+    /// [`CommPlugin::disconnect`]: `Some(Disconnect::Sleep)` when the
+    /// computer is about to sleep, `None` otherwise.
+    pub async fn shutdown(&self, how: Option<crate::reconnect::Disconnect>) {
         let mut inner = self.inner.write().await;
         for (name, plugin) in &inner.plugins {
             if plugin.is_connected() {
-                if let Err(e) = plugin.disconnect().await {
+                if let Err(e) = plugin.disconnect(how).await {
                     warn!(plugin = name.as_str(), error = %e, "failed to disconnect plugin");
                 }
             }
