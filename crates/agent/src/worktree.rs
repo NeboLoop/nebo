@@ -2,7 +2,9 @@
 //!
 //! When helpers fan out with `isolate: "worktree"`, each gets its own git
 //! worktree of the project, at `<repo>/.nebo/worktrees/<id>` on its own
-//! branch (`.nebo/` is excluded through the repository's `info/exclude`),
+//! branch (`.nebo/worktrees/` is excluded through the repository's
+//! `info/exclude`; it survives `git clean -fdx` as an excluded folder
+//! holding a repository, though not `git clean -ffdx`),
 //! fenced by its grant's `fence` and `cwd`, and the parent merges the
 //! copies back when they are reviewed. Read-only fan-out never comes here:
 //! it shares the tree. A project that is no repository, or a worktree git
@@ -363,16 +365,24 @@ pub async fn repo_root(dir: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(out))
 }
 
-/// The folder a project keeps Nebo's working files in, beside its own:
-/// helpers' copies (`worktrees/`), the reviewers' snapshots of a change
-/// (`verify/`) and the one build folder its checks share (`build/`).
+/// The folder a project keeps Nebo's working files in, beside the owner's
+/// own Nebo files there (`.nebo/hooks.yaml`, which he commits):
+/// [`NEBO_OWN`].
 pub const NEBO_DIR: &str = ".nebo";
 
-/// `<project>/.nebo`, made when missing, and in a git repository excluded
-/// through the repository's own `info/exclude`, so `git status` never
-/// shows it and nothing in it is ever committed. The one place Nebo's
-/// working files in a project are: a helper's copy (inside the project's
-/// own `.nebo`) keeps them in the project's, never a `.nebo` of its own.
+/// Nebo's own working folders in a project's `.nebo`: helpers' copies
+/// (`worktrees`), the reviewers' snapshots of a change (`verify`) and the
+/// one build folder its checks share (`build`). Only these are hidden from
+/// git and left out of a change; anything else in `.nebo` is the owner's.
+pub const NEBO_OWN: &[&str] = &["worktrees", "verify", "build"];
+
+/// `<project>/.nebo`, made when missing, and in a git repository each of
+/// Nebo's own folders in it ([`NEBO_OWN`]) excluded through the
+/// repository's own `info/exclude`, so `git status` never shows them and
+/// nothing in them is ever committed; the owner's own files there stay his.
+/// The one place Nebo's working files in a project are: a helper's copy
+/// (inside the project's own `.nebo`) keeps them in the project's, never a
+/// `.nebo` of its own.
 pub fn nebo_dir(project: &Path) -> Result<PathBuf, String> {
     let parts: Vec<_> = project.components().collect();
     let project: PathBuf = match parts.iter().position(|c| c.as_os_str() == NEBO_DIR) {
@@ -384,13 +394,18 @@ pub fn nebo_dir(project: &Path) -> Result<PathBuf, String> {
     if let Some(common) = git_common_dir(&project) {
         let exclude = common.join("info").join("exclude");
         let rules = std::fs::read_to_string(&exclude).unwrap_or_default();
-        if !rules.lines().any(|l| matches!(l.trim(), ".nebo/" | "/.nebo/" | ".nebo")) {
+        let missing: Vec<String> =
+            NEBO_OWN.iter().map(|own| format!("{NEBO_DIR}/{own}/")).filter(|line| !rules.lines().any(|l| l.trim() == line)).collect();
+        if !missing.is_empty() {
             let _ = std::fs::create_dir_all(common.join("info"));
             let mut text = rules;
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
             }
-            text.push_str(".nebo/\n");
+            for line in missing {
+                text.push_str(&line);
+                text.push('\n');
+            }
             std::fs::write(&exclude, text).map_err(|e| format!("write {}: {e}", exclude.display()))?;
         }
     }
@@ -1557,55 +1572,72 @@ pub async fn cleanup_stale(roots: &[PathBuf], cutoff_secs: u64) -> Vec<PathBuf> 
 /// The copies the verify loop made in Nebo's data folder
 /// (`<data_dir>/worktrees`), before the builder worked in the project
 /// itself: each verification row of kind `isolated` whose copy is still
-/// there. One holding work that hasn't landed is kept, moved beside its
-/// project into the project's Nebo folder (`<repo>/.nebo/worktrees/<id>`,
-/// or `<project>/.nebo/copies/<id>` for a copy of a folder that is no
-/// repository), and its row says where (`kept_in_copy`); one holding none
-/// is removed. A copy whose work can't be told is kept where it is. The
-/// folders they were in go once empty. Run at boot, before a turn reads
-/// the rows. Returns how many it moved and removed.
+/// there. A git worktree holding work that hasn't landed is moved beside
+/// its project (`<repo>/.nebo/worktrees/<id>`, by git); one holding none is
+/// removed. A copy of a folder that is no repository is never moved: one
+/// identical to its project, file for file and link for link, is removed,
+/// and one that differs stays exactly where it is. Either way a kept
+/// copy's row says where it is (`kept_in_copy`). A copy whose work can't
+/// be told is kept where it is. The folders they were in go once empty.
+/// Run at boot, before a turn reads the rows. Returns how many it kept
+/// and removed.
 pub async fn adopt_old_copies(store: &db::Store) -> (usize, usize) {
     let Ok(old_root) = config::data_dir().map(|d| d.join("worktrees")) else { return (0, 0) };
     let rows = store.list_verifications(&db::VerificationQuery::default()).unwrap_or_default();
-    let (mut moved, mut removed) = (0, 0);
+    let (mut kept, mut removed) = (0, 0);
     for v in rows.iter().filter(|v| v.work_kind == "isolated" && v.landed_ref.is_empty()) {
         let copy = PathBuf::from(&v.work_dir);
         if !copy.starts_with(&old_root) || !copy.is_dir() {
             continue;
         }
         let project = PathBuf::from(v.project_root.trim_end_matches('/'));
-        let outcome = if copy.join(".git").is_file() { adopt_worktree(&copy, &v.id).await } else { adopt_folder_copy(v, &copy, &project) };
-        match outcome {
+        let outcome = if copy.join(".git").is_file() {
+            adopt_worktree(&copy, &v.id).await
+        } else if types::Why::read(&v.reason).is_some_and(|w| w.code == "kept_in_copy") {
+            // Kept where it is, and said so, at an earlier start.
+            continue;
+        } else {
+            settle_folder_copy(&copy, &project)
+        };
+        let at = match outcome {
             Adopted::Moved(to) => {
                 let _ = store.set_verification_work_dir(&v.id, &to.to_string_lossy(), &v.isolation, &v.branch);
                 if let Some(mut state) = v.isolation_state.clone() {
-                    for arm in ["Git", "Copy"] {
-                        if let Some(path) = state.get_mut(arm).and_then(|a| a.get_mut("path")) {
-                            *path = serde_json::Value::String(to.to_string_lossy().into_owned());
-                        }
+                    if let Some(path) = state.get_mut("Git").and_then(|a| a.get_mut("path")) {
+                        *path = serde_json::Value::String(to.to_string_lossy().into_owned());
                     }
                     let _ = store.set_verification_isolation(&v.id, &state);
                 }
-                let reason = types::Why::new("kept_in_copy").with("path", to.to_string_lossy().into_owned()).text();
-                let _ = store.set_verification_state(
-                    &v.id,
-                    &db::VerificationState {
-                        state: &v.state,
-                        reason: &reason,
-                        rounds: v.rounds,
-                        open_blockers: v.open_blockers,
-                        open_majors: v.open_majors,
-                        open_minors: v.open_minors,
-                        open: v.open.clone(),
-                        deferred: v.deferred.clone(),
-                        summary: &v.summary,
-                    },
-                    v.finished_at.unwrap_or(v.created_at),
-                );
-                moved += 1;
+                Some(to)
             }
-            Adopted::Removed => removed += 1,
-            Adopted::Kept(why) => warn!(copy = %copy.display(), error = %why, "an old working copy was kept where it is"),
+            Adopted::Stays => Some(copy.clone()),
+            Adopted::Removed => {
+                removed += 1;
+                None
+            }
+            Adopted::Kept(why) => {
+                warn!(copy = %copy.display(), error = %why, "an old working copy was kept where it is");
+                None
+            }
+        };
+        if let Some(at) = at {
+            let reason = types::Why::new("kept_in_copy").with("path", at.to_string_lossy().into_owned()).text();
+            let _ = store.set_verification_state(
+                &v.id,
+                &db::VerificationState {
+                    state: &v.state,
+                    reason: &reason,
+                    rounds: v.rounds,
+                    open_blockers: v.open_blockers,
+                    open_majors: v.open_majors,
+                    open_minors: v.open_minors,
+                    open: v.open.clone(),
+                    deferred: v.deferred.clone(),
+                    summary: &v.summary,
+                },
+                v.finished_at.unwrap_or(v.created_at),
+            );
+            kept += 1;
         }
     }
     // The folders the copies were in, once nothing is left in them.
@@ -1613,13 +1645,17 @@ pub async fn adopt_old_copies(store: &db::Store) -> (usize, usize) {
         let _ = std::fs::remove_dir(project.path());
     }
     let _ = std::fs::remove_dir(&old_root);
-    (moved, removed)
+    (kept, removed)
 }
 
 /// What became of one old copy ([`adopt_old_copies`]).
 enum Adopted {
+    /// Moved beside its project, there.
     Moved(PathBuf),
+    /// Holds work, and stays where it is.
+    Stays,
     Removed,
+    /// Its work couldn't be told: kept where it is, unnoted.
     Kept(String),
 }
 
@@ -1664,90 +1700,47 @@ async fn adopt_worktree(copy: &Path, id: &str) -> Adopted {
     }
 }
 
-/// An old copy of a folder that is no repository: moved whole into the
-/// project's Nebo folder when any file differs from what it was copied as
-/// (its row's snapshot: each file's fingerprint), removed otherwise. The
-/// move is a rename, or across disks a copy finished and checked before
-/// the old one goes (a crash in between leaves the old one, and the
-/// unfinished new one is cleared at the next boot).
-fn adopt_folder_copy(v: &db::Verification, copy: &Path, project: &Path) -> Adopted {
-    let Some(snapshot) = v.isolation_state.as_ref().and_then(|s| s["Copy"]["snapshot"].as_object()).cloned() else {
-        return Adopted::Kept("its snapshot is not on its row".into());
-    };
-    let mut files = Vec::new();
-    if let Err(e) = files_under(copy, copy, &mut files) {
+/// An old copy of a folder that was no repository: removed when it is
+/// identical to its project (every file's bytes and every link's target,
+/// nothing more and nothing less; Nebo's own folders in the project's
+/// `.nebo` aside), and otherwise left exactly where it is. It is never
+/// moved: in the project's folder a later `git clean -fdx` would take it.
+fn settle_folder_copy(copy: &Path, project: &Path) -> Adopted {
+    let mut theirs = Vec::new();
+    let mut ours = Vec::new();
+    if let Err(e) = entries_under(copy, copy, &mut ours).and_then(|()| entries_under(project, project, &mut theirs)) {
         return Adopted::Kept(e);
     }
-    let changed = files.len() != snapshot.len()
-        || files.iter().any(|(rel, fp)| snapshot.get(rel).and_then(|v| v.as_u64()) != Some(*fp));
-    if !changed {
-        return match std::fs::remove_dir_all(copy) {
-            Ok(()) => Adopted::Removed,
-            Err(e) => Adopted::Kept(e.to_string()),
-        };
+    theirs.retain(|(rel, _)| !NEBO_OWN.iter().any(|own| rel.starts_with(&format!("{NEBO_DIR}/{own}/"))));
+    ours.sort();
+    theirs.sort();
+    if ours != theirs {
+        return Adopted::Stays;
     }
-    let to = match nebo_dir(project) {
-        Ok(d) => d.join("copies").join(&v.id),
-        Err(e) => return Adopted::Kept(e),
-    };
-    let partial = to.with_extension("partial");
-    let _ = std::fs::remove_dir_all(&partial);
-    if to.exists() {
-        return Adopted::Kept(format!("{} is taken", to.display()));
-    }
-    if let Some(parent) = to.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        return Adopted::Kept(e.to_string());
-    }
-    if std::fs::rename(copy, &to).is_ok() {
-        return Adopted::Moved(to);
-    }
-    // Across disks: copied whole and checked, then made the copy's place.
-    let copied = copy_tree(copy, &partial).and_then(|()| {
-        let mut again = Vec::new();
-        files_under(&partial, &partial, &mut again)?;
-        if again.len() == files.len() && again.iter().all(|f| files.contains(f)) { Ok(()) } else { Err("the moved copy differs".into()) }
-    });
-    match copied.and_then(|()| std::fs::rename(&partial, &to).map_err(|e| e.to_string())) {
-        Ok(()) => {
-            let _ = std::fs::remove_dir_all(copy);
-            Adopted::Moved(to)
-        }
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&partial);
-            Adopted::Kept(e)
-        }
+    match std::fs::remove_dir_all(copy) {
+        Ok(()) => Adopted::Removed,
+        Err(e) => Adopted::Kept(e.to_string()),
     }
 }
 
-/// Every file under `dir`, relative to `base` ('/'-separated), with its
-/// fingerprint. Links are not followed.
-fn files_under(base: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<(), String> {
+/// Every file and link under `dir`, relative to `base` ('/'-separated):
+/// a file with its bytes' fingerprint, a link with its target as written
+/// (never followed).
+fn entries_under(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
         let path = entry.path();
         let kind = entry.file_type().map_err(|e| e.to_string())?;
-        if kind.is_dir() {
-            files_under(base, &path, out)?;
+        let rel = path.strip_prefix(base).unwrap_or(&path).components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        if kind.is_symlink() {
+            let target = std::fs::read_link(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            out.push((rel, format!("link:{}", target.display())));
+        } else if kind.is_dir() {
+            entries_under(base, &path, out)?;
         } else if kind.is_file() {
             let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let rel = path.strip_prefix(base).unwrap_or(&path).components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-            out.push((rel, tools::checkpoint::fingerprint(&bytes)));
-        }
-    }
-    Ok(())
-}
-
-/// Copy the folder `from` to `to`, files and folders (links not followed).
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
-    for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))?.flatten() {
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        let kind = entry.file_type().map_err(|e| e.to_string())?;
-        if kind.is_dir() {
-            copy_tree(&src, &dst)?;
-        } else if kind.is_file() {
-            std::fs::copy(&src, &dst).map_err(|e| format!("{}: {e}", src.display()))?;
+            out.push((rel, format!("file:{:016x}", tools::checkpoint::fingerprint(&bytes))));
+        } else {
+            return Err(format!("{} is neither a file, a folder nor a link", path.display()));
         }
     }
     Ok(())
@@ -2950,7 +2943,10 @@ mod tests {
             let root = std::fs::canonicalize(r.path()).unwrap();
             assert_eq!(std::fs::canonicalize(iso.path()).unwrap(), root.join(".nebo/worktrees/h-place"));
             let exclude = std::fs::read_to_string(r.path().join(".git/info/exclude")).unwrap();
-            assert!(exclude.lines().any(|l| l == ".nebo/"), "{exclude}");
+            for own in [".nebo/worktrees/", ".nebo/verify/", ".nebo/build/"] {
+                assert!(exclude.lines().any(|l| l == own), "{exclude}");
+            }
+            assert!(!exclude.lines().any(|l| l == ".nebo/"), "the owner's own Nebo files are never hidden: {exclude}");
             assert_eq!(git(r.path(), &["status", "--porcelain"]).await.unwrap(), "", "the owner's status shows nothing of it");
             // A copy of that copy is made beside it, never inside it.
             let again = create(iso.path(), "h-inner").await.unwrap();
@@ -2983,9 +2979,9 @@ mod tests {
     }
 
     /// The copies the verify loop made in Nebo's data folder before it
-    /// worked in place: one holding work is moved beside its project (a
-    /// worktree by git, a folder's copy whole) and its row says where; one
-    /// holding nothing is removed.
+    /// worked in place: a worktree holding work is moved beside its project
+    /// by git, a folder's copy that differs from its project stays where it
+    /// is, and each one's row says where; one holding nothing is removed.
     #[test]
     fn old_copies_with_work_move_beside_their_project_and_empty_ones_go() {
         with_home(|home| rt().block_on(async {
@@ -3047,12 +3043,101 @@ mod tests {
             assert_eq!(std::fs::read_to_string(to.join("feature.txt")).unwrap(), "the owner's real work\n");
             assert!(moved.reason.contains("kept_in_copy"), "{}", moved.reason);
             let kept = store.get_verification("v-oldcopy").unwrap().unwrap();
-            assert_eq!(PathBuf::from(&kept.work_dir), f.path().join(".nebo/copies/v-oldcopy"));
-            assert_eq!(std::fs::read_to_string(f.path().join(".nebo/copies/v-oldcopy/b.txt")).unwrap(), "b1, changed\n");
-            assert!(!rows[1].1.exists() && !unchanged.exists() && !copy.exists(), "the empty ones went, and the moved ones left");
-            assert!(!old.exists(), "the old folder went once empty");
+            assert_eq!(PathBuf::from(&kept.work_dir), copy, "a folder's copy is never moved");
+            assert_eq!(std::fs::read_to_string(copy.join("b.txt")).unwrap(), "b1, changed\n");
+            assert!(kept.reason.contains("kept_in_copy") && kept.reason.contains("v-oldcopy"), "{}", kept.reason);
+            assert!(!f.path().join(".nebo/copies").exists(), "no new home for it");
+            assert!(!rows[1].1.exists() && !unchanged.exists() && !rows[0].1.exists(), "the empty ones went, and the worktree with work moved");
             // Run again: nothing is left to do.
             assert_eq!(adopt_old_copies(&store).await, (0, 0));
+        }))
+    }
+
+    /// Review dl1055 A: an old copy of a folder that was no repository
+    /// then, whose project is one now, is never moved into the project
+    /// (where the owner's `git clean -fdx` would take it): it stays in
+    /// Nebo's data folder, its row says where, and nothing the owner runs in
+    /// the project touches it.
+    #[test]
+    fn an_old_folder_copy_is_never_moved_where_git_clean_takes_it() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            let copy = old.join("letters").join("v-dlcopy");
+            std::fs::create_dir_all(copy.join("src")).unwrap();
+            std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+            std::fs::write(copy.join("b.txt"), "b1, the unlanded work\n").unwrap();
+            for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                git(f.path(), &args).await.unwrap();
+            }
+            git(f.path(), &["add", "-A"]).await.unwrap();
+            git(f.path(), &["commit", "-q", "-m", "base"]).await.unwrap();
+            let state = serde_json::json!({"Copy": {"task_id": "v-dlcopy", "root": f.path(), "path": copy, "snapshot": {}, "skipped": [], "pending": []}});
+            store.create_verification(&db::NewVerification { id: "v-dlcopy", session_key: "agent:dev:web", project_root: &f.path().to_string_lossy(), work_dir: &copy.to_string_lossy(), isolation: "copy", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() }, 1).unwrap();
+            assert_eq!(adopt_old_copies(&store).await, (1, 0));
+            assert_eq!(std::fs::read_to_string(copy.join("b.txt")).unwrap(), "b1, the unlanded work\n", "kept where it was");
+            let row = store.get_verification("v-dlcopy").unwrap().unwrap();
+            assert!(row.reason.contains("kept_in_copy") && row.reason.contains(&copy.to_string_lossy().into_owned()), "{}", row.reason);
+            git(f.path(), &["clean", "-fdx"]).await.unwrap();
+            assert!(copy.join("b.txt").exists(), "the owner's clean never reaches it");
+            assert_eq!(adopt_old_copies(&store).await, (0, 0), "settled once");
+        }))
+    }
+
+    /// Review dl1055 B: a folder's copy is compared with its project link
+    /// for link, never followed or skipped: one that differs only by a
+    /// link is kept with the link as it was; one identical to its project,
+    /// links included, is removed.
+    #[test]
+    fn an_old_folder_copy_is_compared_link_for_link() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            std::os::unix::fs::symlink("b.txt", f.path().join("same")).unwrap();
+            let mut rows = Vec::new();
+            for (id, extra) in [("v-dllink", Some("current")), ("v-dlsame", None)] {
+                let copy = old.join("letters").join(id);
+                std::fs::create_dir_all(copy.join("src")).unwrap();
+                std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+                std::fs::write(copy.join("b.txt"), "b0\n").unwrap();
+                std::os::unix::fs::symlink("b.txt", copy.join("same")).unwrap();
+                if let Some(link) = extra {
+                    std::os::unix::fs::symlink("b.txt", copy.join(link)).unwrap();
+                }
+                let state = serde_json::json!({"Copy": {"task_id": id, "root": f.path(), "path": copy, "snapshot": {}, "skipped": [], "pending": []}});
+                store.create_verification(&db::NewVerification { id, session_key: "agent:dev:web", project_root: &f.path().to_string_lossy(), work_dir: &copy.to_string_lossy(), isolation: "copy", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() }, 1).unwrap();
+                rows.push(copy);
+            }
+            assert_eq!(adopt_old_copies(&store).await, (1, 1));
+            assert_eq!(std::fs::read_link(rows[0].join("current")).unwrap(), PathBuf::from("b.txt"), "the link is kept as it was");
+            assert!(!rows[1].exists(), "identical, links included: removed");
+        }))
+    }
+
+    /// Review dl1055 D: `.nebo/hooks.yaml` is the owner's own, committed
+    /// project file (`shell_hooks`). Only Nebo's own folders in `.nebo` are
+    /// hidden from git: his file shows and is staged, and a change's
+    /// snapshot holds it.
+    #[test]
+    fn the_owners_own_nebo_files_are_never_hidden_from_git() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            nebo_dir(r.path()).unwrap();
+            std::fs::create_dir_all(r.path().join(".nebo/verify/v-1")).unwrap();
+            std::fs::write(r.path().join(".nebo/verify/v-1/change.patch"), "+x\n").unwrap();
+            std::fs::write(r.path().join(".nebo/hooks.yaml"), "post_tool:\n  - name: fmt\n    command: cargo fmt\n").unwrap();
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            let staged = git(r.path(), &["diff", "--cached", "--name-only"]).await.unwrap();
+            assert_eq!(staged, ".nebo/hooks.yaml", "his file is staged, Nebo's are not");
+            let shadows = tempfile::tempdir().unwrap();
+            let shadow = crate::harness::verify::shadow::Shadow::open(&shadows.path().join("s.git"), r.path()).await.unwrap();
+            let base = shadow.snapshot().await.unwrap();
+            std::fs::write(r.path().join(".nebo/hooks.yaml"), "post_tool: []\n").unwrap();
+            std::fs::write(r.path().join(".nebo/verify/v-1/change.patch"), "+y\n").unwrap();
+            let change = shadow.diff(&base, &shadow.snapshot().await.unwrap()).await.unwrap();
+            assert_eq!(change.paths(), [".nebo/hooks.yaml"], "the snapshot holds his file and none of Nebo's");
         }))
     }
 }

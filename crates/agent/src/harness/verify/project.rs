@@ -64,15 +64,16 @@ pub fn code_folder(path: &Path, app_pages: &[PathBuf]) -> Option<Folder> {
     if let Some(pages) = app_pages.iter().find(|p| path.starts_with(p)) {
         return Some(Folder::AppPages(pages.clone()));
     }
-    // Inside a project's Nebo folder: a helper's copy
-    // (`.nebo/worktrees/<id>`) is that copy's work; anything else there (a
-    // reviewer's snapshot, the build folder) is never code work.
+    // Inside Nebo's own folders in a project's `.nebo`: a helper's copy
+    // (`.nebo/worktrees/<id>`) is that copy's work; anything else of
+    // Nebo's there (a reviewer's snapshot, the build folder) is never code
+    // work. The owner's own files in `.nebo` belong to the project.
     let parts: Vec<_> = path.components().collect();
-    if let Some(at) = parts.iter().position(|c| c.as_os_str() == crate::worktree::NEBO_DIR) {
-        return match (parts.get(at + 1), parts.get(at + 2)) {
-            (Some(w), Some(_id)) if w.as_os_str() == "worktrees" => {
-                Some(Folder::Copy(parts[..at + 3].iter().collect()))
-            }
+    if let Some(at) = parts.iter().position(|c| c.as_os_str() == crate::worktree::NEBO_DIR)
+        && let Some(own) = parts.get(at + 1).filter(|o| crate::worktree::NEBO_OWN.iter().any(|n| o.as_os_str() == *n))
+    {
+        return match parts.get(at + 2) {
+            Some(_id) if own.as_os_str() == "worktrees" => Some(Folder::Copy(parts[..at + 3].iter().collect())),
             _ => None,
         };
     }

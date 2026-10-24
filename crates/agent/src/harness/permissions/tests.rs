@@ -1320,3 +1320,64 @@ async fn the_root_and_home_are_refused_without_a_card() {
         }
     }
 }
+
+/// Review dl1055 C: with the builder working in place, the project is the
+/// run's own work, so what is in it goes ahead (its ignored files are gone
+/// for good: a change's snapshot holds only what git keeps), but a
+/// protected folder in it (`.git`, `.nebo`, an editor's settings) always
+/// asks, with no "Allow always", in every mode; outside it asks.
+#[tokio::test]
+async fn a_protected_folder_in_the_project_always_asks() {
+    for mode in [Mode::Automatic, Mode::FullAccess] {
+        let (_d, store) = store();
+        put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+        put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+        let reg = registry(&store, vec![]).await;
+        reg.register_defaults().await;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("site");
+        std::fs::create_dir_all(project.join(".git/objects")).unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(project.join(".vscode")).unwrap();
+        std::fs::create_dir_all(project.join("uploads")).unwrap();
+        std::fs::write(project.join(".gitignore"), "uploads/\n").unwrap();
+        std::fs::write(project.join("uploads/client-contract.pdf"), "the owner's only copy").unwrap();
+        let outside = dir.path().join("Documents");
+        std::fs::create_dir_all(&outside).unwrap();
+        let c = with_mode(ctx(&store, "dev", Origin::User), mode);
+        let root = project.to_string_lossy().into_owned();
+        store
+            .create_verification(
+                &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+                1,
+            )
+            .unwrap();
+        let run = |command: String| {
+            let reg = &reg;
+            let c = c.clone();
+            async move { reg.execute(&c, "run_command", json!({ "command": command, "description": "Remove" })).await }
+        };
+        let r = run(format!("rm -rf '{}'", outside.display())).await;
+        assert!(r.parked_ask.is_some() && outside.exists(), "{mode:?}: outside asks: {}", r.content);
+        let asks = Check::new(store.clone()).asks();
+        for protected in [format!("cd '{}' && rm -rf uploads .git", project.display()), format!("rm -rf '{}'", project.join(".vscode").display()), format!("cd '{}' && rm -rf .git/objects", project.display())] {
+            let r = run(protected.clone()).await;
+            let id = r.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?} {protected}: {}", r.content));
+            assert!(project.join(".git/HEAD").exists() && project.join(".vscode").exists() && project.join("uploads/client-contract.pdf").exists(), "{mode:?} {protected}: nothing removed");
+            let row = store.get_permission_ask(&id).unwrap().unwrap();
+            assert!(matches!(serde_json::from_str::<AskCase>(&row.ask_case).unwrap(), AskCase::RemovesFolders { whole_work: true, .. }), "{protected}");
+            assert!(!asks.get(&id).unwrap().unwrap().allow_always_offered(&store), "{protected}: never always");
+        }
+        // The rest of the project is the work's own: no removal ask. Full
+        // Access runs it; Automatic still asks before deleting what the
+        // employee didn't make (case 3), as it always has.
+        let r = run(format!("cd '{}' && rm -rf uploads", project.display())).await;
+        if mode == Mode::FullAccess {
+            assert!(!r.is_error && r.parked_ask.is_none() && !project.join("uploads").exists(), "inside the project goes ahead: {}", r.content);
+        } else {
+            let id = r.parked_ask.clone().expect("case 3 asks");
+            let row = store.get_permission_ask(&id).unwrap().unwrap();
+            assert!(matches!(serde_json::from_str::<AskCase>(&row.ask_case).unwrap(), AskCase::Irreversible { .. }), "{}", row.ask_case);
+        }
+    }
+}

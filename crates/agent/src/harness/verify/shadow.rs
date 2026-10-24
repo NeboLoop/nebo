@@ -247,9 +247,10 @@ impl Shadow {
     /// What a snapshot leaves out, as exclude pathspecs.
     async fn left_out(&self) -> Result<Vec<String>, String> {
         let literal = |p: &str| format!(":(exclude,literal){}", p.trim_end_matches('/'));
-        // Nebo's own working files in the project (`worktree::nebo_dir`):
-        // never part of a change.
-        let mut out: Vec<String> = vec![literal(crate::worktree::NEBO_DIR)];
+        // Nebo's own working folders in the project (`worktree::NEBO_OWN`):
+        // never part of a change. The owner's own files in `.nebo` are.
+        let mut out: Vec<String> =
+            crate::worktree::NEBO_OWN.iter().map(|own| literal(&format!("{}/{own}", crate::worktree::NEBO_DIR))).collect();
         let in_repo = self.repository().await.is_some();
         if !in_repo && !self.work_tree.join(".gitignore").is_file() {
             for p in EXCLUDED {

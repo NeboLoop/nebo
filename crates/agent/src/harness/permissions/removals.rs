@@ -8,7 +8,13 @@
 //! - Anywhere else it asks. Nobody attending, its card goes to the owner's
 //!   Inbox, the step is refused and the run goes on.
 //! - That project or a copy of it, itself (or everything in it), asks
-//!   every time: no "Allow always" covers it.
+//!   every time: no "Allow always" covers it. So does a protected folder
+//!   anywhere in it ([`PROTECTED_DIRS`]: its git folder, Nebo's own, an
+//!   editor's or an agent's settings), however deep.
+//!
+//! What goes ahead inside a project is gone for good when git ignores it:
+//! the change's snapshot (`verify::shadow`) holds only what the project
+//! doesn't ignore.
 //! - A target only running the command knows (`rm -rf "$DIR"`) asks.
 //!
 //! The folders no command ever removes (the root and what is right under
@@ -20,6 +26,11 @@ use std::path::{Path, PathBuf};
 use types::permissions::{AskCase, Effect, Rule, RuleField, RuleSource, Target};
 
 use super::{CheckCx, RuleSet};
+
+/// The folders inside a project no removal reaches unasked, and no "Allow
+/// always" covers: the repository itself, Nebo's working files, and the
+/// editors' and agents' own settings.
+pub const PROTECTED_DIRS: &[&str] = &[".git", ".nebo", ".vscode", ".idea", ".claude"];
 
 /// The ask a call's tree removals raise, or `None` when every one is inside
 /// the run's own work (or it removes none). `decided` is the rule the call
@@ -46,7 +57,7 @@ pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Ru
             Some(name) if name == "*" => (path.parent().unwrap_or(path), true, true),
             _ => (path, false, target.ends_with('/')),
         };
-        if work.is_root(folder) {
+        if work.is_root(folder) || work.guarded(folder, follows) {
             whole_work = true;
             outside.push(target.clone());
         } else if !work.holds(folder, contents, follows) {
@@ -104,6 +115,25 @@ impl Work {
         let real = if follows { resolved(folder) } else { placed(folder) };
         self.inside.iter().any(|f| real.starts_with(resolved(f)) && (contents || !same(folder, f)))
             || self.made.iter().any(|f| real.starts_with(resolved(f)))
+    }
+
+    /// Whether `folder` is, or is inside, a protected folder
+    /// ([`PROTECTED_DIRS`]): counted below the work folder that holds it (a
+    /// helper's copy sits in the project's `.nebo`, and what is in it is
+    /// its own), or along its whole path when no work folder does.
+    fn guarded(&self, folder: &Path, follows: bool) -> bool {
+        let real = if follows { resolved(folder) } else { placed(folder) };
+        let below = self
+            .inside
+            .iter()
+            .chain(&self.made)
+            .chain(&self.roots)
+            .map(|f| resolved(f))
+            .filter(|f| real.starts_with(f))
+            .max_by_key(|f| f.components().count())
+            .and_then(|f| real.strip_prefix(&f).ok().map(Path::to_path_buf))
+            .unwrap_or_else(|| real.clone());
+        below.components().any(|c| PROTECTED_DIRS.iter().any(|p| c.as_os_str() == *p))
     }
 
     /// Whether `path` is a working copy or the project it copies, itself.

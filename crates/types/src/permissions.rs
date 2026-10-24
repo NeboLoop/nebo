@@ -692,7 +692,8 @@ pub enum AskCase {
     RemovesEmployee,
     /// The call removes folders or trees of files outside the run's own
     /// work (`targets`, as `CallEffects::removes_trees` names them), or a
-    /// working copy or the project it copies, itself (`whole_work`: never
+    /// working copy or the project it copies, itself, or a protected folder
+    /// in one (`.git`, `.nebo`, an editor's settings) (`whole_work`: never
     /// covered by "Allow always"). `warning` is the command's one-line
     /// risk, for the card, when it has one.
     RemovesFolders {
