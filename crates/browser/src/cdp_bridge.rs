@@ -18,11 +18,9 @@ use std::time::Duration;
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::browser::CloseParams;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
-use chromiumoxide::cdp::browser_protocol::fetch::{
-    ContinueRequestParams, EnableParams as FetchEnableParams, EventRequestPaused, FailRequestParams, RequestPattern,
+use chromiumoxide::cdp::browser_protocol::page::{
+    CaptureScreenshotFormat, EventFrameNavigated, EventFrameStartedNavigating, NavigateParams, StopLoadingParams,
 };
-use chromiumoxide::cdp::browser_protocol::network::{ErrorReason, ResourceType};
-use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
 use chromiumoxide::page::ScreenshotParams;
 use chromiumoxide::{Browser, Page};
@@ -31,7 +29,7 @@ use rand::Rng;
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::BrowserError;
 use crate::human_input;
@@ -69,6 +67,12 @@ pub struct ObscuraConfig {
     /// desktop with Chrome but no bundled Obscura). Same CDP protocol, same
     /// bridge — only the launch arguments differ.
     pub chromium: bool,
+    /// The port Nebo's own server listens on (127.0.0.1): a Chromium treats
+    /// the pages it serves (an app's page, behind its pass) as pages of the
+    /// public web, so its Local Network Access check refuses their frames,
+    /// requests and sockets to this computer and its network
+    /// (`--ip-address-space-overrides`). None for Obscura.
+    pub nebo_port: Option<u16>,
 }
 
 /// The launched Obscura process + browser + its open pages. Recreated on demand
@@ -237,6 +241,19 @@ impl CdpBridge {
                 .arg("--disable-gpu")
                 .arg("--no-sandbox")
                 .arg("about:blank");
+            // An app page in this browser reaches this computer and its
+            // network only at Nebo's own address: Chrome's Local Network
+            // Access refuses a public page's frame, request or socket to a
+            // loopback, private or link-local address (a cloud's metadata
+            // address) by the address it connects to, a name that resolves
+            // there included. Pages of any other server here (a dev server
+            // an employee tests) are this computer's own and keep reaching
+            // it. A public site browsed in this Chromium reaches Nebo's port
+            // as it would any public one: Nebo's own check of every caller
+            // refuses it (`middleware::local_boundary`).
+            if let Some(port) = self.config.nebo_port {
+                cmd.arg(format!("--ip-address-space-overrides=127.0.0.1:{port}=public"));
+            }
             if let Some(dir) = &self.config.storage_dir {
                 // A lock left by a Chromium that was killed, or by the one on
                 // the pod this profile came from, makes Chromium refuse the
@@ -456,11 +473,20 @@ impl CdpBridge {
                 Ok(json!({ "width": width, "height": height }))
             }
             // The tab's page stays at addresses under `prefix` from now on:
-            // any other page it would open (a link, a script setting
-            // `location`, a form) is refused before it loads (`Fetch`
-            // interception of documents), and a frame inside it loads only
-            // from the public web ([`kept_load`]). A page opened for an
-            // employee to work on is never a door to another address.
+            // a page the tab would open elsewhere (a link, a script setting
+            // `location`, a form) is stopped as it starts, and one that got
+            // there anyway is taken back to the page it left ([`keep_top`]).
+            // Its frames, requests and sockets reach this computer and its
+            // network at Nebo's own address alone (`nebo_port`). A page
+            // opened for an employee to work on is never a door to another
+            // address.
+            //
+            // Never `Fetch` interception: with it on, a tab's in-flight
+            // requests and its socket died together at random just after a
+            // load, and its next requests never left the browser (2026-10-23,
+            // CI: 2 to 7 of 20 loads of a page that sends six requests lost
+            // them, with it on the page or the browser target, enabled before
+            // or after the load; 0 of 110 without it).
             "stay_within" => {
                 let prefix = args
                     .get("prefix")
@@ -469,33 +495,15 @@ impl CdpBridge {
                     .ok_or_else(|| BrowserError::Other("stay_within requires 'prefix'".into()))?
                     .to_string();
                 let page = self.page_for(session_id).await?;
-                let mut paused = page
-                    .event_listener::<EventRequestPaused>()
+                let starting = page
+                    .event_listener::<EventFrameStartedNavigating>()
                     .await
                     .map_err(|e| BrowserError::Other(format!("cdp stay_within: {e}")))?;
-                let documents = RequestPattern::builder().url_pattern("*").resource_type(ResourceType::Document).build();
-                tokio::time::timeout(EVAL_TIMEOUT, page.execute(FetchEnableParams::builder().pattern(documents).build()))
+                let navigated = page
+                    .event_listener::<EventFrameNavigated>()
                     .await
-                    .map_err(|_| BrowserError::Timeout("cdp stay_within timed out".into()))?
                     .map_err(|e| BrowserError::Other(format!("cdp stay_within: {e}")))?;
-                // The tab's own frame keeps its id across navigations.
-                let main = page.mainframe().await.ok().flatten();
-                let watched = page.clone();
-                tokio::spawn(async move {
-                    while let Some(ev) = paused.next().await {
-                        let id = ev.request_id.clone();
-                        let top = main.as_ref().is_none_or(|m| *m == ev.frame_id);
-                        let answered = if kept_load(&ev.request.url, &prefix, top) {
-                            watched.execute(ContinueRequestParams::new(id)).await.map(|_| ())
-                        } else {
-                            warn!("a page kept to its own address tried to open another; refused");
-                            watched.execute(FailRequestParams::new(id, ErrorReason::BlockedByClient)).await.map(|_| ())
-                        };
-                        if answered.is_err() {
-                            break;
-                        }
-                    }
-                });
+                tokio::spawn(keep_top(page, prefix, starting, navigated));
                 Ok(json!({ "ok": true }))
             }
             // A script every page the tab opens from now runs before its
@@ -753,28 +761,62 @@ fn within(url: &str, prefix: &str) -> bool {
     url.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
 }
 
-/// What a kept tab ("stay_within") lets a page load: its own page, at the
-/// top, only under `prefix`; a frame inside it under `prefix` or from the
-/// public web (an app's video or map embed), never this computer, its
-/// network or a cloud's metadata address (`types::public_net`, the one
-/// classifier). A name that resolves to a private address still passes:
-/// the browser resolves it, not this check.
-fn kept_load(url: &str, prefix: &str, top: bool) -> bool {
-    if within(url, prefix) {
-        return true;
-    }
-    if top {
-        return false;
-    }
-    let Ok(u) = url::Url::parse(url) else { return false };
-    if !matches!(u.scheme(), "http" | "https") {
-        return false;
-    }
-    match u.host() {
-        Some(url::Host::Ipv4(ip)) => types::public_net::is_public_ip(ip.into()),
-        Some(url::Host::Ipv6(ip)) => types::public_net::is_public_ip(ip.into()),
-        Some(url::Host::Domain(d)) => !types::public_net::is_local_name(d),
-        None => false,
+/// How many times in a row [`keep_top`] takes a page back before one lands.
+const KEEP_TOP_TRIES: u32 = 3;
+
+/// A kept tab's page ("stay_within") stays under `prefix` for as long as
+/// the tab is open: a page of the tab's own frame that starts loading from
+/// any other address is stopped there, and one that got there anyway (it
+/// committed first, or the browser put up its error page for a refused
+/// address) is taken back to the last page the tab had under `prefix`. A
+/// load already on its way can land after the way back (2026-10-23, 1 of 20 test runs: a
+/// metadata address the browser could not reach put up its error page over
+/// the page it was taken back to), so it is taken back again, at most
+/// [`KEEP_TOP_TRIES`] times before a page under `prefix` lands: a page whose
+/// own address sends it elsewhere is left there, never looped on.
+async fn keep_top(
+    page: Page,
+    prefix: String,
+    mut starting: chromiumoxide::listeners::EventStream<EventFrameStartedNavigating>,
+    mut navigated: chromiumoxide::listeners::EventStream<EventFrameNavigated>,
+) {
+    use chromiumoxide::cdp::browser_protocol::page::FrameStartedNavigatingNavigationType as Kind;
+    let mut last: Option<String> = None;
+    let mut tries = 0;
+    loop {
+        tokio::select! {
+            ev = starting.next() => {
+                let Some(ev) = ev else { break };
+                let moves = !matches!(ev.navigation_type, Kind::SameDocument | Kind::HistorySameDocument);
+                let top = page.mainframe().await.ok().flatten().is_some_and(|m| m == ev.frame_id);
+                if moves && top && !within(&ev.url, &prefix) {
+                    warn!("a page kept to its own address tried to open another; stopped");
+                    // A stop that does not reach the page (it is between
+                    // two of the browser's processes as it navigates) leaves
+                    // the way back to the page that lands.
+                    if let Err(e) = page.execute(StopLoadingParams::default()).await {
+                        debug!(error = %e, "a kept page's load could not be stopped; it is taken back when it lands");
+                    }
+                }
+            }
+            ev = navigated.next() => {
+                let Some(ev) = ev else { break };
+                if ev.frame.parent_id.is_some() {
+                    continue;
+                }
+                if within(&ev.frame.url, &prefix) && ev.frame.unreachable_url.is_none() {
+                    last = Some(format!("{}{}", ev.frame.url, ev.frame.url_fragment.as_deref().unwrap_or_default()));
+                    tries = 0;
+                    continue;
+                }
+                let Some(back) = last.clone().filter(|_| tries < KEEP_TOP_TRIES) else { continue };
+                warn!("a page kept to its own address left it; taken back");
+                tries += 1;
+                if let Err(e) = page.execute(NavigateParams::new(back)).await {
+                    debug!(error = %e, "a kept page could not be taken back yet; the next page that lands is");
+                }
+            }
+        }
     }
 }
 
@@ -922,30 +964,99 @@ mod tests {
         }
     }
 
-    /// The page at the top stays under its address; a frame inside it also
-    /// loads from the public web, never this computer, its network or a
-    /// metadata address.
-    #[test]
-    fn a_kept_tab_loads_frames_from_the_public_web_alone() {
-        let p = "http://127.0.0.1:27895/k/av1/apps/a1/ui";
-        let own = format!("{p}/levels.html");
-        for (url, top, frame) in [
-            (own.as_str(), true, true),
-            ("https://www.youtube.com/embed/x", false, true),
-            ("https://93.184.216.34/", false, true),
-            ("http://169.254.169.254/latest/meta-data/", false, false),
-            ("http://127.0.0.1:8080/", false, false),
-            ("http://127.0.0.1:27895/api/v1/agents", false, false),
-            ("http://[::1]:3000/", false, false),
-            ("http://10.0.0.5/", false, false),
-            ("http://localhost:5173/", false, false),
-            ("http://app.localhost/", false, false),
-            ("file:///etc/passwd", false, false),
-            ("ftp://example.com/", false, false),
-        ] {
-            assert_eq!(kept_load(url, p, true), top, "top: {url}");
-            assert_eq!(kept_load(url, p, false), frame, "frame: {url}");
+    /// A server of the tests' own: `page` at `/page`, `ok` at anything
+    /// else; every request line it gets is kept.
+    async fn serve(page: String) -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = listener.accept().await {
+                let (page, kept) = (page.clone(), kept.clone());
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 512];
+                    let Ok(n) = conn.read(&mut buf).await else { return };
+                    let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let line = request.lines().next().unwrap_or_default().to_string();
+                    if line.is_empty() {
+                        return;
+                    }
+                    kept.lock().unwrap().push(line.clone());
+                    let body = if line.starts_with("GET /page ") { page } else { "ok".to_string() };
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\naccess-control-allow-origin: *\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = conn.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    /// In a real Chromium: a page Nebo's own server serves reaches that
+    /// server, and its frames, requests and sockets never reach another
+    /// server on this computer or a cloud's metadata address; a page of any
+    /// other server here still reaches this computer (a dev server an
+    /// employee tests). Runs where a Chrome or Chromium is installed; on CI
+    /// (which has one) it must.
+    #[tokio::test]
+    async fn a_page_nebo_serves_reaches_this_computer_at_nebos_address_alone() {
+        let Some(binary) = crate::chrome::find_chrome() else {
+            assert!(std::env::var_os("CI").is_none(), "no Chrome or Chromium on a CI runner: this test must run there");
+            return;
+        };
+        let (other, other_seen) = serve(String::new()).await;
+        let page = |label: &str| {
+            format!(
+                "<html><body><iframe src='http://127.0.0.1:{other}/frame-{label}'></iframe>\
+                 <iframe src='http://169.254.169.254/latest/meta-data/'></iframe><script>\
+                 const r = {{}};\
+                 const ask = (k, u, init) => fetch(u, init).then(x => r[k] = x.status, () => r[k] = 'refused');\
+                 Promise.all([ask('own', '/own'), ask('other', 'http://127.0.0.1:{other}/fetch-{label}'),\
+                   ask('metadata', 'http://169.254.169.254/latest/meta-data/'),\
+                   new Promise(done => {{ const w = new WebSocket('ws://127.0.0.1:{other}/socket-{label}'); w.onerror = w.onopen = done; }})])\
+                 .then(() => window.__asked = JSON.stringify(r));\
+                 </script></body></html>"
+            )
+        };
+        let (nebo, nebo_seen) = serve(page("nebo")).await;
+        let (dev, _) = serve(page("dev")).await;
+        let profile = std::env::temp_dir().join(format!("nebo-lna-{}-{}", std::process::id(), rand::thread_rng().r#gen::<u64>()));
+        let bridge = CdpBridge::new(ObscuraConfig {
+            binary,
+            storage_dir: Some(profile.clone()),
+            stealth: false,
+            log_path: None,
+            chromium: true,
+            nebo_port: Some(nebo),
+        });
+        let mut asked = Vec::new();
+        for port in [nebo, dev] {
+            bridge.execute("navigate", &json!({ "url": format!("http://127.0.0.1:{port}/page") }), "lna").await.unwrap();
+            let mut answer = String::new();
+            for _ in 0..50 {
+                let r = bridge.execute("evaluate", &json!({ "expression": "String(window.__asked || '')" }), "lna").await.unwrap();
+                answer = r["text"].as_str().unwrap_or_default().to_string();
+                if !answer.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            asked.push(answer);
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        bridge.shutdown().await;
+        let _ = std::fs::remove_dir_all(&profile);
+        let reached = other_seen.lock().unwrap().clone();
+        assert!(asked[0].contains(r#""own":200"#), "Nebo's page reaches its own server: {}", asked[0]);
+        assert!(asked[0].contains(r#""other":"refused""#) && asked[0].contains(r#""metadata":"refused""#), "{}", asked[0]);
+        assert!(nebo_seen.lock().unwrap().iter().any(|l| l.starts_with("GET /own ")), "the page's own request arrived");
+        assert!(!reached.iter().any(|l| l.contains("-nebo")), "Nebo's page reached another server here: {reached:?}");
+        assert!(asked[1].contains(r#""other":200"#), "a dev server's page still reaches this computer: {}", asked[1]);
+        assert!(reached.iter().any(|l| l.contains("/frame-dev")), "a dev server's page frames this computer: {reached:?}");
     }
 
     fn try_bridge() -> Option<CdpBridge> {
@@ -956,6 +1067,7 @@ mod tests {
             stealth: true,
             log_path: None,
             chromium: false,
+            nebo_port: None,
         }))
     }
 
@@ -1118,6 +1230,7 @@ mod tests {
             stealth: false,
             log_path: None,
             chromium: true,
+            nebo_port: None,
         }));
         let lock = profile.join("SingletonLock");
         // Left by a Chromium on another pod: must not stop this one starting.
@@ -1162,6 +1275,7 @@ mod tests {
             stealth: false,
             log_path: None,
             chromium: true,
+            nebo_port: None,
         }))
     }
 
@@ -1233,6 +1347,7 @@ mod contract_tests {
             stealth: false,
             log_path: None,
             chromium: true,
+            nebo_port: None,
         })
     }
 

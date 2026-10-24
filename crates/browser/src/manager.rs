@@ -42,7 +42,10 @@ pub struct ProfileStatus {
 }
 
 impl Manager {
-    pub fn new(config: BrowserConfig, data_dir: String) -> Self {
+    /// `nebo_port`: the port Nebo's own server listens on, whose pages the
+    /// built-in Chromium keeps off the rest of this computer and its network
+    /// (`ObscuraConfig::nebo_port`).
+    pub fn new(config: BrowserConfig, data_dir: String, nebo_port: u16) -> Self {
         // Tier-2 built-in browser, driven over CDP. Preferred: the bundled
         // Obscura (stealth). Fallback: a stock Chromium/Chrome on PATH — the
         // cloud image ships one, so cloud bots get programmatic browsing too.
@@ -54,6 +57,7 @@ impl Manager {
                 stealth: true,
                 log_path: Some(PathBuf::from(&data_dir).join("logs").join("obscura.log")),
                 chromium: false,
+                nebo_port: None,
             })
             .or_else(|| {
                 crate::chrome::find_chrome().map(|binary| ObscuraConfig {
@@ -62,6 +66,7 @@ impl Manager {
                     stealth: false,
                     log_path: Some(PathBuf::from(&data_dir).join("logs").join("chromium.log")),
                     chromium: true,
+                    nebo_port: Some(nebo_port),
                 })
             });
         // Idle teardown for the built-in browser: without it the chromium
@@ -96,6 +101,7 @@ impl Manager {
                     stealth: false,
                     log_path: Some(PathBuf::from(&data_dir).join("logs").join("chromium-own-pages.log")),
                     chromium: true,
+                    nebo_port: Some(nebo_port),
                 })
             })
         };

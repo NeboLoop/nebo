@@ -4418,7 +4418,7 @@ mod interface_tests {
     #[tokio::test]
     async fn leave_open_hands_the_tab_to_the_owner() {
         let dir = std::env::temp_dir().join(format!("nebo-leave-open-{}", uuid::Uuid::new_v4()));
-        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.to_string_lossy().into_owned()));
+        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.to_string_lossy().into_owned(), napp::plugin::local_port()));
         let bridge = mgr.bridge();
         let (conn, mut rx) = bridge.connect("chrome".into()).await;
         let leave = tools(WebCore::new().with_browser(mgr.clone())).into_iter().find(|t| t.name() == "browser_leave_open").unwrap();

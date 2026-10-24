@@ -122,6 +122,7 @@ async fn rig() -> Option<Rig> {
     let manager = Arc::new(browser::Manager::new(
         browser::BrowserConfig::default(),
         server.data_dir.to_string_lossy().into_owned(),
+        server.port,
     ));
     let ui = server.data_dir.join("apps").join("motion").join("ui");
     std::fs::create_dir_all(&ui).unwrap();

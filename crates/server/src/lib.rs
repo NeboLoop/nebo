@@ -1856,7 +1856,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Plugins that render web pages get this browser as NEBO_CHROMIUM.
     napp::plugin_runtime::set_chromium_resolver(browser::chrome::find_chrome);
     let browser_data_dir = data_dir.to_string_lossy().to_string();
-    let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir));
+    let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir, napp::plugin::local_port()));
     let shutdown_browser = browser_manager.clone();
     let extension_bridge = browser_manager.bridge();
 

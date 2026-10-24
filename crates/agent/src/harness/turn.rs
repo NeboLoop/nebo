@@ -5242,7 +5242,7 @@ mod tests {
             ("cancelled", vec![Step::Call("browse", serde_json::json!({})), Step::Say("unused")]),
             ("terminal_tool_error", stuck),
         ] {
-            let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned()));
+            let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned(), napp::plugin::local_port()));
             let chrome = owners_chrome(&mgr).await;
             let model = Scripted::new(script);
             let (_, refusing) = missing_content();
@@ -5297,7 +5297,7 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().unwrap();
-        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned()));
+        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned(), napp::plugin::local_port()));
         let chrome = owners_chrome(&mgr).await;
         // The script ends after the panicking call: the scripted model
         // panics too if the turn asks it for another step.
@@ -5388,7 +5388,7 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().unwrap();
-        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned()));
+        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned(), napp::plugin::local_port()));
         let chrome = owners_chrome(&mgr).await;
         let model = Scripted::new(vec![
             Step::Call("browse", serde_json::json!({})),
