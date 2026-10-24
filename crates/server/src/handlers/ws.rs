@@ -886,6 +886,16 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                         "skipped": true,
                                     }));
                                 }
+                                // An MCP App view's request for the engine (`mcp_apps`):
+                                // answered to every client, by its requestId.
+                                "mcp_app_request" => {
+                                    let state = state.clone();
+                                    let data = parsed["data"].clone();
+                                    tokio::spawn(async move {
+                                        let reply = crate::mcp_apps::answer(&state, &data).await;
+                                        state.hub.broadcast("mcp_app_response", reply);
+                                    });
+                                }
                                 "ask_response" => {
                                     let request_id = parsed["data"]["request_id"]
                                         .as_str()
@@ -1579,7 +1589,13 @@ pub const MIN_MOBILE_VERSION: &str = "0.1.128";
 /// The answer to a client's `auth`: it may send now. It names the oldest
 /// phone app this bot serves (`min_mobile_version`), which the phone checks.
 fn auth_ok() -> serde_json::Value {
-    serde_json::json!({"type": "auth_ok", "data": {"min_mobile_version": MIN_MOBILE_VERSION}})
+    let mut data = serde_json::json!({"min_mobile_version": MIN_MOBILE_VERSION});
+    // Where this computer's MCP App views run (`mcp_apps`): a client on
+    // this computer frames its sandbox proxy there.
+    if let Some(origin) = crate::mcp_apps::view_origin() {
+        data["view_origin"] = origin.into();
+    }
+    serde_json::json!({"type": "auth_ok", "data": data})
 }
 
 /// True the first time the bot sees this chat `message_id`, on any socket.

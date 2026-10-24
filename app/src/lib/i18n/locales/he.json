@@ -3464,7 +3464,8 @@
 			"coworker": "עמית לעבודה",
 			"voice": "קול",
 			"mcp": "אפליקציה אחרת",
-			"local_api": "תוכנה במחשב הזה"
+			"local_api": "תוכנה במחשב הזה",
+			"view": "תוצאה אינטראקטיבית"
 		},
 		"whyAllowed": "למה זה הותר?",
 		"whyAsked": "למה הוא שאל?",
@@ -4707,6 +4708,17 @@
 			"notify": "להודיע ל-{noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "להשתמש ב-{name}"
+		}
+	},
+	"mcpApp": {
+		"label": "תוצאה אינטראקטיבית מ-{server}",
+		"unavailable": "התוצאה האינטראקטיבית הזו כבר לא זמינה.",
+		"wantsFeatures": "{server} רוצה להשתמש ב{features} שלך",
+		"featuresReason": "התוצאה האינטראקטיבית מבקשת זאת. היא תקבל את זה רק אם תאשר.",
+		"feature": {
+			"camera": "מצלמה",
+			"microphone": "מיקרופון",
+			"geolocation": "מיקום"
 		}
 	}
 }

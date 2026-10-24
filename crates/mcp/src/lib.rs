@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod oauth;
 pub mod stdio;
 pub mod types;
+pub mod ui;
 
 pub use bridge::Bridge;
 pub use client::McpClient;

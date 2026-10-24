@@ -2588,6 +2588,9 @@ async fn step_events(
     if let Some(event) = events::phone_location_event(shared, conversation) {
         st.reminders.add(&event);
     }
+    if let Some(event) = events::view_context_event(&h.view_contexts.text(&cx.request.session_key), conversation) {
+        st.reminders.add(&event);
+    }
     let team = events::employees_listing(&h.store, &cx.name);
     if let Some(delta) = events::LinedDelta::between(&events::announced("agents_listing", conversation), &team) {
         st.reminders.add(&TurnEvent::AgentsListing(delta));

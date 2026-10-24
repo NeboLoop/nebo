@@ -91,6 +91,9 @@ class WebSocketClient {
 	private botPings = false;
 	private silenceTimer: ReturnType<typeof setTimeout> | null = null;
 	private authToken: string | null = null;
+	/** Where this computer's MCP App views run (auth_ok's `view_origin`):
+	 *  empty when the server names none. */
+	private viewOrigin = '';
 
 	// Presence tracking state
 	private currentPresence: PresenceStatus = 'focused';
@@ -202,6 +205,7 @@ class WebSocketClient {
 						// Handle auth_ok — server confirmed our token
 						if (message.type === 'auth_ok') {
 							log.info('WebSocket authenticated');
+							this.viewOrigin = typeof message.data?.view_origin === 'string' ? message.data.view_origin : '';
 							sendClientEvent('ws_auth_ok', { durationMs: Date.now() - attemptStarted, code: this.disruptions });
 							this.setStatus('connected');
 							this.reconnectAttempts = 0;
@@ -468,6 +472,12 @@ class WebSocketClient {
 	 */
 	requestRewrite(request: RewriteRequest): void {
 		this.send('rewrite', request);
+	}
+
+	/** The origin MCP App views' sandbox proxy is served from on this
+	 *  computer, as the server said on connecting; empty when it said none. */
+	getViewOrigin(): string {
+		return this.viewOrigin;
 	}
 
 	/** Non-user socket closes so far — see `disruptions`. */

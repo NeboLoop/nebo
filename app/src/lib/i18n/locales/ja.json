@@ -3464,7 +3464,8 @@
 			"coworker": "同僚",
 			"voice": "音声",
 			"mcp": "他のアプリ",
-			"local_api": "このコンピューター上のプログラム"
+			"local_api": "このコンピューター上のプログラム",
+			"view": "インタラクティブな結果"
 		},
 		"whyAllowed": "なぜ許可されたのか？",
 		"whyAsked": "なぜ確認されたのか？",
@@ -4707,6 +4708,17 @@
 			"notify": "{noun}に通知する",
 			"otherAction": "{action} {noun}",
 			"useTool": "{name}を使う"
+		}
+	},
+	"mcpApp": {
+		"label": "{server} のインタラクティブな結果",
+		"unavailable": "このインタラクティブな結果は利用できなくなりました。",
+		"wantsFeatures": "{server} が{features}の使用を求めています",
+		"featuresReason": "インタラクティブな結果がこれを求めています。許可した場合にのみ使えます。",
+		"feature": {
+			"camera": "カメラ",
+			"microphone": "マイク",
+			"geolocation": "位置情報"
 		}
 	}
 }

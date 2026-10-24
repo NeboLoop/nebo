@@ -288,13 +288,13 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
 
 /// Whether someone is attending the run the call came from: the owner's own
 /// request, or a door a person is talking through (a chat, a call, an MCP
-/// client, the local API). A schedule, a workflow, a heartbeat, a helper and
+/// client, the local API, a view in the conversation he has open). A schedule, a workflow, a heartbeat, a helper and
 /// a coworker's request are unattended, and so is any run the system or a
 /// workflow started, whatever door it names.
 pub fn attended(ctx: &tools::ToolContext) -> bool {
     ctx.owner_request
         || (!matches!(ctx.origin, Origin::System | Origin::Workflow)
-            && matches!(ctx.door, Door::Chat | Door::Voice | Door::Mcp | Door::LocalApi))
+            && matches!(ctx.door, Door::Chat | Door::Voice | Door::Mcp | Door::LocalApi | Door::View))
 }
 
 /// An unattended run never creates, re-arms or fires scheduled work

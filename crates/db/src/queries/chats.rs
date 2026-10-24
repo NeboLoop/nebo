@@ -827,6 +827,21 @@ impl Store {
         chat_id: &str,
         tool_call_id: &str,
     ) -> Result<Option<(String, bool)>, NeboError> {
+        Ok(self.find_tool_result(chat_id, tool_call_id)?.map(|r| {
+            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+            (content, is_error)
+        }))
+    }
+
+    /// The stored result of call `tool_call_id` in chat `chat_id`, whole, as
+    /// the `tool` row after the call keeps it (`content`, `is_error`,
+    /// `payload`, …).
+    pub fn find_tool_result(
+        &self,
+        chat_id: &str,
+        tool_call_id: &str,
+    ) -> Result<Option<serde_json::Value>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -839,22 +854,11 @@ impl Store {
             .query_row(params![chat_id, tool_call_id], |row| row.get(0))
             .optional()
             .map_err(|e| NeboError::Database(e.to_string()))?;
-        if let Some(tr_json) = result {
-            if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(&tr_json) {
-                for r in &results {
-                    if r.get("tool_call_id").and_then(|v| v.as_str()) == Some(tool_call_id) {
-                        let content = r
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
-                        return Ok(Some((content, is_error)));
-                    }
-                }
-            }
-        }
-        Ok(None)
+        let Some(tr_json) = result else { return Ok(None) };
+        let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(&tr_json) else { return Ok(None) };
+        Ok(results
+            .into_iter()
+            .find(|r| r.get("tool_call_id").and_then(|v| v.as_str()) == Some(tool_call_id)))
     }
 
     pub fn delete_chat_message(&self, id: &str) -> Result<(), NeboError> {

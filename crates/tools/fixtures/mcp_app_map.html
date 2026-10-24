@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Places</title></head>
+<body>
+<!-- A reference MCP Apps view: a map-like grid of the place the tool was
+     called for, and a form that books a visit through the server's
+     app-only tool. It speaks the bridge with no SDK. -->
+<div id="map" data-testid="map">Loading map…</div>
+<form id="book">
+  <input id="who" name="who" value="Dana">
+  <button type="submit">Book a visit</button>
+</form>
+<p id="status" data-testid="status"></p>
+<script>
+  var nextId = 1, waiting = {};
+  function send(method, params) {
+    var id = nextId++;
+    parent.postMessage({ jsonrpc: '2.0', id: id, method: method, params: params }, '*');
+    return new Promise(function (resolve, reject) { waiting[id] = { resolve: resolve, reject: reject }; });
+  }
+  function notify(method, params) { parent.postMessage({ jsonrpc: '2.0', method: method, params: params }, '*'); }
+  window.addEventListener('message', function (e) {
+    var m = e.data || {};
+    if (m.id !== undefined && waiting[m.id]) {
+      var w = waiting[m.id]; delete waiting[m.id];
+      if (m.error) w.reject(m.error); else w.resolve(m.result);
+      return;
+    }
+    if (m.method === 'ui/notifications/tool-input') {
+      document.getElementById('map').textContent = 'Map of ' + (m.params.arguments.place || '?');
+    }
+    if (m.method === 'ui/notifications/tool-result') {
+      var sc = m.params.structuredContent || {};
+      document.getElementById('map').setAttribute('data-lat', sc.lat);
+      notify('ui/notifications/size-changed', { width: document.body.scrollWidth, height: document.body.scrollHeight });
+    }
+  });
+  document.getElementById('book').addEventListener('submit', function (e) {
+    e.preventDefault();
+    send('tools/call', { name: 'book_visit', arguments: { who: document.getElementById('who').value } })
+      .then(function (r) { document.getElementById('status').textContent = (r.content && r.content[0] && r.content[0].text) || ''; })
+      .catch(function (err) { document.getElementById('status').textContent = 'Error: ' + err.message; });
+  });
+  send('ui/initialize', { appCapabilities: { availableDisplayModes: ['inline'] }, clientInfo: { name: 'places', version: '1.0.0' }, protocolVersion: '2026-01-26' })
+    .then(function () { notify('ui/notifications/initialized', {}); });
+</script>
+</body>
+</html>

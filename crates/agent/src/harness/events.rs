@@ -22,6 +22,9 @@ pub enum TurnEvent {
     /// employee (`crate::phone_location`); `None` withdraws the readings
     /// the conversation heard, once nothing is shared with it any more.
     PhoneLocation(Option<crate::phone_location::SharedPosition>),
+    /// What the conversation's MCP App views say now
+    /// (`ui/update-model-context`), whole, when it changed since told.
+    ViewContext(String),
     /// The channel's rules changed, or were never told: the replacement,
     /// whole (`told` says whether there was an earlier version).
     ChannelRulesChanged { rules: String, told: bool },
@@ -222,6 +225,7 @@ pub const NAMES: &[&str] = &[
     "coworker_access",
     "time",
     "phone_location",
+    "view_context",
     "agents_listing",
     "teams_listing",
     "date_changed",
@@ -312,6 +316,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 text,
                 data: serde_json::Map::from_iter([("taken".to_string(), serde_json::json!(taken))]),
             });
+        }
+        TurnEvent::ViewContext(text) => {
+            return replacement_row(
+                "view_context",
+                text,
+                Some("The interactive results shown in this conversation report this (it replaces what they reported before):"),
+            );
         }
         TurnEvent::ChannelRulesChanged { rules, told } => {
             let lead = told.then_some("The channel's rules have changed; these replace the earlier ones:");
@@ -869,6 +880,18 @@ pub fn phone_location_event(
     }
 }
 
+/// The views' latest words (`view_context::ViewContexts::text`), when the
+/// conversation was last told something else.
+pub fn view_context_event(now: &str, history: &[ChatMessage]) -> Option<TurnEvent> {
+    let told = history
+        .iter()
+        .filter_map(attachment_fields)
+        .filter(|f| f.get("kind").and_then(|k| k.as_str()) == Some("view_context"))
+        .last()
+        .and_then(|f| f.get("digest").and_then(|d| d.as_str()).map(str::to_string));
+    (!now.trim().is_empty() && told.as_deref() != Some(digest(now).as_str())).then(|| TurnEvent::ViewContext(now.to_string()))
+}
+
 fn non_empty(text: &str) -> Option<String> {
     let t = text.trim();
     (!t.is_empty()).then(|| t.to_string())
@@ -1406,6 +1429,7 @@ mod tests {
                 taken: "phone@1000".into(),
             })),
             TurnEvent::PhoneLocation(None),
+            TurnEvent::ViewContext("The map shows Paris.".into()),
             TurnEvent::ChannelRulesChanged {
                 rules: "# Channel rules\nNo markdown.".into(),
                 told: true,

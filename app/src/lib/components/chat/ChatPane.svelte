@@ -22,6 +22,8 @@
   import ConsentChip from './ConsentChip.svelte';
   import AppListingCard from './AppListingCard.svelte';
   import NeedsYouCard from '$lib/components/inbox/NeedsYouCard.svelte';
+  import McpAppView from '$lib/components/chat/McpAppView.svelte';
+  import { isMcpApp, type McpAppPayload } from '$lib/mcpApps/view';
   import type { InboxItem } from '$lib/inbox/item';
   import { goto as navigate } from '$lib/nav';
   import type { AppListingPayload } from './AppListingCard.svelte';
@@ -963,6 +965,13 @@
       const item = t.payload?.kind === 'inbox_item' ? (t.payload as { item?: InboxItem }).item : undefined;
       return item ? [item] : [];
     });
+  }
+  // A tool result shown as its server's interactive view (MCP Apps), in
+  // the tool's own message.
+  function mcpApps(tools: ToolMsg[] | undefined): { app: McpAppPayload; toolId: string; text: string }[] {
+    return (tools ?? []).flatMap((t) =>
+      isMcpApp(t.payload) && t.toolId ? [{ app: t.payload, toolId: t.toolId, text: t.response }] : []
+    );
   }
   function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
@@ -2411,6 +2420,9 @@
             {/each}
             {#each segs.flatMap((sg) => appListings(sg.tools)).slice(-1) as listing, lIdx (lIdx)}
               <AppListingCard {listing} />
+            {/each}
+            {#each segs.flatMap((sg) => mcpApps(sg.tools)) as view (view.toolId)}
+              <McpAppView app={view.app} chatId={outputChatId} toolId={view.toolId} text={view.text} />
             {/each}
             {#each segs.flatMap((sg) => inboxCards(sg.tools)) as item, iIdx (iIdx)}
               {@const asker = allAgents.find((a) => a.id === item.agentId)}

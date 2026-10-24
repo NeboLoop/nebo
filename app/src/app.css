@@ -2303,3 +2303,42 @@ button.connector-row {
 .model-info-open {
 	@apply w-6 h-6 shrink-0 grid place-items-center rounded-full text-base-content/40 hover:text-primary cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-default;
 }
+
+/* MCP Apps: a tool result shown as its server's interactive view, inline in
+   the tool's message (McpAppView). The frame grows to the view's reported
+   height (its height attribute), up to the cap the host gives the view. */
+.mcp-app {
+  margin-top: 0.75rem;
+}
+.mcp-app-label {
+  font-size: 0.75rem;
+  color: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+  margin-bottom: 0.375rem;
+}
+.mcp-app-frame {
+  width: 100%;
+  overflow: hidden;
+}
+.mcp-app-bordered {
+  border: 1px solid color-mix(in oklab, var(--color-base-content) 15%, transparent);
+  border-radius: 0.75rem;
+  background: var(--color-base-100);
+}
+.mcp-app-frame iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+.mcp-app-gone {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+}
+.mcp-app-gone-line {
+  color: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+  font-style: italic;
+}
+.mcp-app-gone-text {
+  margin-top: 0.25rem;
+  white-space: pre-wrap;
+}

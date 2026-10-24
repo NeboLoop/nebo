@@ -3464,7 +3464,8 @@
 			"coworker": "زميل عمل",
 			"voice": "صوت",
 			"mcp": "تطبيق آخر",
-			"local_api": "برنامج على هذا الجهاز"
+			"local_api": "برنامج على هذا الجهاز",
+			"view": "نتيجة تفاعلية"
 		},
 		"whyAllowed": "لماذا سُمح بهذا؟",
 		"whyAsked": "لماذا سأل؟",
@@ -4707,6 +4708,17 @@
 			"notify": "إشعار {noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "استخدام {name}"
+		}
+	},
+	"mcpApp": {
+		"label": "نتيجة تفاعلية من {server}",
+		"unavailable": "هذه النتيجة التفاعلية لم تعد متاحة.",
+		"wantsFeatures": "يريد {server} استخدام {features}",
+		"featuresReason": "النتيجة التفاعلية تطلب ذلك. لن تحصل عليه إلا إذا سمحت به.",
+		"feature": {
+			"camera": "الكاميرا",
+			"microphone": "الميكروفون",
+			"geolocation": "الموقع"
 		}
 	}
 }

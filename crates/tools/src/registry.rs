@@ -399,6 +399,14 @@ pub trait DynTool: Send + Sync {
     fn mcp_proxy_info(&self) -> Option<(String, String)> {
         None
     }
+    /// Who may call the tool (`mcp::ui::Visibility`): the employee and, for
+    /// an MCP tool whose server says so, a view from the same server. A tool
+    /// the employee may not call is never listed, loaded or run for it; a
+    /// tool a view may not call is refused to a view. Every built-in tool is
+    /// the employee's alone.
+    fn visibility(&self) -> mcp::ui::Visibility {
+        mcp::ui::Visibility { model: true, app: false }
+    }
     /// This call's working-time limit, parked time not counted. `None`: the
     /// call runs until it finishes or the turn is stopped; the loop has no
     /// blanket tool budget of its own.
@@ -661,13 +669,20 @@ impl Registry {
         };
         let validator = crate::input_schema::compile(&name, &def.input_schema).map(Arc::new);
         let deferred = tool.should_defer();
+        // A tool only a view may call is run, but the employee never sees
+        // it: no definition to list or load, no deferred entry.
+        let listed = tool.visibility().model;
         let mut tools = self.tools.write().await;
         if tools.contains_key(&name) {
             warn!(tool = %name, "tool already registered, overwriting");
         }
         tools.insert(name.clone(), Arc::from(tool));
         drop(tools);
-        self.def_cache.write().await.insert(name.clone(), def);
+        if listed {
+            self.def_cache.write().await.insert(name.clone(), def);
+        } else {
+            self.def_cache.write().await.remove(&name);
+        }
         let mut validators = self.validators.write().await;
         match validator {
             Some(v) => validators.insert(name.clone(), v),
@@ -675,7 +690,7 @@ impl Registry {
         };
         drop(validators);
         let mut deferred_set = self.deferred.write().await;
-        if deferred {
+        if deferred && listed {
             deferred_set.insert(name.clone());
         } else {
             deferred_set.remove(&name);
@@ -807,7 +822,7 @@ impl Registry {
     /// Refresh the cached definition for a tool (e.g. after plugin install/uninstall).
     pub async fn refresh_definition(&self, name: &str) {
         let tools = self.tools.read().await;
-        if let Some(tool) = tools.get(name) {
+        if let Some(tool) = tools.get(name).filter(|t| t.visibility().model) {
             let def = ToolDefinition {
                 name: name.to_string(),
                 description: tool.description(),
@@ -1122,6 +1137,18 @@ impl Registry {
             warn!(tool = %name, "unknown tool");
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
+        // Who may call it (MCP Apps visibility): a view only the tools its
+        // server lets views call; anyone else only the employee's tools.
+        let visibility = tool.visibility();
+        if matches!(ctx.door, types::permissions::Door::View) {
+            if !visibility.app {
+                warn!(tool = %name, "a view called a tool views may not call");
+                return ToolResult::error(format!("{name} can't be called from an interactive result."));
+            }
+        } else if !visibility.model {
+            warn!(tool = %name, "a tool only views may call was called by the employee");
+            return ToolResult::error(crate::result_shape::unknown_tool(name));
+        }
 
         let replayed = ctx.answered_ask.is_some();
         let (tool, input) = match self.settle(tool.as_ref(), name, input.clone(), replayed).await {

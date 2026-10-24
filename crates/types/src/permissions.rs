@@ -477,6 +477,9 @@ pub enum Door {
     Voice,
     Mcp,
     LocalApi,
+    /// An MCP App's view (an interactive tool result in a conversation)
+    /// calling its own server's tool.
+    View,
 }
 
 impl Door {
@@ -491,6 +494,7 @@ impl Door {
             Door::Voice => "voice",
             Door::Mcp => "mcp",
             Door::LocalApi => "local_api",
+            Door::View => "view",
         }
     }
 
