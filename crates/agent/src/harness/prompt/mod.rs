@@ -447,13 +447,16 @@ mod tests {
     /// send_message's `answer`, the one thing that settles a question, +22;
     /// 9,037 until 2026-10-20, when an employee couldn't see or stop research
     /// its helper's helper started: list_runs and stop_task reach all it
-    /// started, at any depth, +127.)
+    /// started, at any depth, +127; 9,164 until 2026-10-23, when an employee
+    /// treated the owner's own signed-in tools as off limits and created a
+    /// server on another person's account: it acts as the owner, confirms the
+    /// account is the owner's own and asks before spending, +406.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 9_200);
+        assert!(chars < 9_600);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 9_164;
+    const SYSTEM_PROMPT_CHARS: usize = 9_570;
 }
