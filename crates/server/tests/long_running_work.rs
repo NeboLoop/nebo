@@ -152,12 +152,12 @@ async fn a_temporary_workflow_reports_disappears_and_is_saved_to_run_every_monda
     assert!(weekly["trigger"]["cron"].as_str().unwrap_or("").contains("MON"), "{weekly}");
     assert!(weekly["activities"].to_string().contains("MARK-BUDGET"), "the same work, not rebuilt: {weekly}");
     assert!(weekly["isActive"].as_bool().unwrap_or(false), "{weekly}");
-    let job = store
-        .list_cron_jobs(100, 0)
-        .unwrap()
-        .into_iter()
-        .find(|j| j.name == format!("agent-{planner}-weekly-budget"))
-        .expect("the Monday schedule is registered");
+    // The create call lists the workflow, then registers its schedule
+    // (`save_binding`): the listing can be read between the two writes.
+    let job = eventually(60, "the Monday schedule is registered", async || {
+        store.list_cron_jobs(100, 0).ok()?.into_iter().find(|j| j.name == format!("agent-{planner}-weekly-budget"))
+    })
+    .await;
     assert_eq!(job.enabled, Some(1), "the schedule is on");
 }
 
