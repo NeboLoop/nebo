@@ -52,9 +52,13 @@ use crate::pruning;
 use super::usage::RunState;
 use crate::selector;
 
-/// Steps one turn takes before it ends with `MaxSteps`, so a model that
-/// never stops calling tools can't run forever.
-pub const DEFAULT_MAX_STEPS: u32 = 100;
+/// The most steps one review takes (a verify loop's reviewer, a Review
+/// helper): measured on the owner's bot, reviewers finish in about 35 steps
+/// (2026-10-23, 60 reviews: median 35, nine in ten under 70). At the cap the
+/// last step is its verdict, so a review never fails for running out of
+/// steps. An employee's own turn has no step cap: its spending limit, the
+/// loop detector (`tool_round::Repeats`) and the owner's Stop end it.
+pub const REVIEW_MAX_STEPS: u32 = 60;
 
 /// Checkpoints a turn takes for itself with no progress between them
 /// before it stops instead of taking another. Progress is a call that
@@ -106,7 +110,11 @@ pub struct TurnContext {
     pub coworker_access: String,
     pub tx: mpsc::Sender<StreamEvent>,
     pub progress: RunProgress,
-    pub max_steps: u32,
+    /// The most steps the turn takes, for the runs that have a cap: a
+    /// workflow activity's own budget, the self-improvement review, a code
+    /// reviewer ([`REVIEW_MAX_STEPS`]). `None`: an employee's turn, which
+    /// runs until it is done.
+    pub max_steps: Option<u32>,
     /// The owner's spending limit for the run, microcents; 0 = none.
     pub spend_cap_microcents: i64,
     /// The run's provenance: seeded by the input, grown by its tool calls,
@@ -1412,10 +1420,14 @@ pub(crate) async fn prepare(
         &req.seat.agent_id,
     );
 
+    // An employee's turn is held to the owner's spending limit for one of
+    // its runs; a workflow activity to its own.
+    let run_cap = || h.store.agent_run_spend_cap_cents(&req.seat.agent_id) * 1_000_000;
     let (max_steps, spend_cap_microcents) = match &req.mode {
-        TurnMode::Workflow(m) => (if m.max_steps > 0 { m.max_steps } else { DEFAULT_MAX_STEPS }, m.spend_cap_microcents),
-        TurnMode::Fork(_) => (crate::review_fork::REVIEW_MAX_ITERATIONS as u32, 0),
-        _ => (DEFAULT_MAX_STEPS, 0),
+        TurnMode::Workflow(m) => ((m.max_steps > 0).then_some(m.max_steps), m.spend_cap_microcents),
+        TurnMode::Fork(_) => (Some(crate::review_fork::REVIEW_MAX_ITERATIONS as u32), 0),
+        TurnMode::Helper { kind: super::delegation::HelperKind::Review, .. } => (Some(REVIEW_MAX_STEPS), run_cap()),
+        _ => (None, run_cap()),
     };
     let after_turn = matches!(req.mode, TurnMode::Chat)
         && !matches!(req.input, TurnInput::Compact { .. })
@@ -1758,16 +1770,22 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             warn!(session_id = sid, "event receiver dropped: ending the turn");
             return TurnExit::Cancelled;
         }
-        // At the step limit the turn takes one more step with its tools off,
-        // whose reply is its report (to the owner, or the helper's parent),
-        // and ends there: a turn never stops on a tool call with nothing
-        // said about where the work stands.
-        if st.step >= cx.max_steps && !st.reporting {
-            info!(session_id = sid, steps = st.step, "step limit reached: one last step, tools off, for the report");
-            st.reporting = true;
-            st.reminders.add(&TurnEvent::StepLimit);
-        } else if st.step > cx.max_steps {
-            return step_limit(cx, st).await;
+        // At its step limit a capped run takes one more step with its tools
+        // off, whose reply is its report (a helper's parent reads it), and
+        // ends there: a run never stops on a tool call with nothing said
+        // about where the work stands. A helper whose answer is data keeps
+        // its answer tool alone for that step, and a refused answer gets
+        // the answer check's tries again: it always returns its answer.
+        if let Some(max) = cx.max_steps {
+            let answers = matches!(cx.request.mode, TurnMode::Helper { answer: Some(_), .. });
+            let last = max + if answers { u32::from(turn_end::ANSWER_RETRIES) } else { 0 };
+            if st.step >= max && !st.reporting {
+                info!(session_id = sid, steps = st.step, answers, "step limit reached: one last step for the report");
+                st.reporting = true;
+                st.reminders.add(&TurnEvent::StepLimit { answers });
+            } else if st.step > last {
+                return step_limit(cx, st).await;
+            }
         }
         if let Some(exit) = budget_reached(cx, st).await {
             return exit;
@@ -1934,8 +1952,20 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if !loaded {
             model_name.clear();
         }
-        let mut request = build_request(cx, st, &window, surface.declared, &model_name);
-        if st.reporting {
+        // The last step of a capped data helper is its answer: the answer
+        // tool is the only tool it has, and it must call it.
+        let answer_only = match &cx.request.mode {
+            TurnMode::Helper { answer: Some(schema), .. } if st.reporting => Some(turn_end::answer_tool(schema)),
+            _ => None,
+        };
+        let declared = match &answer_only {
+            Some(tool) => vec![tool.clone()],
+            None => surface.declared,
+        };
+        let mut request = build_request(cx, st, &window, declared, &model_name);
+        if answer_only.is_some() {
+            request.tool_choice = ai::ToolChoice::Tool(turn_end::ANSWER_TOOL.to_string());
+        } else if st.reporting {
             request.tool_choice = ai::ToolChoice::None;
         } else if st.step == 1 && correcting.is_none() && st.commands.applies() {
             // A command the owner gave is the first step's call: its tool
@@ -2268,9 +2298,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_calls.clear();
         }
         if st.reporting {
-            // The report at the step limit went out with tools off: a call
-            // the provider sent anyway is neither run nor stored.
-            tool_calls.clear();
+            // The report at the step limit went out with tools off (a data
+            // helper's with its answer tool alone): a call the provider sent
+            // anyway is neither run nor stored.
+            tool_calls.retain(|tc| answer_only.is_some() && tc.name == turn_end::ANSWER_TOOL);
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
         }
         // The output cap cut the reply inside its last call: that call's
@@ -2312,8 +2343,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if let Some(error) = stream_error {
             return TurnExit::ProviderFailed(error);
         }
-        // The report at the step limit is written: the turn ends on it.
-        if st.reporting {
+        // The report at the step limit is written: the turn ends on it. A
+        // data helper's answer is its report: the round runs it.
+        if st.reporting && answer_only.is_none() {
             return step_limit(cx, st).await;
         }
 
@@ -2431,11 +2463,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
 /// The turn ends at its step limit, on the report its last step wrote (a
 /// helper's parent reads it as the helper's result).
 async fn step_limit(cx: &TurnContext, st: &TurnState) -> TurnExit {
-    let steps = st.step.min(cx.max_steps);
+    let steps = cx.max_steps.map_or(st.step, |max| st.step.min(max));
     let _ = cx
         .tx
         .send(StreamEvent::control_notice(
-            format!("Stopped after {steps} steps, the most one turn takes. Ask me to continue and I'll pick it up."),
+            format!("Stopped after {steps} steps, the most this run takes. Ask me to continue and I'll pick it up."),
             "max_steps",
         ))
         .await;
@@ -5485,22 +5517,24 @@ mod tests {
         assert!(!notice.contains("write_file") && !notice.contains('/'), "plain words: {notice}");
     }
 
-    /// The owner's own chat turn is never stopped by a repeated failure:
-    /// he is there to stop it. The model is nudged, more firmly from the
-    /// third time, and the turn ends when the model does.
+    /// The owner's own chat turn is never stopped by a repeated failure
+    /// as such: the model is nudged, more firmly from the third time. A
+    /// turn that keeps sending it anyway is going in circles, and the loop
+    /// detector ends it ([`tool_round::LOOP_ROUNDS`]): an employee's turn
+    /// has no step cap to do it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_same_call_failing_the_same_way_only_nudges_the_owners_turn() {
+    async fn the_same_call_failing_the_same_way_only_nudges_the_owners_turn_until_it_goes_in_circles() {
         let (input, refusing) = missing_content();
         let model = Scripted::new((0..22).map(|_| Step::Call("write_file", input.clone())).chain([Step::Say("Done.")]).collect());
         let h = harness_with(&model, vec![Box::new(refusing)]).await;
         let events = run_turn(&h, owner("Build the website")).await;
-        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(exit_of(&events), "terminal_tool_error");
         let results = tool_results(&h);
-        assert_eq!(results.len(), 22, "every try ran");
         assert!(results[1].contains(tool_round::RETRY_NOTE), "{}", results[1]);
-        assert!(results[21].contains(tool_round::CHANGE_APPROACH_NOTE), "{}", results[21]);
-        assert!(results.iter().all(|r| !r.contains("the run stops here")));
-        assert!(notices(&events).is_empty(), "nothing stopped the turn: {}", notices(&events));
+        assert!(results.last().unwrap().contains(tool_round::CHANGE_APPROACH_NOTE), "{results:#?}");
+        assert!(results.iter().all(|r| !r.contains("the run stops here")), "never stopped as a failure");
+        assert!(results.len() < 22 && results.len() > tool_round::LOOP_ROUNDS, "stopped as a loop: {}", results.len());
+        assert_eq!(notices(&events), tool_round::LOOP_NOTICE);
     }
 
     /// A change between two identical failures starts the count over: a
@@ -5509,12 +5543,19 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_edit_between_identical_failures_starts_the_count_over() {
         let check = Refusing { name: "check", error: "1 test failed: totals_add_up", read_only: false };
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("totals.txt").to_string_lossy().into_owned();
         let steps = (0..12)
-            .flat_map(|_| [Step::Call("check", serde_json::json!({})), Step::Call("writer", serde_json::json!({}))])
+            .flat_map(|n| {
+                [
+                    Step::Call("check", serde_json::json!({})),
+                    Step::Call("save_code", serde_json::json!({ "path": file, "content": format!("attempt {n}") })),
+                ]
+            })
             .chain([Step::Say("Done.")])
             .collect();
         let model = Scripted::new(steps);
-        let h = harness_with(&model, vec![Box::new(check)]).await;
+        let h = harness_with(&model, vec![Box::new(check), Box::new(FileWriter)]).await;
         let events = run_turn(&h, scheduled("Fix the totals")).await;
         assert_eq!(exit_of(&events), "text_response");
         let results = tool_results(&h);
@@ -5523,19 +5564,21 @@ mod tests {
         assert!(notices(&events).is_empty(), "{}", notices(&events));
     }
 
-    /// A call that only reads never stops a run, however often it fails
-    /// the same way: it is told, and runs on.
+    /// A call that only reads is never stopped as a failure, however often
+    /// it fails the same way: it is told to change course. Sent again and
+    /// again regardless, it is going in circles, and only then does the run
+    /// stop ([`tool_round::LOOP_ROUNDS`]).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_read_that_keeps_failing_never_stops_a_run() {
+    async fn a_read_that_keeps_failing_is_stopped_only_as_a_loop() {
         let look = Refusing { name: "look", error: "No such file: notes.txt", read_only: true };
         let model = Scripted::new((0..12).map(|_| Step::Call("look", serde_json::json!({}))).chain([Step::Say("Done.")]).collect());
         let h = harness_with(&model, vec![Box::new(look)]).await;
         let events = run_turn(&h, scheduled("Read the notes")).await;
-        assert_eq!(exit_of(&events), "text_response");
         let results = tool_results(&h);
-        assert_eq!(results.len(), 12);
-        assert!(results[11].contains(tool_round::CHANGE_APPROACH_NOTE), "{}", results[11]);
-        assert!(notices(&events).is_empty(), "{}", notices(&events));
+        assert_eq!(results.len(), 1 + tool_round::LOOP_ROUNDS, "{results:#?}");
+        assert!(results.last().unwrap().contains(tool_round::CHANGE_APPROACH_NOTE));
+        assert!(results.iter().all(|r| !r.contains("the run stops here")), "never stopped as a failure");
+        assert_eq!((exit_of(&events).as_str(), notices(&events).as_str()), ("terminal_tool_error", tool_round::LOOP_NOTICE));
     }
 
     /// A read with the same input that answered the same way twice, nothing
@@ -7708,6 +7751,45 @@ mod tests {
         assert!(results.iter().all(|r| r.len() <= tools::step_data::PAGE_MAX_CHARS + 300), "every page within the bound");
     }
 
+    /// Owner, 2026-10-24: work kept stopping at 100 steps. An employee's
+    /// turn has no step cap: one that keeps getting somewhere runs to its
+    /// end, however long.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_long_employee_turn_runs_to_its_end() {
+        let mut script: Vec<Step> = (0..150).map(|n| Step::Call("echo", serde_json::json!({ "n": n }))).collect();
+        script.push(Step::Say("All 150 pages are read."));
+        let model = Scripted::new(script);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Read every page")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 151, "150 steps of work, then the answer");
+        assert!(model.calls().iter().all(|c| c.tool_choice != ai::ToolChoice::None), "its tools were never turned off");
+    }
+
+    /// What ends an employee going in circles is the loop detector, not a
+    /// count: the same call coming back the same way, round after round,
+    /// stops the run after [`tool_round::LOOP_ROUNDS`] rounds that brought
+    /// nothing new, in the owner's own chat too, with what is stuck said.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_employee_going_in_circles_is_stopped_by_the_loop_detector() {
+        let model = Scripted::new((0..40).map(|_| Step::Call("echo", serde_json::json!({ "n": 1 }))).collect());
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Read the page")).await;
+        assert_eq!(exit_of(&events), "terminal_tool_error");
+        // The first answer is new, and so is the note a settled read gets
+        // instead of running a third time; after that nothing is.
+        assert!((tool_round::LOOP_ROUNDS..=tool_round::LOOP_ROUNDS + 3).contains(&model.calls().len()), "{}", model.calls().len());
+        let said: String = events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect();
+        assert!(said.contains(tool_round::LOOP_NOTICE), "{said}");
+
+        // Two calls taking turns are a circle too.
+        let model = Scripted::new((0..40).map(|i| Step::Call("echo", serde_json::json!({ "n": i % 2 }))).collect());
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Read the pages")).await;
+        assert_eq!(exit_of(&events), "terminal_tool_error");
+        assert!((tool_round::LOOP_ROUNDS..=tool_round::LOOP_ROUNDS + 6).contains(&model.calls().len()), "{}", model.calls().len());
+    }
+
     /// At the step limit the turn takes one more step with its tools off,
     /// told to report, and ends `max_steps` on that report: a call the model
     /// sends anyway is not run.
@@ -7737,6 +7819,21 @@ mod tests {
         assert_eq!(ran, 2, "the call sent with the report never runs");
         let said: String = events.iter().filter(|e| e.event_type == ai::StreamEventType::Text).map(|e| e.text.clone()).collect();
         assert!(said.contains("the third page is left"), "{said}");
+    }
+
+    /// With no step cap, an employee's own turn is held to the owner's
+    /// spending limit for one of its runs (`budget.run_spend_cap_cents`):
+    /// past it, no further step.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_employees_own_turn_is_held_to_its_spending_limit() {
+        let model = Scripted::new((0..5).map(|n| Step::Paid(Box::new(Step::Call("echo", serde_json::json!({ "n": n }))), 600_000)).collect());
+        let h = harness(&model).await;
+        h.store.create_agent("ops", Some("agent"), "Ops", "", "", r#"{"budget": {"run_spend_cap_cents": 1}}"#, None, None).unwrap();
+        let mut req = owner("Do the thing");
+        req.seat.agent_id = "ops".into();
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), super::super::delegation::collect::STOP_SPEND_CAP);
+        assert_eq!(model.calls().len(), 1, "no step after the limit");
     }
 
     /// The owner's spending limit ends the turn before the next step, with
@@ -9513,7 +9610,7 @@ mod tests {
     /// checkpoint per step (the owner's chat wrote 31 in ten minutes).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tiny_real_window_never_loops_checkpoints() {
-        let mut steps: Vec<Step> = (0..12).map(|_| Step::Call("echo", serde_json::json!({}))).collect();
+        let mut steps: Vec<Step> = (0..12).map(|n| Step::Call("echo", serde_json::json!({ "n": n }))).collect();
         steps.push(Step::Say("Done."));
         let model = Scripted::new(steps);
         let h = harness_selecting(&model, Vec::new(), gateway_selector("scripted/nebo-1", 8_191)).await;
@@ -10740,6 +10837,44 @@ mod tests {
                 assert!(heard.contains("reads only the answer you return with structured_output"), "the reviewer's role is told again: {heard}");
                 let tool = after.tools.iter().find(|t| t.name == crate::harness::turn_end::ANSWER_TOOL).expect("the answer tool rides the request");
                 assert!(tool.description.contains("words you write are never read"), "{}", tool.description);
+            })
+        })
+    }
+
+    /// Owner's live run 2026-10-24 (`v-66c7f2b4e29f`): a reviewer ran to its
+    /// step limit, whose last step had its tools off, so it could not return
+    /// its verdict, failed, and was run again from the start. At its cap a
+    /// reviewer's last step has its answer tool alone and must call it: its
+    /// verdict from what it found so far is the round's, and the lens is not
+    /// run again. Its first request carries the change itself.
+    #[test]
+    fn a_reviewer_at_its_step_cap_still_returns_its_verdict() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let mut script = vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                ];
+                script.extend((0..REVIEW_MAX_STEPS).map(|n| Step::Call("run_command", serde_json::json!({ "command": format!("echo probe {n}") }))));
+                script.extend([verdict(CLEAN), Step::Say("Verified and landed.")]);
+                let model = Scripted::new(script);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].detail["reviewers"]["correctness"], "clean", "the verdict at the cap is the round's");
+                let reviewer: Vec<ChatRequest> = model.calls().into_iter().filter(is_reviewer).collect();
+                assert_eq!(reviewer.len() as u32, REVIEW_MAX_STEPS + 1, "one reviewer, never run again: {}", reviewer.len());
+                let last = reviewer.last().unwrap();
+                assert_eq!(last.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [crate::harness::turn_end::ANSWER_TOOL], "its answer tool alone");
+                assert_eq!(last.tool_choice, ai::ToolChoice::Tool(crate::harness::turn_end::ANSWER_TOOL.into()), "and it must call it");
+                assert!(texts(last).iter().any(|t| t.contains("is the only tool left")), "told to answer with what it has");
+                let first = texts(&reviewer[0]).join("\n");
+                assert!(first.contains("+def total(a, b): return a + b"), "the patch is in its first request: {first}");
+                assert!(first.contains("Don't list the project or read those again"), "{first}");
             })
         })
     }

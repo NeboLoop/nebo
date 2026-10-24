@@ -92,9 +92,10 @@ pub enum TurnEvent {
     BackgroundUpdate(String),
     /// The last reply hit the output limit.
     CutoffResume,
-    /// The turn reached its step limit: this step's tools are off and its
-    /// reply is the report.
-    StepLimit,
+    /// The run reached its step limit: this step's reply is its report,
+    /// with tools off, or (`answers`, a helper whose answer is data) with
+    /// its answer tool alone.
+    StepLimit { answers: bool },
     /// The output limit cut the last reply inside its call to this tool:
     /// the call's arguments are partial, so no call in the reply ran.
     CutCall(String),
@@ -450,12 +451,21 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 text,
             });
         }
-        TurnEvent::StepLimit => (
+        TurnEvent::StepLimit { answers: false } => (
             "step_limit",
-            "This turn has reached the most steps one turn takes, so tools are off for this last step. Write your \
+            "This run has reached the most steps it takes, so tools are off for this last step. Write your \
              report now: what you were asked, what you did and found (with the exact names, paths and values), and \
              what is still left to do. Don't apologize and don't ask to continue."
                 .to_string(),
+        ),
+        TurnEvent::StepLimit { answers: true } => (
+            "step_limit",
+            format!(
+                "This run has reached the most steps it takes, so {} is the only tool left for this last step. Call \
+                 it now with your answer from what you have found so far: what you showed, and what you checked that \
+                 held. Leave out anything you couldn't show.",
+                super::turn_end::ANSWER_TOOL
+            ),
         ),
         TurnEvent::CutoffResume => (
             "cutoff_resume",
@@ -1365,7 +1375,8 @@ mod tests {
             TurnEvent::HelperTypes(lined),
             TurnEvent::BackgroundUpdate("the export finished".into()),
             TurnEvent::CutoffResume,
-            TurnEvent::StepLimit,
+            TurnEvent::StepLimit { answers: false },
+            TurnEvent::StepLimit { answers: true },
             TurnEvent::CutCall("write_file".into()),
             TurnEvent::WorkflowContract("call publish once".into()),
             TurnEvent::AnswerNotReturned,

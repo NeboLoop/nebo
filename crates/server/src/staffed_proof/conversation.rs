@@ -202,12 +202,20 @@ impl ai::Provider for Model {
             return Ok(rx);
         }
         let thread = Thread { req };
-        let step = self
-            .0
-            .rules
-            .iter()
-            .find_map(|r| r(&thread))
-            .unwrap_or_else(|| Step::say("noted"));
+        // A code check's reviewer returns a clean verdict through its answer
+        // tool: these proofs are about the work, not its review, and a
+        // reviewer's brief quotes the owner's words the rules match on.
+        let reviewing = thread.req.tools.iter().any(|t| {
+            t.name == agent::harness::turn_end::ANSWER_TOOL && t.input_schema["properties"]["verified_ok"].is_object()
+        });
+        let step = if reviewing {
+            Step::call(vec![(
+                agent::harness::turn_end::ANSWER_TOOL,
+                serde_json::json!({ "findings": [], "verified_ok": [{ "checked": "the proof's change" }] }),
+            )])
+        } else {
+            self.0.rules.iter().find_map(|r| r(&thread)).unwrap_or_else(|| Step::say("noted"))
+        };
         self.0
             .calls
             .lock()
