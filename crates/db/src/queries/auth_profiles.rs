@@ -300,14 +300,10 @@ impl Store {
             .map(|b| std::path::PathBuf::from(b.path))
             .filter(|p| p.is_file())
             .collect();
-        let db = std::path::Path::new(&self.path);
-        if let (Some(dir), Some(stem)) = (db.parent(), db.file_name()) {
-            let prefix = format!("{}.pre-v", stem.to_string_lossy());
-            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with(&prefix) && name.ends_with(".bak") && !out.contains(&entry.path()) {
-                    out.push(entry.path());
-                }
+        let copies = crate::migrate::pre_migration_copies(std::path::Path::new(&self.path)).unwrap_or_default();
+        for (_, path) in copies {
+            if !out.contains(&path) {
+                out.push(path);
             }
         }
         out
