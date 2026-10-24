@@ -1480,6 +1480,13 @@ pub(crate) async fn prepare(
     ) {
         st.reminders.add(&TurnEvent::RestrictedRun(notice));
     }
+    // A stopped or unverified check taken up again: its open findings in
+    // full, before the builder's first step.
+    if let Some(verify) = &st.verify
+        && let Some(findings) = verify.open_findings(&h.store, true).await
+    {
+        st.reminders.add(&TurnEvent::Verify(findings));
+    }
 
     let review_fork = match &req.mode {
         TurnMode::Fork(super::ForkKind::Review { staged }) => {
@@ -2873,6 +2880,10 @@ async fn checkpoint(
     let goal = goal::GoalStore::new(&h.sessions, &cx.session_id).active().ok().flatten();
     let running = running_work(cx).await;
     let tasks = task_list(h, cx);
+    let open_findings = match &st.verify {
+        Some(verify) => verify.open_findings(&h.store, false).await,
+        None => None,
+    };
     let outcome = compact::checkpoint::checkpoint(
         &compact::checkpoint::CheckpointContext {
             sessions: &h.sessions,
@@ -2888,6 +2899,7 @@ async fn checkpoint(
                 running: &running,
                 tasks: &tasks,
                 plan_mode: cx.plan_mode(),
+                open_findings: open_findings.as_deref(),
             },
             instructions,
             fit_under: (why != compact::checkpoint::CheckpointReason::OwnerAsked).then(|| {
@@ -12390,6 +12402,73 @@ mod tests {
                 assert_eq!(exit_of(&events), "cancelled");
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!(v.state, "paused", "{v:?}");
+            })
+        })
+    }
+
+    /// Owner, 10-23: a check stopped with 11 open findings, the
+    /// conversation was checkpointed, and the employee said it "can't act on
+    /// a list I can't read". A stopped check taken up again re-sends every
+    /// open finding in full, and a checkpoint while it is open keeps them:
+    /// the builder's next step after the boundary reads each one.
+    #[test]
+    fn open_findings_are_sent_again_in_full_on_resume_and_after_a_checkpoint() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let req = owner("Make total() add a and b");
+                let stop = req.cancel.clone();
+                let hook: Hook = Box::pin(async move { stop.cancel() });
+                const TWO: &str = r#"{"findings": [
+                    {"severity": "blocker", "title": "The total ignores b", "evidence": "total.py:1", "repro": "a=1, b=2 gives 1", "impact": "Every invoice total is wrong", "fix": "Add b"},
+                    {"severity": "major", "title": "Negative amounts pass", "evidence": "total.py:1 has no check", "repro": "total(-5, 1)", "impact": "Refunds post as charges", "fix": "Reject negatives"}
+                ], "verified_ok": []}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
+                    Step::Say("Done."),
+                    verdict(TWO),
+                    // The owner stops the builder as it starts on the fixes.
+                    Step::During(Box::new(Step::Say("unreached")), hook),
+                    // The next turn's first step overflows: checkpointed.
+                    Step::Overflow,
+                    Step::Say("On the fixes."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, req).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                let open: Vec<crate::harness::verify::findings::Finding> = serde_json::from_value(v.open.clone()).unwrap();
+                assert_eq!(open.len(), 2, "{v:?}");
+                let state = db::VerificationState {
+                    state: "stopped",
+                    reason: &v.reason,
+                    rounds: v.rounds,
+                    open_blockers: v.open_blockers,
+                    open_majors: v.open_majors,
+                    open_minors: v.open_minors,
+                    open: v.open.clone(),
+                    deferred: v.deferred.clone(),
+                    summary: &v.summary,
+                };
+                h.store.set_verification_state(&v.id, &state, chrono::Utc::now().timestamp()).unwrap();
+
+                run_turn(&h, owner("Keep going")).await;
+                let calls = model.calls();
+                let boundary = calls
+                    .iter()
+                    .position(|c| texts(c)[0].starts_with(compact::checkpoint::BOUNDARY_LEAD))
+                    .expect("the overflow checkpointed");
+                let resumed = texts(&calls[boundary - 1]).join("\n");
+                assert!(resumed.contains("Keep going"), "the turn that takes the check up again: {resumed}");
+                assert_eq!(resumed.matches("Independent reviewers checked your change").count(), 2, "sent again, not only in the history: {resumed}");
+                let retry = texts(&calls[boundary]);
+                let retry = retry.join("\n");
+                for f in &open {
+                    for part in [&f.id, &f.title, &f.evidence, &f.repro, &f.impact, &f.fix] {
+                        assert!(resumed.contains(part.as_str()), "the resumed step reads {part}: {resumed}");
+                        assert!(retry.contains(part.as_str()), "the step after the checkpoint reads {part}: {retry}");
+                    }
+                }
             })
         })
     }

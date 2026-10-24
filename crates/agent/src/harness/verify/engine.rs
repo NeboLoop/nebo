@@ -315,6 +315,38 @@ impl Verify {
         ended
     }
 
+    /// The open findings of the work in hand, each in full, in the same
+    /// message a round sends ([`findings_brief`]): re-sent when a stopped or
+    /// unverified check is taken up again (`resumed`), and kept across a
+    /// checkpoint for every check not verified, so the builder never has to
+    /// act on a list it can no longer read.
+    pub async fn open_findings(&self, store: &db::Store, resumed: bool) -> Option<String> {
+        let mut briefs = Vec::new();
+        for work in self.work.snapshot().await {
+            let Some(v) = store.get_verification(&work.id).ok().flatten() else { continue };
+            let held = if resumed { matches!(v.state.as_str(), "stopped" | "not_verified") } else { v.state != "verified" };
+            if !held {
+                continue;
+            }
+            let open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
+            let last = store.verification_rounds(&v.id).unwrap_or_default().into_iter().rev().find(|r| r.kind == "review");
+            let checks: Vec<CheckRun> =
+                last.as_ref().and_then(|r| serde_json::from_value(r.checks.clone()).ok()).unwrap_or_default();
+            if open.is_empty() && checks.iter().all(|c| c.passed) {
+                continue;
+            }
+            let lenses: Vec<Lens> = last
+                .as_ref()
+                .and_then(|r| r.lenses.as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|l| l.as_str().and_then(Lens::parse))
+                .collect();
+            briefs.push(findings_brief(&v.project_root, u32::try_from(v.rounds).unwrap_or_default(), &lenses, &open, &checks, &[]));
+        }
+        (!briefs.is_empty()).then(|| briefs.join("\n\n"))
+    }
+
     /// The verifications whose builder was told to report this turn: the
     /// turn's last reply is their badge's.
     pub fn reported(&self) -> Vec<String> {
