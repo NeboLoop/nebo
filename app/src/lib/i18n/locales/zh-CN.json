@@ -3349,6 +3349,8 @@
 			"removesEmployee": "删除员工每次都需要你同意。",
 			"removesFolders": "删除其工作范围之外的文件夹需要你同意。",
 			"removesWholeWork": "删除这个每次都需要你同意。",
+			"movesProtected": "移动或重命名这个文件夹每次都需要你同意。",
+			"movesUnknown": "它会移动或重命名一个暂时无法说出名字的东西。这需要你同意。",
 			"reachesScreen": "它会看到你屏幕上的内容。",
 			"reachesMicrophone": "它会听到你的麦克风收录的声音。",
 			"reachesCamera": "它会看到你的摄像头拍到的画面。",

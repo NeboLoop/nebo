@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Supprimer un employé demande ton accord à chaque fois.",
 			"removesFolders": "Supprimer un dossier hors de son travail demande ton accord.",
 			"removesWholeWork": "Supprimer ceci demande ton accord à chaque fois.",
+			"movesProtected": "Déplacer ou renommer ce dossier demande ton accord à chaque fois.",
+			"movesUnknown": "Il déplace ou renomme quelque chose qu'il ne peut pas encore nommer. Cela demande ton accord.",
 			"reachesScreen": "Il verrait ce qui est sur ton écran.",
 			"reachesMicrophone": "Il entendrait ce que capte ton micro.",
 			"reachesCamera": "Il verrait ce que voit ta caméra.",

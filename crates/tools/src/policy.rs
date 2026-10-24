@@ -284,6 +284,8 @@ pub fn is_read_only(cmd: &str) -> bool {
 /// What it moves or renames away is in `moves`: each operand of `mv`,
 /// `rename` and `git mv` (a destination named without `-t` too: what lands
 /// on it is moved there), and the sources of `rsync --remove-source-files`.
+/// Where it puts what it copies or links is in `places`: the destination of
+/// `cp`, `ln`, `install` and `rsync`, and `mv`'s `-t` folder.
 pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEffects {
     use std::path::{Path, PathBuf};
 
@@ -336,6 +338,15 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
             i += 1;
         }
         out
+    };
+
+    // The folder `-t DIR` (`--target-directory[=]DIR`) names, when given.
+    let target_dir = |args: &[Option<String>]| -> Option<Option<String>> {
+        args.iter().enumerate().find_map(|(i, a)| match a.as_deref() {
+            Some("-t" | "--target-directory") => Some(args.get(i + 1).cloned().flatten()),
+            Some(a) => a.strip_prefix("--target-directory=").map(|d| Some(d.to_string())),
+            None => None,
+        })
     };
 
     for sub in subcommands(cmd) {
@@ -392,6 +403,26 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                 for source in operands(&patterned, &["-t", "--target-directory", "-S", "--suffix"]) {
                     fx.moves.push(tree(&here, &sub, &source, false));
                 }
+                fx.places.extend(target_dir(args).map(|d| tree(&here, &sub, &d, false)));
+            }
+            "cp" | "ln" | "install" => {
+                let valued = ["-t", "--target-directory", "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"];
+                let dest = match target_dir(args) {
+                    Some(dir) => Some(dir),
+                    None => {
+                        let ops = operands(&patterned, &valued);
+                        match ops.as_slice() {
+                            // `ln -s target`: the link is made here, named
+                            // as its target is.
+                            [Some(one)] if program == "ln" => {
+                                Some(Some(Path::new(one).file_name().map_or(one.clone(), |n| n.to_string_lossy().into_owned())))
+                            }
+                            [_, .., last] => Some(last.clone()),
+                            _ => None,
+                        }
+                    }
+                };
+                fx.places.extend(dest.map(|d| tree(&here, &sub, &d, false)));
             }
             "rsync" => {
                 let valued = [
@@ -406,6 +437,9 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                 let remote = |w: &Option<String>| w.as_deref().is_some_and(|d| d.split('/').next().is_some_and(|first| first.contains(':')));
                 let mut ops = operands(&patterned, &valued);
                 let dest = ops.pop().flatten();
+                if !remote(&dest) {
+                    fx.places.push(tree(&here, &sub, &dest, false));
+                }
                 if args.iter().flatten().any(|a| a.starts_with("--delete")) && !remote(&dest) {
                     fx.removes_trees.push(tree(&here, &sub, &dest, true));
                 }

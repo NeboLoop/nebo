@@ -1183,7 +1183,7 @@ async fn removing_a_folder_outside_the_work_asks_in_every_mode() {
                 }
                 assert_eq!(asks.len(), 1, "{case}: one card for the owner: {}", r.content);
                 let asked: AskCase = serde_json::from_str(&asks[0].ask_case).unwrap();
-                let AskCase::RemovesFolders { targets, whole_work, warning } = asked else { panic!("{case}: {asked:?}") };
+                let AskCase::RemovesFolders { targets, whole_work, warning, .. } = asked else { panic!("{case}: {asked:?}") };
                 if label.starts_with("rm ") {
                     assert!(warning.is_some(), "{case}: the card names the risk");
                 }
@@ -1587,13 +1587,56 @@ async fn nothing_in_the_project_is_lost_unasked_however_it_is_removed() {
             } else {
                 assert!(lost.is_empty(), "{mode:?} {cmd}: lost {lost:?} unasked: {}", r.content);
             }
-            if cmd.contains("mv ") || cmd.contains("ln -s") || *cmd == "rm -rf not-there-yet" {
+            if cmd.contains("mv ") || cmd.contains("ln -s") {
                 let id = r.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?} {cmd}: asks: {}", r.content));
                 let protected = cmd.contains("mv ");
                 let always = Check::new(store.clone()).asks().get(&id).unwrap().unwrap().allow_always_offered(&store);
                 assert!(!protected || !always, "{mode:?} {cmd}: moving a protected folder is never allowed always");
+                // A call that only moves reads as a move on the card.
+                if cmd.starts_with("mv ") || cmd.starts_with("git mv ") {
+                    let case: AskCase = serde_json::from_str(&store.get_permission_ask(&id).unwrap().unwrap().ask_case).unwrap();
+                    assert!(matches!(case, AskCase::RemovesFolders { moves: true, whole_work: true, .. }), "{cmd}: {case:?}");
+                    assert_eq!(crate::harness::permissions::ask::reason_key(&case).0, "permissionAsk.reason.movesProtected");
+                }
             }
         }
+    }
+}
+
+/// Removing a folder that isn't there yet removes nothing unless the same
+/// command can put something there first: `rm -rf dist && pnpm build` on a
+/// fresh project goes ahead in Full Access, and so does a folder the command
+/// only writes files into later.
+#[tokio::test]
+async fn removing_a_folder_that_isnt_there_goes_ahead_unless_the_command_fills_it() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("site");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+    let root = project.to_string_lossy().into_owned();
+    store
+        .create_verification(
+            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+            1,
+        )
+        .unwrap();
+    let run = |cmd: &str| {
+        let (reg, c, cmd) = (&reg, c.clone(), format!("cd '{}' && {cmd}", project.display()));
+        async move { reg.execute(&c, "run_command", json!({ "command": cmd, "description": "Build" })).await }
+    };
+    for fresh in ["rm -rf dist && echo built > notes.txt", "rm -rf dist/* build"] {
+        let r = run(fresh).await;
+        assert!(r.parked_ask.is_none() && !r.is_error, "{fresh}: goes ahead: {}", r.content);
+    }
+    for fills in ["cp -r .git dist && rm -rf dist", "mkdir -p dist/a && rm -rf dist", "ln -s .git dist && rm -rf dist/", "mv -t dist .git; rm -rf dist"] {
+        let r = run(fills).await;
+        assert!(r.parked_ask.is_some() && project.join(".git/HEAD").exists(), "{fills}: asks: {}", r.content);
     }
 }
 
@@ -1609,4 +1652,11 @@ fn every_way_of_moving_a_folder_is_named() {
     assert_eq!(moves("mv .g* junk"), vec!["file:/p/./*", "file:/p/junk"]);
     assert!(moves("mv \"$X\" junk")[0].starts_with("command:"), "only running it knows");
     assert!(moves("rsync -a src/ dst/").is_empty(), "a copy moves nothing");
+    let places = |cmd: &str| tools::policy::shell_effects(cmd, Some("/p")).places;
+    assert_eq!(places("cp -r .git junk"), vec!["file:/p/junk"]);
+    assert_eq!(places("ln -s .git"), vec!["file:/p/.git"], "named as its target is, here");
+    assert_eq!(places("ln -s /p/.git junk"), vec!["file:/p/junk"]);
+    assert_eq!(places("mv -t junk .git"), vec!["file:/p/junk"]);
+    assert_eq!(places("install -m 755 run.sh bin/"), vec!["file:/p/bin/"]);
+    assert_eq!(places("rsync -a src/ dst/"), vec!["file:/p/dst/"]);
 }

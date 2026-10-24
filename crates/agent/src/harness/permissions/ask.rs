@@ -324,11 +324,12 @@ pub fn reason_of(case: &AskCase) -> String {
         AskCase::AskMode => "This employee asks before it changes anything.",
         AskCase::Widens => "Only you can give an employee more room.",
         AskCase::RemovesEmployee => "Deleting an employee needs your OK every time.",
-        AskCase::RemovesFolders { whole_work, warning, .. } => {
-            let why = if *whole_work {
-                "Removing this needs your OK every time."
-            } else {
-                "Removing a folder outside its work needs your OK."
+        AskCase::RemovesFolders { whole_work, moves, warning, .. } => {
+            let why = match (*moves, *whole_work) {
+                (true, true) => "Moving or renaming this folder needs your OK every time.",
+                (true, false) => "It moves or renames something it can't name yet. That needs your OK.",
+                (false, true) => "Removing this needs your OK every time.",
+                (false, false) => "Removing a folder outside its work needs your OK.",
             };
             return match warning {
                 Some(w) => format!("{why} {}", w.words()),
@@ -368,6 +369,8 @@ pub fn reason_key(case: &AskCase) -> (String, std::collections::BTreeMap<String,
         AskCase::AskMode => "askMode",
         AskCase::Widens => "widens",
         AskCase::RemovesEmployee => "removesEmployee",
+        AskCase::RemovesFolders { moves: true, whole_work: true, .. } => "movesProtected",
+        AskCase::RemovesFolders { moves: true, .. } => "movesUnknown",
         AskCase::RemovesFolders { whole_work: true, .. } => "removesWholeWork",
         AskCase::RemovesFolders { .. } => "removesFolders",
         AskCase::ReachesOwner { reach } => match reach {
@@ -1356,14 +1359,16 @@ mod tests {
             AskCase::AskMode,
             AskCase::Widens,
             AskCase::RemovesEmployee,
-            AskCase::RemovesFolders { targets: vec![], whole_work: true, warning: None },
+            AskCase::RemovesFolders { targets: vec![], whole_work: true, moves: false, warning: None },
+            AskCase::RemovesFolders { targets: vec![], whole_work: true, moves: true, warning: None },
+            AskCase::RemovesFolders { targets: vec![], whole_work: false, moves: true, warning: None },
             AskCase::CreatedExtras { capabilities: vec![] },
             AskCase::UnconfirmedSend { effect_id: 1 },
         ];
         for reach in [OwnerReach::Screen, OwnerReach::Microphone, OwnerReach::Camera, OwnerReach::App { app: Some("Mail".into()) }, OwnerReach::App { app: None }, OwnerReach::Input] {
             cases.push(AskCase::ReachesOwner { reach });
         }
-        cases.extend(warnings.iter().map(|w| AskCase::RemovesFolders { targets: vec![], whole_work: false, warning: Some(*w) }));
+        cases.extend(warnings.iter().map(|w| AskCase::RemovesFolders { targets: vec![], whole_work: false, moves: false, warning: Some(*w) }));
         for case in &cases {
             let (key, values) = reason_key(case);
             assert!(has(&key), "{key} is missing from en.json ({case:?})");

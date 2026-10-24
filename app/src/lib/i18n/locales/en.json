@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Deleting an employee needs your OK every time.",
 			"removesFolders": "Removing a folder outside its work needs your OK.",
 			"removesWholeWork": "Removing this needs your OK every time.",
+			"movesProtected": "Moving or renaming this folder needs your OK every time.",
+			"movesUnknown": "It moves or renames something it can't name yet. That needs your OK.",
 			"reachesScreen": "It would see what's on your screen.",
 			"reachesMicrophone": "It would hear what your microphone picks up.",
 			"reachesCamera": "It would see what your camera sees.",

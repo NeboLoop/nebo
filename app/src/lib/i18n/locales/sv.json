@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Att ta bort en medarbetare behöver ditt OK varje gång.",
 			"removesFolders": "Att ta bort en mapp utanför dess arbete behöver ditt OK.",
 			"removesWholeWork": "Att ta bort det här behöver ditt OK varje gång.",
+			"movesProtected": "Att flytta eller byta namn på den här mappen behöver ditt OK varje gång.",
+			"movesUnknown": "Den flyttar eller byter namn på något den inte kan namnge än. Det behöver ditt OK.",
 			"reachesScreen": "Den skulle se vad som finns på din skärm.",
 			"reachesMicrophone": "Den skulle höra vad din mikrofon fångar upp.",
 			"reachesCamera": "Den skulle se vad din kamera ser.",

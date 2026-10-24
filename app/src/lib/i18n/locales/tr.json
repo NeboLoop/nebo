@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Bir çalışanı silmek her seferinde onayını gerektirir.",
 			"removesFolders": "İşinin dışındaki bir klasörü kaldırmak onayını gerektirir.",
 			"removesWholeWork": "Bunu kaldırmak her seferinde onayını gerektirir.",
+			"movesProtected": "Bu klasörü taşımak veya yeniden adlandırmak her seferinde onayını gerektirir.",
+			"movesUnknown": "Henüz adını veremediği bir şeyi taşıyor veya yeniden adlandırıyor. Bu onayını gerektirir.",
 			"reachesScreen": "Ekranındakileri görür.",
 			"reachesMicrophone": "Mikrofonunun duyduklarını duyar.",
 			"reachesCamera": "Kameranın gördüklerini görür.",

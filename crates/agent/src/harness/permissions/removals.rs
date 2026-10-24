@@ -12,8 +12,10 @@
 //!   anywhere in it ([`PROTECTED_DIRS`]: its git folder, Nebo's own, an
 //!   editor's or an agent's settings), however deep.
 //! - A removal in a project (or a copy of one) of a folder that isn't
-//!   there when the call is checked asks: what it will hold when the command reaches it (a
-//!   `.git` moved into it first) can't be known.
+//!   there when the call is checked asks when the same command can put
+//!   something there first (`mkdir`, a move, copy or link into it): what it
+//!   will hold then (a `.git` moved or linked in) can't be known. Otherwise
+//!   it removes nothing, and goes ahead (`rm -rf dist && pnpm build`).
 //! - Moving or renaming a protected folder away (`CallEffects::moves`:
 //!   `mv .git junk/`) asks every time, with no "Allow always", as removing
 //!   it does. A move only running the command knows (`mv "$X" y`) asks.
@@ -166,10 +168,11 @@ pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Ru
         if work.is_root(folder) || work.guarded(folder, follows) {
             whole_work = true;
             outside.push(target.clone());
-        } else if work.unknowable(folder) || !work.holds(folder, contents, follows) {
+        } else if work.unknowable(folder, &t.effects) || !work.holds(folder, contents, follows) {
             outside.push(target.clone());
         }
     }
+    let removing = !outside.is_empty();
     for target in &t.effects.moves {
         let Some(path) = target.strip_prefix("file:").map(Path::new) else {
             outside.push(target.clone());
@@ -194,7 +197,12 @@ pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Ru
         return None;
     }
     let command = cx.input.get("command").and_then(|c| c.as_str()).unwrap_or_default();
-    Some(AskCase::RemovesFolders { targets: outside, whole_work, warning: tools::policy::destructive_warning(command) })
+    Some(AskCase::RemovesFolders {
+        targets: outside,
+        whole_work,
+        moves: !removing,
+        warning: tools::policy::destructive_warning(command),
+    })
 }
 
 /// The run's own work: where a removal goes ahead.
@@ -273,11 +281,21 @@ impl Work {
         below.components().any(|c| protected(c.as_os_str()))
     }
 
-    /// Whether `folder` is in a project or a copy of one and isn't there
-    /// yet: what it will hold when the command reaches it (a `.git` moved
-    /// or linked into it first) can't be known.
-    fn unknowable(&self, folder: &Path) -> bool {
-        std::fs::symlink_metadata(folder).is_err() && self.roots.iter().any(|r| placed(folder).starts_with(resolved(r)))
+    /// Whether `folder` is in a project or a copy of one, isn't there yet,
+    /// and the call can put something there first (`fx`: a folder it makes,
+    /// a move, copy or link into it, or above it, or one only running the
+    /// command can tell): what it will hold then can't be known.
+    fn unknowable(&self, folder: &Path, fx: &types::permissions::CallEffects) -> bool {
+        if std::fs::symlink_metadata(folder).is_ok() || !self.roots.iter().any(|r| placed(folder).starts_with(resolved(r))) {
+            return false;
+        }
+        fx.creates.iter().chain(&fx.moves).chain(&fx.places).any(|named| match named.strip_prefix("file:") {
+            Some(p) => {
+                let p = Path::new(p.strip_suffix("/*").unwrap_or(p));
+                p.starts_with(folder) || folder.starts_with(p)
+            }
+            None => true,
+        })
     }
 
     /// Whether `path` is a working copy or the project it copies, itself.

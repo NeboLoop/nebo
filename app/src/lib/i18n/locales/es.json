@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Eliminar a un empleado necesita tu aprobación cada vez.",
 			"removesFolders": "Eliminar una carpeta fuera de su trabajo necesita tu aprobación.",
 			"removesWholeWork": "Eliminar esto necesita tu aprobación cada vez.",
+			"movesProtected": "Mover o renombrar esta carpeta necesita tu aprobación cada vez.",
+			"movesUnknown": "Mueve o renombra algo que aún no puede nombrar. Eso necesita tu aprobación.",
 			"reachesScreen": "Vería lo que hay en tu pantalla.",
 			"reachesMicrophone": "Oiría lo que capta tu micrófono.",
 			"reachesCamera": "Vería lo que ve tu cámara.",

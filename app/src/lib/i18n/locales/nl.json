@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Een medewerker verwijderen heeft elke keer je OK nodig.",
 			"removesFolders": "Een map buiten zijn werk verwijderen heeft je OK nodig.",
 			"removesWholeWork": "Dit verwijderen heeft elke keer je OK nodig.",
+			"movesProtected": "Deze map verplaatsen of hernoemen heeft elke keer je OK nodig.",
+			"movesUnknown": "Het verplaatst of hernoemt iets dat het nog niet kan benoemen. Dat heeft je OK nodig.",
 			"reachesScreen": "Hij zou zien wat er op je scherm staat.",
 			"reachesMicrophone": "Hij zou horen wat je microfoon oppikt.",
 			"reachesCamera": "Hij zou zien wat je camera ziet.",
