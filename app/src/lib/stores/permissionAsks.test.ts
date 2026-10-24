@@ -13,6 +13,8 @@ function ask(id: string, chatId: string, status = 'open', createdAt = 1): Permis
 		sessionKey: chatId ? `agent:ar:thread:${chatId}` : 'agent:ar:coworker:gm',
 		sentence: 'sending an email to a new customer',
 		what: 'Sending an email to a new customer',
+		action: 'send an email to a new customer',
+		actionValues: {},
 		why: '',
 		details: [],
 		reason: "It's the first time it would contact them.",

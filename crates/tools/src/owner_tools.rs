@@ -128,7 +128,7 @@ impl Owner {
             .map(|a| a.iter().filter_map(Value::as_str).map(str::trim).filter(|o| !o.is_empty()))
             .into_iter()
             .flatten()
-            .map(|o| db::models::ItemOption { label: o.to_string(), value: o.to_string() })
+            .map(|o| db::models::ItemOption { label: o.to_string(), value: o.to_string(), description: None })
             .collect();
         let asks = !options.is_empty();
         let briefing = (unwatched_run(ctx) && !asks).then(|| briefing_id(&ctx.session_key));
@@ -620,7 +620,7 @@ mod tests {
         let cell: InboxAnswersCell = Arc::new(std::sync::RwLock::new(Some(recorded.clone() as Arc<dyn InboxAnswers>)));
         let tools = Owner::new(store.clone(), Arc::new(std::sync::RwLock::new(None)), cell).tools();
         let tool = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
-        let options = [db::models::ItemOption { label: "Lumen · $14.20".into(), value: "lumen".into() }];
+        let options = [db::models::ItemOption { label: "Lumen · $14.20".into(), value: "lumen".into(), description: None }];
         crate::owner_notify::emit(&store, None, &crate::owner_notify::OwnerNotification {
             id: "q:1", kind: "info", title: "Which supplier?", needs_you: true, options: &options,
             reply_to: Some("agent:store:cron:x"), agent_id: Some("store"), ..Default::default()

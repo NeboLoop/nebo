@@ -66,6 +66,23 @@ export function emphasized(tr: Tr, key: string, values: Record<string, string>):
 	return out.filter((s) => s.text !== '');
 }
 
+/** What a decision would do, as the server words it after "wants to": its
+ *  English, and the message key and values it reads by in the owner's
+ *  language (`decision.wants.*`). No key: the model's own words. */
+export interface Intent {
+	action?: string;
+	actionKey?: string;
+	actionValues?: Record<string, string>;
+}
+
+/** The card's one line, "**Bookkeeper** wants to **send a text to Dana**",
+ *  the name and the action bold; null when it says no action (an ask with
+ *  no call), and the card says who wants its OK instead. */
+export function wantsLine(tr: Tr, name: string, intent: Intent): Segment[] | null {
+	const action = intent.actionKey ? tr(intent.actionKey, { values: intent.actionValues ?? {}, default: intent.action }) : (intent.action ?? '');
+	return action.trim() ? emphasized(tr, 'decision.wantsTo', { name, action }) : null;
+}
+
 /** A permission ask's answers, in the one order. A critical target (no
  *  Always allow on the card) never offers it; a send check asks whether the
  *  send went out instead. */
@@ -119,13 +136,19 @@ export function permissionReason(ask: PermissionAskCard, tr: Tr): string {
 	return ask.reasonKey ? tr(ask.reasonKey, { values: ask.reasonValues, default: ask.reason }) : ask.reason;
 }
 
-/** An approval's answers, in the one order. */
-export function approvalChoices(tr: Tr): DecisionChoice[] {
+/** An approval's answers, in the one order; Always allow only where it
+ *  means something (`allowAlways`: never on a suggested goal). */
+export function approvalChoices(tr: Tr, allowAlways = true): DecisionChoice[] {
 	return [
-		{ id: 'once', label: tr('decision.allowOnce'), tone: 'filled' },
-		{ id: 'always', label: tr('decision.alwaysAllow'), tone: 'filled' },
-		{ id: 'deny', label: tr('decision.decline'), tone: 'outlined' }
+		{ id: 'once', label: tr('decision.allowOnce'), tone: 'filled' as const },
+		...(allowAlways ? [{ id: 'always', label: tr('decision.alwaysAllow'), tone: 'filled' as const }] : []),
+		{ id: 'deny', label: tr('decision.decline'), tone: 'outlined' as const }
 	];
+}
+
+/** Why an approval asks, in the owner's language. */
+export function approvalReason(approval: Approval, tr: Tr): string {
+	return approval.reasonKey ? tr(approval.reasonKey, { values: approval.reasonValues ?? {}, default: approval.reason }) : (approval.reason ?? '');
 }
 
 /** The words for a gated call that carries no sentence of its own. */

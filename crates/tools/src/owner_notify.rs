@@ -156,8 +156,8 @@ pub fn emit(
 /// The answers a staged proposal (`learn:`) takes on its card.
 pub fn proposal_options() -> Vec<db::models::ItemOption> {
     vec![
-        db::models::ItemOption { label: "Approve".into(), value: "yes".into() },
-        db::models::ItemOption { label: "Decline".into(), value: "no".into() },
+        db::models::ItemOption { label: "Approve".into(), value: "yes".into(), description: None },
+        db::models::ItemOption { label: "Decline".into(), value: "no".into(), description: None },
     ]
 }
 
@@ -530,8 +530,8 @@ mod tests {
             store.list_user_notifications(&user, view, None, 50, 0).unwrap().into_iter().map(|n| n.id).collect()
         };
         let options = [
-            ItemOption { label: "Lumen · $14.20".into(), value: "lumen".into() },
-            ItemOption { label: "Northfield · $16.20".into(), value: "northfield".into() },
+            ItemOption { label: "Lumen · $14.20".into(), value: "lumen".into(), description: None },
+            ItemOption { label: "Northfield · $16.20".into(), value: "northfield".into(), description: None },
         ];
         let ask = OwnerNotification {
             id: "q:1", kind: "info", title: "Which supplier?", body: Some("Stock runs out in 6 days."),

@@ -26,6 +26,17 @@ export interface Approval {
   decision?: string;
   /** Raised by work the owner is not in: shown in the assistant's chat. */
   relayed?: boolean;
+  /** What it would do after "wants to", and its message key and values
+   *  (`decision.wants.*`); absent on a card of several calls. */
+  action?: string;
+  actionKey?: string;
+  actionValues?: Record<string, string>;
+  /** Why it asks, and its message key and values (`permissionAsk.reason.*`). */
+  reason?: string;
+  reasonKey?: string;
+  reasonValues?: Record<string, string>;
+  /** Whether "Always allow" means anything: never on a suggested goal. */
+  allowAlways?: boolean;
 }
 
 /** Oldest first. */

@@ -52,6 +52,8 @@ const permission = {
 	sessionKey: 's',
 	sentence: 'send the invoice to the client',
 	what: 'Send the invoice to the client',
+	action: '',
+	actionValues: {},
 	why: '',
 	details: [],
 	reason: 'It goes outside the company.',
@@ -216,8 +218,14 @@ describe('ask cards', () => {
 		expect(labels).toEqual(['Allow once', 'Always allow', 'Decline']);
 		const tones = [...open.matchAll(/class="decision-choice ([^"]*)"/g)].map((m) => m[1].trim());
 		expect(tones).toEqual(['decision-choice-filled', 'decision-choice-filled', 'decision-choice-outlined']);
-		// Its employee's name is the bold word of the line.
+		// No call to say: its employee's name is the bold word of the line.
 		expect(open.replace(/<!--[^>]*-->/g, '')).toMatch(/<b>Bookkeeper<\/b> wants your OK/);
+		// A call: one sentence, the name and what it would do bold.
+		const said = render(PermissionAskCard, {
+			props: { ask: { ...permission, action: 'send a text to Dana', actionKey: 'decision.wants.textTo', actionValues: { phone: 'Dana' } }, via: 'chat' }
+		}).body.replace(/<!--[^>]*-->/g, '');
+		expect(said).toMatch(/<b>Bookkeeper<\/b> wants to <b>send a text to Dana<\/b>/);
+		expect(said).not.toContain('class="decision-action"');
 		// A critical target never offers Always allow.
 		const critical = render(PermissionAskCard, { props: { ask: { ...permission, allowAlways: false }, via: 'chat' } }).body;
 		expect([...critical.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]))).toEqual(['Allow once', 'Decline']);

@@ -140,7 +140,7 @@ fn with_item<R>(
     let (id, title, body) = (inbox_id(&c.id), title(c), body(c));
     let options: Vec<db::models::ItemOption> = offered(c)
         .into_iter()
-        .map(|(label, answer)| db::models::ItemOption { label: label.to_string(), value: answer.as_str().to_string() })
+        .map(|(label, answer)| db::models::ItemOption { label: label.to_string(), value: answer.as_str().to_string(), description: None })
         .collect();
     let chat_id = c.chat_id.clone();
     let link = if chat_id.is_empty() {
@@ -164,12 +164,35 @@ fn with_item<R>(
         "chatId": chat_id,
         "actions": { "buttons": buttons, "status": { "method": "GET", "path": path } },
     });
+    // The decision card's words, the same fields the card carries: who
+    // asks, what it would do after "wants to", why, its risk, and what
+    // Always allow covers.
+    if let (Some(item), serde_json::Value::Object(words)) = (hub_only.as_object_mut(), decision_words(c)) {
+        item.extend(words);
+    }
     if c.blocking && let (Some(item), serde_json::Value::Object(b)) =
         (hub_only.as_object_mut(), crate::handlers::asks::blocking_fields())
     {
         item.extend(b);
     }
     f(&n, hub_only)
+}
+
+/// The decision card's words of `c`, as its hub copy carries them beside
+/// its title and body (the phone draws the same card from them).
+pub(crate) fn decision_words(c: &PermissionAskCard) -> serde_json::Value {
+    serde_json::json!({
+        "employee": c.employee,
+        "action": c.action,
+        "actionKey": c.action_key,
+        "actionValues": c.action_values,
+        "reason": c.reason,
+        "reasonKey": c.reason_key,
+        "reasonValues": c.reason_values,
+        "warningKey": c.warning_key,
+        "allowAlways": c.allow_always,
+        "allowAlwaysCovers": c.allow_always_covers,
+    })
 }
 
 /// Put the card before the owner: its Inbox row in this Inbox at once, and
@@ -320,6 +343,18 @@ pub(crate) fn reconcile_inbox(state: &AppState) {
 mod tests {
     use super::*;
 
+    /// The phone's copy of an ask carries the decision card's words: who,
+    /// what it would do after "wants to", why, its risk, Always allow.
+    #[test]
+    fn the_hub_copy_carries_the_decision_cards_words() {
+        let item = with_item(&card(true, true), |n, hub_only| n.hub_item(hub_only));
+        assert_eq!(item["employee"], "Ava");
+        assert_eq!((item["action"].as_str(), item["actionKey"].as_str()), (Some("send an email to pat@example.com"), Some("decision.wants.emailTo")));
+        assert_eq!(item["actionValues"]["to"], "pat@example.com");
+        assert_eq!(item["reasonKey"], "permissionAsk.reason.newCounterparty");
+        assert_eq!(item["allowAlways"], true);
+    }
+
     fn card(allow_always: bool, this_once: bool) -> PermissionAskCard {
         PermissionAskCard {
             id: "a1".into(),
@@ -329,6 +364,9 @@ mod tests {
             session_key: "agent:ava:neboai".into(),
             sentence: "sending an email to pat@example.com".into(),
             what: "Sending an email to pat@example.com".into(),
+            action: "send an email to pat@example.com".into(),
+            action_key: Some("decision.wants.emailTo".into()),
+            action_values: [("to".to_string(), "pat@example.com".to_string())].into(),
             why: String::new(),
             stated_reason: None,
             details: Vec::new(),

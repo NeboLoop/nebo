@@ -575,6 +575,265 @@ pub fn call(tool_name: &str, input: &serde_json::Value) -> Call {
 }
 
 
+/// What a call would do, as the owner's decision card says it after "wants
+/// to": "**Bookkeeper** wants to **send a text to +13855550100**". A
+/// lowercase verb phrase in Nebo's own words is worded by a message key
+/// (`decision.wants.<key>` in the apps) with the call's values, so it
+/// reads in the owner's language; `text` is its English. A call that
+/// carries the model's own line for the owner (`display`) says that line,
+/// with no key: those words are the model's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Intent {
+    /// `decision.wants.<key>`, when the words are Nebo's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    pub values: std::collections::BTreeMap<String, String>,
+    /// The phrase in English: what an app without the key shows.
+    pub text: String,
+}
+
+/// Nebo's own phrases for a call, by key, in English. The apps hold the
+/// same words under `decision.wants.<key>` in every language.
+pub const INTENT_PHRASES: &[(&str, &str)] = &[
+    ("textTo", "send a text to {phone}"),
+    ("text", "send a text"),
+    ("searchTextsFor", "search your texts for {query}"),
+    ("searchTexts", "search your texts"),
+    ("listTexts", "list your text conversations"),
+    ("readTextsWith", "read your texts with {phone}"),
+    ("readTexts", "read your texts"),
+    ("useTexts", "use your texts"),
+    ("emailToAbout", "send an email to {to} about {subject}"),
+    ("emailTo", "send an email to {to}"),
+    ("emailAbout", "send an email about {subject}"),
+    ("email", "send an email"),
+    ("readEmail", "read your email"),
+    ("searchEmailFor", "search your email for {query}"),
+    ("searchEmail", "search your email"),
+    ("addEventTitled", "add {title} to your calendar"),
+    ("addEvent", "add an event to your calendar"),
+    ("changeEvent", "change an event on your calendar"),
+    ("cancelEvent", "cancel an event on your calendar"),
+    ("readCalendar", "read your calendar"),
+    ("addReminderTitled", "add the reminder {title}"),
+    ("addReminder", "add a reminder"),
+    ("changeReminders", "change your reminders"),
+    ("readReminders", "read your reminders"),
+    ("lookUpContact", "look up {query} in your contacts"),
+    ("lookInContacts", "look in your contacts"),
+    ("click", "click {target}"),
+    ("clickIn", "click {target} in {app}"),
+    ("captureScreen", "capture your screen"),
+    ("captureApp", "capture {app}"),
+    ("captureRegion", "capture part of your screen"),
+    ("openApp", "open {app}"),
+    ("seeScreen", "see your screen"),
+    ("hearMicrophone", "record from your microphone"),
+    ("useCamera", "take a picture with your camera"),
+    ("controlApp", "control {app}"),
+    ("controlApps", "control your apps"),
+    ("controlInput", "control your mouse and keyboard"),
+    ("runCommand", "run {command}"),
+    ("readFile", "read {file}"),
+    ("writeFile", "write {file}"),
+    ("editFile", "edit {file}"),
+    ("writePlan", "write the plan {file}"),
+    ("convertFile", "convert {file}"),
+    ("shareFile", "share {file}"),
+    ("shareFiles", "share {count} files"),
+    ("searchWeb", "search the web for {query}"),
+    ("research", "research {query}"),
+    ("openUrl", "open {url}"),
+    ("requestMethod", "send a {method} request to {host}"),
+    ("request", "send a request to {host}"),
+    ("useBrowserOn", "use the browser on {url}"),
+    ("useBrowser", "use the browser"),
+    ("useComputer", "use your computer"),
+    ("startHelper", "start a helper"),
+    ("createTask", "create the task {subject}"),
+    ("askYou", "ask you a question"),
+    ("agreeGoal", "agree on a goal for this work"),
+    ("useServiceTo", "use {service} to {tool}"),
+    ("create", "create {noun}"),
+    ("read", "read {noun}"),
+    ("list", "list {noun}"),
+    ("search", "search {noun}"),
+    ("update", "update {noun}"),
+    ("delete", "delete {noun}"),
+    ("send", "send {noun}"),
+    ("run", "run {noun}"),
+    ("write", "write {noun}"),
+    ("download", "download {noun}"),
+    ("upload", "upload {noun}"),
+    ("open", "open {noun}"),
+    ("stop", "stop {noun}"),
+    ("check", "check {noun}"),
+    ("notify", "notify {noun}"),
+    ("otherAction", "{action} {noun}"),
+    ("useTool", "use {name}"),
+];
+
+impl Intent {
+    /// Nebo's phrase `key` with `values`.
+    fn worded(key: &str, values: &[(&str, String)]) -> Self {
+        let template = INTENT_PHRASES.iter().find(|(k, _)| *k == key).map(|(_, t)| *t).unwrap_or_default();
+        let values: std::collections::BTreeMap<String, String> = values.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let mut text = template.to_string();
+        for (k, v) in &values {
+            text = text.replace(&format!("{{{k}}}"), v);
+        }
+        if key == "shareFiles" && values.get("count").map(String::as_str) == Some("1") {
+            text = "share 1 file".to_string();
+        }
+        Intent { key: Some(format!("decision.wants.{key}")), values, text }
+    }
+
+    /// The model's own line for the owner, as it reads after "wants to".
+    fn said(line: &str) -> Self {
+        Intent { key: None, values: Default::default(), text: lower_first(line.trim().trim_end_matches('.')) }
+    }
+}
+
+/// "Send the invoice" → "send the invoice"; a word in capitals ("ACME",
+/// "iPhone") stays as written.
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), Some(second)) if first.is_uppercase() && !second.is_uppercase() => {
+            first.to_lowercase().collect::<String>() + &text[first.len_utf8()..]
+        }
+        _ => text.to_string(),
+    }
+}
+
+/// What `tool_name` called with `input` would do: see [`Intent`].
+pub fn intent(tool_name: &str, input: &serde_json::Value) -> Intent {
+    let s = |key: &str| input.get(key).and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_string();
+    let list = |key: &str| match input.get(key) {
+        Some(serde_json::Value::Array(items)) => items.iter().filter_map(|v| v.as_str()).map(str::trim).collect::<Vec<_>>().join(", "),
+        _ => s(key),
+    };
+    let quoted = |v: String| format!("\u{201c}{}\u{201d}", cap(&v, DESCRIPTION_CAP));
+    let w = Intent::worded;
+    // The model's own line for the owner says it.
+    let display = s("display");
+    if !display.is_empty() {
+        return Intent::said(&cap(&display, DESCRIPTION_CAP));
+    }
+    if tool_name == "suggest_goal" {
+        return w("agreeGoal", &[]);
+    }
+    if tool_name == "message" {
+        return match (crate::message_tool::rule_key(input), s("phone"), s("query")) {
+            ("sms_message_send", phone, _) if phone.is_empty() => w("text", &[]),
+            ("sms_message_send", phone, _) => w("textTo", &[("phone", phone)]),
+            ("sms_search", _, query) if query.is_empty() => w("searchTexts", &[]),
+            ("sms_search", _, query) => w("searchTextsFor", &[("query", quoted(query))]),
+            ("sms_conversations", ..) => w("listTexts", &[]),
+            ("sms_read", phone, _) if phone.is_empty() => w("readTexts", &[]),
+            ("sms_read", phone, _) => w("readTextsWith", &[("phone", phone)]),
+            _ => w("useTexts", &[]),
+        };
+    }
+    if tool_name == "os" {
+        let (action, app) = (s("action"), s("app"));
+        match action.as_str() {
+            "click" | "double_click" | "right_click" => {
+                let target = call(tool_name, input).params.get("target").cloned().unwrap_or_default();
+                return if app.is_empty() { w("click", &[("target", target)]) } else { w("clickIn", &[("target", target), ("app", app)]) };
+            }
+            "screenshot" | "see" | "capture" => {
+                return if !app.is_empty() {
+                    w("captureApp", &[("app", app)])
+                } else if !s("region").is_empty() {
+                    w("captureRegion", &[])
+                } else {
+                    w("captureScreen", &[])
+                };
+            }
+            "activate" | "launch" if !app.is_empty() => return w("openApp", &[("app", app)]),
+            _ => {}
+        }
+        let worded = match (crate::os_tool::OsTool::resolved_resource(input), action.as_str()) {
+            ("mail", "send") => Some(match (list("to"), s("subject")) {
+                (to, subject) if to.is_empty() && subject.is_empty() => w("email", &[]),
+                (to, subject) if to.is_empty() => w("emailAbout", &[("subject", quoted(subject))]),
+                (to, subject) if subject.is_empty() => w("emailTo", &[("to", to)]),
+                (to, subject) => w("emailToAbout", &[("to", to), ("subject", quoted(subject))]),
+            }),
+            ("mail", "unread" | "read") => Some(w("readEmail", &[])),
+            ("mail", "search") => Some(match s("query") {
+                q if q.is_empty() => w("searchEmail", &[]),
+                q => w("searchEmailFor", &[("query", quoted(q))]),
+            }),
+            ("calendar", "create") => Some(match s("title") {
+                t if t.is_empty() => w("addEvent", &[]),
+                t => w("addEventTitled", &[("title", quoted(t))]),
+            }),
+            ("calendar", "update") => Some(w("changeEvent", &[])),
+            ("calendar", "delete") => Some(w("cancelEvent", &[])),
+            ("calendar", _) => Some(w("readCalendar", &[])),
+            ("reminders", "create") => Some(match s("title") {
+                t if t.is_empty() => w("addReminder", &[]),
+                t => w("addReminderTitled", &[("title", quoted(t))]),
+            }),
+            ("reminders", "complete" | "delete") => Some(w("changeReminders", &[])),
+            ("reminders", _) => Some(w("readReminders", &[])),
+            ("contacts", _) => Some(match s("query") {
+                q if q.is_empty() => w("lookInContacts", &[]),
+                q => w("lookUpContact", &[("query", quoted(q))]),
+            }),
+            _ => None,
+        };
+        if let Some(worded) = worded {
+            return worded;
+        }
+    }
+    let c = call(tool_name, input);
+    let p = |key: &str| c.params.get(key).cloned().unwrap_or_default();
+    let file = || {
+        let path = p("path");
+        std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path)
+    };
+    let host = || {
+        let url = p("url");
+        url.split("://").nth(1).unwrap_or(&url).split(['/', '?', '#']).next().unwrap_or_default().to_string()
+    };
+    match c.kind {
+        "read" => w("readFile", &[("file", file())]),
+        "write" => w("writeFile", &[("file", file())]),
+        "edit" => w("editFile", &[("file", file())]),
+        "plan" => w("writePlan", &[("file", file())]),
+        "convert" => w("convertFile", &[("file", file())]),
+        "share" if c.params.contains_key("path") => w("shareFile", &[("file", file())]),
+        "share" => w("shareFiles", &[("count", p("count"))]),
+        "command" => match p("reach").as_str() {
+            "screen" => w("seeScreen", &[]),
+            "microphone" => w("hearMicrophone", &[]),
+            "camera" => w("useCamera", &[]),
+            "input" => w("controlInput", &[]),
+            "app" if !p("app").is_empty() => w("controlApp", &[("app", p("app"))]),
+            "app" => w("controlApps", &[]),
+            _ => w("runCommand", &[("command", cap(&p("command").split_whitespace().collect::<Vec<_>>().join(" "), 72))]),
+        },
+        "search" => w("searchWeb", &[("query", quoted(p("query")))]),
+        "research" => w("research", &[("query", quoted(p("query")))]),
+        "fetch" => w("openUrl", &[("url", p("url"))]),
+        "request" if !p("method").is_empty() => w("requestMethod", &[("method", p("method").to_uppercase()), ("host", host())]),
+        "request" => w("request", &[("host", host())]),
+        "browser" if !p("url").is_empty() => w("useBrowserOn", &[("url", p("url"))]),
+        "browser" => w("useBrowser", &[]),
+        "computer" => w("useComputer", &[]),
+        "helper" => w("startHelper", &[]),
+        "task" => w("createTask", &[("subject", quoted(p("subject")))]),
+        "ask" => w("askYou", &[]),
+        "mcp" => w("useServiceTo", &[("service", p("service")), ("tool", p("tool"))]),
+        "action" if !p("verb").is_empty() => w(&p("verb"), &[("noun", p("noun"))]),
+        "action" => w("otherAction", &[("action", p("action")), ("noun", p("noun"))]),
+        _ => w("useTool", &[("name", p("name"))]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{call, cap, cap_words, description_key, numbered, sentence, shown_titles, sibling_titles, title_key, unmarked, DESCRIPTION_CAP, TITLE_CAP, service_name as humanize_slug, strap_verb};
@@ -1147,6 +1406,58 @@ mod tests {
                 for &k in &running {
                     assert_eq!(*numbers_seen.entry(k).or_insert(helpers[k].2), helpers[k].2);
                 }
+            }
+        }
+    }
+    /// 1b (owner, 10-24): the decision card says one sentence, "Bookkeeper
+    /// wants to send a text to +13855550100", the key words bold. What a
+    /// call would do reads after "wants to", lowercase, in Nebo's words by a
+    /// key the apps hold in every language, or in the model's own line.
+    #[test]
+    fn a_call_says_what_it_would_do_after_wants_to() {
+        let said = |tool: &str, input: serde_json::Value| {
+            let i = super::intent(tool, &input);
+            (i.key.unwrap_or_default(), i.text)
+        };
+        let cases = [
+            (said("message", json!({"resource": "sms", "action": "send", "phone": "+13855550100", "text": "On my way"})), ("decision.wants.textTo", "send a text to +13855550100")),
+            (said("message", json!({"action": "search", "query": "invoice"})), ("decision.wants.searchTextsFor", "search your texts for \u{201c}invoice\u{201d}")),
+            (
+                said("os", json!({"resource": "mail", "action": "send", "to": ["dana@acme.com"], "subject": "Q3 quote"})),
+                ("decision.wants.emailToAbout", "send an email to dana@acme.com about \u{201c}Q3 quote\u{201d}"),
+            ),
+            (said("os", json!({"resource": "calendar", "action": "create", "title": "Site visit"})), ("decision.wants.addEventTitled", "add \u{201c}Site visit\u{201d} to your calendar")),
+            (said("os", json!({"action": "screenshot"})), ("decision.wants.captureScreen", "capture your screen")),
+            (said("run_command", json!({"command": "rm -rf ~/old", "description": "Removes the old folder"})), ("decision.wants.runCommand", "run rm -rf ~/old")),
+            (said("run_command", json!({"command": "screencapture /tmp/s.png"})), ("decision.wants.seeScreen", "see your screen")),
+            (said("write_file", json!({"path": "/Users/me/notes.md", "content": "x"})), ("decision.wants.writeFile", "write notes.md")),
+            (said("http_request", json!({"method": "post", "url": "https://api.example.com/v1?x=1"})), ("decision.wants.requestMethod", "send a POST request to api.example.com")),
+            (said("mcp__github__create_issue", json!({"title": "Login fails"})), ("decision.wants.useServiceTo", "use Github to create issue")),
+            (said("os", json!({"resource": "notes", "action": "delete", "name": "Old"})), ("decision.wants.delete", "delete notes")),
+            (said("send_invoice", json!({})), ("decision.wants.useTool", "use send invoice")),
+            (said("share_file", json!({"paths": ["/a.md"]})), ("decision.wants.shareFile", "share a.md")),
+            // The model's own line for the owner: its words, no key.
+            (said("quickbooks", json!({"command": "invoice send", "display": "Send invoice 1041 to ACME."})), ("", "send invoice 1041 to ACME")),
+        ];
+        for ((key, text), (want_key, want_text)) in &cases {
+            assert_eq!((key.as_str(), text.as_str()), (*want_key, *want_text));
+        }
+        assert_eq!(super::intent("share_file", &json!({"paths": ["/a", "/b"]})).text, "share 2 files");
+        assert_eq!(super::intent("x", &json!({"display": "ACME gets paid"})).text, "ACME gets paid", "a word in capitals stays");
+    }
+
+    /// Every phrase is in the apps' English under its key, in the same
+    /// words, so the owner's language and the English fallback agree.
+    #[test]
+    fn the_apps_hold_every_phrase() {
+        let en: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/src/lib/i18n/locales/en.json")).unwrap()).unwrap();
+        for (key, english) in super::INTENT_PHRASES {
+            let held = en["decision"]["wants"][key].as_str().unwrap_or_else(|| panic!("decision.wants.{key} is missing"));
+            if *key == "shareFiles" {
+                assert!(held.contains("plural"), "{held}");
+            } else {
+                assert_eq!(held, *english, "decision.wants.{key}");
             }
         }
     }

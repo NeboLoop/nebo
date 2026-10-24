@@ -20,7 +20,7 @@
   import { answerAsk, type AskAnswer } from '$lib/stores/permissionAsks';
   import AskReceipt from '$lib/components/chat/AskReceipt.svelte';
   import DecisionCard from '$lib/components/DecisionCard.svelte';
-  import { emphasized, permissionChoices, permissionReason, permissionRows } from '$lib/chat/decision';
+  import { emphasized, permissionChoices, permissionReason, permissionRows, wantsLine } from '$lib/chat/decision';
 
   let { ask, via, onstop }: { ask: PermissionAskCard; via: 'chat' | 'inbox'; onstop?: () => void } = $props();
 
@@ -30,8 +30,12 @@
   const shown = $derived(settled ?? ask);
   const sentence = $derived(shown.what);
   const sendCheck = $derived(shown.kind === 'send_check');
-  /** Who wants it, the name in bold. */
-  const line = $derived(emphasized($t, sendCheck ? 'permissionAsk.sendCheckTitle' : 'permissionAsk.title', { name: shown.employee }));
+  /** One line, the key words bold: "**Bookkeeper** wants to **send a text
+   *  to Dana**". An ask with no call (more room for an employee) says who
+   *  wants its OK, with what it asks under it; a send check asks whether
+   *  the send went out. */
+  const wants = $derived(sendCheck ? null : wantsLine($t, shown.employee, shown));
+  const line = $derived(wants ?? emphasized($t, sendCheck ? 'permissionAsk.sendCheckTitle' : 'permissionAsk.title', { name: shown.employee }));
   /** What about it needs the owner, in his language. */
   const reason = $derived(permissionReason(shown, $t));
   /** How a settled ask ended, as its receipt's lead. */
@@ -61,7 +65,7 @@
   <DecisionCard
     who={{ id: shown.agentId, name: shown.employee }}
     {line}
-    action={sentence}
+    action={wants ? '' : sentence}
     {reason}
     {notes}
     rows={permissionRows(shown, $t)}

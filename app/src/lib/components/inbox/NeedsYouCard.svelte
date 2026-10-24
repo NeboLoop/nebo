@@ -116,7 +116,7 @@
     options.length === 0
       ? [{ id: REVIEW, label: $t('inbox.review'), tone: 'filled' }]
       : [
-          ...options.map((o, i): DecisionChoice => ({ id: o.value, label: o.label, tone: i === 0 ? 'filled' : 'outlined' })),
+          ...options.map((o, i): DecisionChoice => ({ id: o.value, label: o.label, description: o.description, tone: i === 0 ? 'filled' : 'outlined' })),
           ...(ownWords && !writing ? [{ id: OWN, label: $t('inbox.somethingElse'), tone: 'outlined' as const }] : [])
         ]
   );

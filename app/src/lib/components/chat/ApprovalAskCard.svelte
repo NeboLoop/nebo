@@ -11,23 +11,27 @@
   import { t } from 'svelte-i18n';
   import { answerApproval, type Approval } from '$lib/stores/approvals';
   import DecisionCard from '$lib/components/DecisionCard.svelte';
-  import { approvalAction, approvalAgentId, approvalChoices, approvalRows, emphasized } from '$lib/chat/decision';
+  import { approvalAction, approvalAgentId, approvalChoices, approvalReason, approvalRows, emphasized, wantsLine } from '$lib/chat/decision';
 
   import AskReceipt from './AskReceipt.svelte';
 
   let { approval, onstop }: { approval: Approval; onstop?: () => void } = $props();
   const title = $derived($t('permissionAsk.title', { values: { name: approval.agent } }));
   const action = $derived(approvalAction(approval, $t));
+  /** One line, "**Chief** wants to **agree on a goal for this work**";
+   *  a card of several calls says who wants its OK, its headline under it. */
+  const wants = $derived(wantsLine($t, approval.agent, approval));
   const rows = $derived(approvalRows(approval, $t));
 </script>
 
 {#if !approval.decision}
   <DecisionCard
     who={{ id: approvalAgentId(approval), name: approval.agent }}
-    line={emphasized($t, 'permissionAsk.title', { name: approval.agent })}
-    {action}
+    line={wants ?? emphasized($t, 'permissionAsk.title', { name: approval.agent })}
+    action={wants ? '' : action}
+    reason={approvalReason(approval, $t)}
     {rows}
-    choices={approvalChoices($t)}
+    choices={approvalChoices($t, approval.allowAlways ?? true)}
     onchoose={(id) => answerApproval(approval.requestId, id as 'once' | 'always' | 'deny')}
     {onstop}
   />

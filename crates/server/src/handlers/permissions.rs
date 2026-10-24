@@ -43,6 +43,17 @@ pub struct PermissionAskCard {
     pub sentence: String,
     /// The same, as the card's headline: "Sending a text to …".
     pub what: String,
+    /// What it would do, as it reads after "wants to" on the decision
+    /// card: "send a text to +13855550100". English: what a client without
+    /// `action_key` shows. Empty for an ask with no call (an employee's
+    /// extra room, a send check).
+    pub action: String,
+    /// The same phrase's message key in the clients' translations
+    /// (`decision.wants.*`) and the values it fills in; absent when the
+    /// words are the model's own line for the owner (`display`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_key: Option<String>,
+    pub action_values: BTreeMap<String, String>,
     /// The task the employee was working on when it asked: the workflow
     /// step, its goal, or what the owner asked for. Empty when none says.
     pub why: String,
@@ -115,6 +126,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
     let employee = employee_name(state, &ask.agent_id);
     let allow_always = ask.allow_always_offered(&state.store);
     let (reason_key, reason_values) = agent::harness::permissions::ask::reason_key(&ask.case);
+    let intent = if ask.call.name.is_empty() { tools::humanize::Intent::default() } else { tools::humanize::intent(&ask.call.name, &ask.call.input) };
     PermissionAskCard {
         id: ask.id.clone(),
         kind: ask.kind().as_str().to_string(),
@@ -122,6 +134,9 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         session_key: ask.session_key.clone(),
         sentence: ask.sentence.clone(),
         what: sentence_case(ask.sentence.trim().trim_end_matches('.')),
+        action: intent.text,
+        action_key: intent.key,
+        action_values: intent.values,
         why: ask.brief.why.clone(),
         stated_reason: ask.brief.stated_reason.clone(),
         details: ask.brief.details.iter().map(|d| AskDetail { kind: d.kind.clone(), value: d.value.clone() }).collect(),
