@@ -1038,6 +1038,84 @@
 .ask-select {
   @apply w-full;
 }
+/* A question card's steps (several questions on one card): a chip per
+   question by its header; the current one filled, answered ones marked. */
+.ask-steps {
+  @apply flex flex-wrap gap-1.5 mb-2;
+}
+.ask-step {
+  @apply rounded-full border border-base-300 bg-base-100 px-2.5 py-0.5 text-xs text-base-content/70 cursor-pointer;
+}
+.ask-step-done {
+  @apply border-primary/40 text-base-content;
+}
+.ask-step-current {
+  @apply border-primary bg-primary text-primary-content;
+}
+.ask-question {
+  @apply mb-2 text-sm font-medium [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0;
+}
+/* The choices: one list, a label in bold with what it means under it in
+   smaller gray, a line between each, the chosen ones marked. */
+.ask-options {
+  @apply flex flex-col rounded-lg border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden;
+}
+.ask-option {
+  @apply flex w-full items-center gap-3 px-3 py-2 text-start cursor-pointer bg-transparent border-0 hover:bg-base-200;
+}
+.ask-option-on {
+  background-color: color-mix(in srgb, var(--color-primary) 10%, var(--color-base-100));
+}
+.ask-option-text {
+  @apply flex min-w-0 flex-1 flex-col;
+}
+.ask-option-label {
+  @apply text-sm font-semibold text-base-content;
+}
+.ask-option-description {
+  @apply text-xs text-base-content/70;
+}
+.ask-option-mark {
+  @apply flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-base-content/30 text-primary-content;
+}
+.ask-option-mark-multi {
+  @apply rounded;
+}
+.ask-option-on .ask-option-mark {
+  @apply border-primary bg-primary;
+}
+.ask-other-input {
+  @apply mt-2 w-full;
+}
+.ask-actions {
+  @apply mt-3 flex items-center justify-end gap-2;
+}
+.ask-skip {
+  @apply me-auto text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0;
+}
+/* A question or an approval waiting in the chat on screen takes the place
+   of the composer until it is answered or closed: one at a time, "1 of 3",
+   and an X that closes it unanswered. Closed, a chip above the composer
+   brings it back. */
+.composer-ask {
+  @apply mx-3 mb-3 md:mx-4;
+}
+.composer-ask > .ask-card,
+.composer-ask .ask-card {
+  @apply max-w-none mb-0;
+}
+.composer-ask-head {
+  @apply flex items-center gap-2 mb-1 text-xs text-base-content/70;
+}
+.composer-ask-count {
+  @apply me-auto;
+}
+.composer-ask-close {
+  @apply btn btn-ghost btn-xs btn-circle;
+}
+.ask-waiting-chip {
+  @apply mx-3 mb-1 md:mx-4 inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-base-100 px-3 py-1 text-xs font-medium text-base-content cursor-pointer hover:bg-base-200;
+}
 .ask-receipt {
   @apply mb-1 max-w-md text-xs text-base-content/70;
 }

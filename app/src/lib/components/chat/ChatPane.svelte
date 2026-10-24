@@ -27,7 +27,10 @@
   import type { AppListingPayload } from './AppListingCard.svelte';
   import type { EmployeeConsentPayload } from './ConsentChip.svelte';
   import { SKIP_VALUE, type AskWidgetDef } from './AskWidget.svelte';
-  import { isOpenQuestion, takesWords } from '$lib/chat/ask';
+  import { isOpenQuestion, takesOverComposer, takesWords } from '$lib/chat/ask';
+  import { composerAsksOf, shownComposerAsks } from '$lib/chat/composerAsks';
+  import ComposerAsk from './ComposerAsk.svelte';
+  import { voiceSession } from '$lib/stores/voiceSession';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
   import { flushPendingSave, hasPendingSave, viewerKey } from '$lib/sheet/pending';
@@ -220,7 +223,7 @@
   const NOTICES_SHOWN = 3;
   const chatNotices = $derived($backgroundNotices.filter((n) => n.at >= openedAt && belongsTo(n.task, agentId)).slice(-NOTICES_SHOWN));
 
-  let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
+  let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void; startVoice: () => void } | null>(null);
   let creationsOpen = $state(false);
   // The bot's computer takes over the work panel while open.
   type PaneView = 'work' | 'flows';
@@ -1532,6 +1535,20 @@
   const chatAsks = $derived(chatAsksOf($openAsks, $settledAsks, threadId));
   // The approvals this chat's own session raised, the same way.
   const chatApprovals = $derived(chatApprovalsOf($approvals, chatSessionKey));
+  // The questions and approvals waiting here take the composer's place, one
+  // at a time. Closed with the X they stay waiting: the composer comes back
+  // with a chip that reopens them, and a new one comes back up.
+  const composerAsks = $derived(composerAsksOf(messages, chatAsks, chatApprovals, isLoading));
+  let closedAsks = $state<ReadonlySet<string>>(new Set());
+  // On a call the owner answers by voice: the composer, which holds the
+  // call, stays.
+  const onCall = $derived(!['idle', 'error'].includes($voiceSession.status));
+  const shownAsks = $derived(onCall ? [] : shownComposerAsks(composerAsks, closedAsks));
+  async function closeAsks() {
+    closedAsks = new Set(composerAsks.map((a) => a.id));
+    await tick();
+    composerRef?.focus();
+  }
   async function toggleResult(key: string, tool?: ToolMsg) {
     const opening = !expandedResults[key];
     expandedResults[key] = opening;
@@ -2282,6 +2299,9 @@
           {/if}
         </div>
 
+      {:else if msg.type === 'ask' && isLoading && msg.response == null && !msg.cancelled && takesOverComposer(msg.widgets)}
+        <!-- Waiting, it is in the composer's place (ComposerAsk); answered,
+             its one-line record stays here. -->
       {:else if msg.type === 'ask'}
         <div class="max-w-[640px] mt-3">
           <AskWidget
@@ -2484,15 +2504,15 @@
       {/if}
     {/each}
 
-    <!-- The asks this chat's work is waiting on, in the conversation: the
-         same card as the Inbox; answered anywhere, it leaves everywhere.
-         Never pinned over the chat or the composer. -->
-    {#each chatAsks as ask (ask.id)}
+    <!-- The asks this chat's work was waiting on, as their records: the same
+         card as the Inbox, settled. While one waits it is in the composer's
+         place (ComposerAsk); answered anywhere, it leaves everywhere. -->
+    {#each chatAsks.filter((a) => a.status !== 'open') as ask (ask.id)}
       <div class="mt-2 ask-rise">
         <PermissionAskCard {ask} via="chat" />
       </div>
     {/each}
-    {#each chatApprovals as approval (approval.requestId)}
+    {#each chatApprovals.filter((a) => a.decision) as approval (approval.requestId)}
       <div class="mt-2 ask-rise">
         <ApprovalAskCard {approval} />
       </div>
@@ -2656,6 +2676,16 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
+    {#if shownAsks.length > 0}
+    <ComposerAsk asks={shownAsks} {onasksubmit} ondismiss={closeAsks} onvoice={async () => { await closeAsks(); composerRef?.startVoice(); }} />
+    {:else if composerAsks.length > 0}
+      <button type="button" class="ask-waiting-chip" onclick={() => (closedAsks = new Set())}>
+        {$t('chat.askWaiting', { values: { count: composerAsks.length } })}
+      </button>
+    {/if}
+    <!-- Kept while a card is in its place, hidden: what he was writing, his
+         files and a call stay as they were. -->
+    <div class:hidden={shownAsks.length > 0}>
     <ChatComposer
       {agentName}
       {agentId}
@@ -2672,6 +2702,7 @@
       {onprefilled}
       bind:this={composerRef}
     />
+    </div>
   </div>
   {/if}
   </div>

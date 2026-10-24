@@ -527,7 +527,10 @@ pub fn call(tool_name: &str, input: &serde_json::Value) -> Call {
         // A question to the owner reads as one ("Waiting for your answer",
         // then "Asked · the question"), never as the tool's name (live
         // 2026-10-11: "working with ask_owner…" over his own question).
-        "ask_owner" => return Call::new("ask", &[("question", cap(&s("question"), 200))]),
+        "ask_owner" => {
+            let first = input["questions"][0]["question"].as_str().map(|q| q.trim().to_string()).unwrap_or_else(|| s("question"));
+            return Call::new("ask", &[("question", cap(&first, 200))]);
+        }
         _ => {}
     }
     if tool_name == "os" {
@@ -775,6 +778,8 @@ mod tests {
         let c = call("ask_owner", &json!({"question": "Which one?", "options": ["A", "B"]}));
         assert_eq!((c.kind, params(&c)), ("ask", vec![("question", "Which one?")]));
         assert!(!serde_json::to_string(&c).unwrap().contains("ask_owner"));
+        let c = call("ask_owner", &json!({"questions": [{"header": "Vendor", "question": "Which vendor?"}, {"header": "Start", "question": "When?"}]}));
+        assert_eq!((c.kind, params(&c)), ("ask", vec![("question", "Which vendor?")]));
     }
 
     /// A description the model wrote is cut at 60 graphemes, on one line;
