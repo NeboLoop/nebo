@@ -217,15 +217,33 @@ fn choice(o: &Value) -> Option<Choice> {
     (!label.is_empty()).then(|| Choice { label: label.to_string(), description: description.trim().to_string() })
 }
 
-/// The ask's questions, in order. `questions` holds them; a question Nebo
-/// asks itself (the code check's) and an ask from before the wizard give
-/// its one question at the top level.
-fn steps(input: &Value) -> Vec<Step> {
-    match input["questions"].as_array() {
-        Some(list) => list.iter().map(Step::from).collect(),
-        None if input.get("question").is_some() => vec![Step::from(input)],
-        None => Vec::new(),
+/// The fields of one question given at the top level.
+const ONE_QUESTION: [&str; 6] = ["header", "question", "options", "multi_select", "style", "words"];
+
+/// The call with its questions in `questions` and each option a
+/// `{label}` object. A question Nebo asks itself (the code check's, with its
+/// `words`) and an ask from before the wizard give one question at the top
+/// level: it becomes the one entry. An option given as a plain string is
+/// its label.
+fn normalized(input: Value) -> Value {
+    let Value::Object(mut fields) = input else { return input };
+    if !fields.contains_key("questions") && fields.contains_key("question") {
+        let one: serde_json::Map<String, Value> = ONE_QUESTION.iter().filter_map(|k| fields.remove(*k).map(|v| (k.to_string(), v))).collect();
+        fields.insert("questions".into(), json!([one]));
     }
+    if let Some(list) = fields.get_mut("questions").and_then(Value::as_array_mut) {
+        for options in list.iter_mut().filter_map(|q| q.get_mut("options")).filter_map(Value::as_array_mut) {
+            for o in options.iter_mut().filter(|o| o.is_string()) {
+                *o = json!({ "label": o.clone() });
+            }
+        }
+    }
+    Value::Object(fields)
+}
+
+/// The ask's questions, in order.
+fn steps(input: &Value) -> Vec<Step> {
+    normalized(input.clone())["questions"].as_array().map(|list| list.iter().map(Step::from).collect()).unwrap_or_default()
 }
 
 /// The fields of a harness question's `words` the card carries.
@@ -379,13 +397,11 @@ impl DynTool for AskOwnerTool {
 
     fn description(&self) -> String {
         "Asks the owner up to 4 questions on one card; the work waits for the answers.\n\
-         - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
-         - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
-         - To have the owner pick, give `options`: each a `label` of 1 to 5 words and a one-line `description` of what it means, the recommended option first. They show where he types, on desktop and in the mobile app, with \"Other\" for his own words. Never list them in text or draw a panel. Leave them out for a free answer.\n\
-         - Several decisions at once? Put each in `questions` (up to 4), each with a `header` of a few words: he steps through them and sends all the answers together.\n\
-         - 6 or more options: set `style` to \"select\" for a dropdown.\n\
-         - About something you made or found (a brief, a draft, a plan)? Put it in `context`, not your message: the card shows it above the question.\n\
-         - The card is the one place the question appears: never write it in your message too.\n\
+         - Only for real ambiguity: readings that lead to different work, or a choice only the owner can make. A clear instruction your mode allows is carried out, never asked back.\n\
+         - To have him pick, give `options`: a `label` of 1 to 5 words and a one-line `description`, the recommended option first. They show where he types, on desktop and in the mobile app, with \"Other\" for his own words. Never list them in text or draw a panel. Leave them out for a free answer.\n\
+         - Several decisions: one entry each in `questions`, each with a `header` of a few words.\n\
+         - 6+ options: `style` \"select\".\n\
+         - What he decides on (a brief, a draft, a plan) goes in `context`, shown above. The card is the one place the question appears: never write it in your message too.\n\
          - In a helper run your turn ends here: the question goes to the conversation that started you, which sends the answer back."
             .to_string()
     }
@@ -396,36 +412,33 @@ impl DynTool for AskOwnerTool {
             "properties": {
                 "questions": {
                     "type": "array",
-                    "minItems": 1,
                     "maxItems": MAX_STEPS,
-                    "description": "The questions, in the order he answers them. One question for a single decision.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "header": { "type": "string", "description": "A few words naming the question, shown on its step (\"Length\", \"Music\"). Needed when there are several." },
-                            "question": { "type": "string", "description": "The question, complete enough to answer without scrolling back." },
+                            "header": { "type": "string" },
+                            "question": { "type": "string", "description": "Complete enough to answer without scrolling back." },
                             "options": {
                                 "type": "array",
-                                "description": "The choices, the recommended one first. Leave out for a free answer.",
                                 "items": {
                                     "type": "object",
-                                    "properties": {
-                                        "label": { "type": "string", "description": "1 to 5 words, shown bold." },
-                                        "description": { "type": "string", "description": "One short line on what this choice means." }
-                                    },
+                                    "properties": { "label": { "type": "string" }, "description": { "type": "string" } },
                                     "required": ["label"]
                                 }
                             },
-                            "multi_select": { "type": "boolean", "description": "Allow more than one option." },
+                            "multi_select": { "type": "boolean" },
                             "style": { "type": "string", "enum": ["buttons", "select"] }
                         },
                         "required": ["question"]
                     }
                 },
-                "context": { "type": "string", "description": "What he decides on, in markdown, shown above the questions: the deliverable itself or a short summary." }
-            },
-            "required": ["questions"]
+                "context": { "type": "string" }
+            }
         })
+    }
+
+    fn normalize_input(&self, input: Value) -> Value {
+        normalized(input)
     }
 
     fn search_hint(&self) -> &str {
@@ -731,9 +744,9 @@ mod tests {
             crate::coworker::new_rail_cell(),
         );
         let d = tool.description();
-        assert!(d.contains("To have the owner pick, give `options`") && d.contains("They show where he types, on desktop and in the mobile app"), "{d}");
+        assert!(d.contains("To have him pick, give `options`") && d.contains("They show where he types, on desktop and in the mobile app"), "{d}");
         assert!(d.contains("Never list them in text or draw a panel"), "{d}");
-        assert!(d.contains("set `style` to \"select\""), "{d}");
+        assert!(d.contains("`style` \"select\""), "{d}");
         assert_eq!(tool.schema()["properties"]["questions"]["items"]["properties"]["style"]["enum"], json!(["buttons", "select"]));
     }
 
@@ -767,6 +780,12 @@ mod tests {
         let (card, r) = asked(json!({"question": "Which one?", "options": ["A", {"label": "B", "description": "the other"}]}), "B").await;
         assert_eq!(card.widgets.expect("the card")[0]["options"], json!(["A", {"label": "B", "description": "the other"}]));
         assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap()["picked"], "B");
+        // The registry runs the call as `questions`, so a question at the top
+        // level is never refused as parameters the schema doesn't name.
+        let one = tool.normalize_input(json!({"question": "Which?", "options": ["A"], "words": {"questionKey": "k"}, "context": "c"}));
+        assert_eq!(one, json!({"context": "c", "questions": [{"question": "Which?", "options": [{"label": "A"}], "words": {"questionKey": "k"}}]}));
+        assert_eq!(tool.normalize_input(one.clone()), one, "idempotent");
+        assert!(crate::input_schema::unknown_parameters(&tool.schema(), &json!({"context": "c"})).is_empty());
         let d = tool.description();
         assert!(d.contains("a `label` of 1 to 5 words") && d.contains("the recommended option first") && d.contains("\"Other\""), "{d}");
     }
