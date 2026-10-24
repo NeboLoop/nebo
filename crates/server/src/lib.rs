@@ -32,6 +32,7 @@ mod live_shares;
 pub mod local_access;
 pub mod middleware;
 mod mail_intake;
+mod mcp_apps;
 mod migration;
 mod outside;
 mod owner_locale;
@@ -1441,6 +1442,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Every local caller in this process (in-process tools, the plugins it
     // starts) addresses the port actually held, not the configured one.
     let _ = napp::plugin::SERVING_PORT.set(port);
+    // The origin MCP App views run on, apart from this one.
+    mcp_apps::serve_view_origin().await;
     let bind_addr = format!("{host}:{port}");
 
     if !quiet {

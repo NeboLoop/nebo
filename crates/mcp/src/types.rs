@@ -23,6 +23,10 @@ pub enum McpError {
     /// The MCP server answered 401: it refused the bearer token.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// The server answered 404 to a request carrying its session: it no
+    /// longer knows the session, and the client opens a new one.
+    #[error("session expired: {0}")]
+    SessionExpired(String),
     #[error("{0}")]
     Other(String),
 }
@@ -113,6 +117,12 @@ pub struct McpToolResult {
     pub content: String,
     #[serde(default)]
     pub is_error: bool,
+    /// The `CallToolResult` as the server sent it (`content`,
+    /// `structuredContent`, `_meta`, `isError`), for a view that shows the
+    /// result (`crate::ui`). `None` when the server answered with an error
+    /// instead of a result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 /// Connection status for an MCP integration.

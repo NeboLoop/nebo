@@ -343,6 +343,23 @@ impl Bridge {
             .await
     }
 
+    /// Read a view (`resources/read` of its `ui://` resource) from a
+    /// connected server.
+    pub async fn read_resource(&self, integration_id: &str, uri: &str) -> Result<crate::ui::UiResource, McpError> {
+        self.client.read_resource(integration_id, uri).await
+    }
+
+    /// A connected server's tool by its own name, with the proxy name it is
+    /// registered under (`mcp__<server>__<tool>`). `None` when the server
+    /// isn't connected or offers no such tool: a view's call reaches only
+    /// the tools of the server that showed it.
+    pub async fn server_tool(&self, integration_id: &str, tool_name: &str) -> Option<(McpToolDef, String)> {
+        let conns = self.connections.lock().await;
+        let conn = conns.get(integration_id)?;
+        let def = conn.defs.iter().find(|d| d.name == tool_name)?.clone();
+        Some((def, make_tool_name(&conn.server_slug, tool_name)))
+    }
+
     /// List connected integration IDs.
     pub async fn connected_ids(&self) -> Vec<String> {
         let conns = self.connections.lock().await;

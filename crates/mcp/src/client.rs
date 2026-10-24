@@ -29,12 +29,65 @@ pub struct McpClient {
     tools_changed_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     /// One refresh lock per integration (`McpClient::refresh_lock`).
     pub(crate) refresh_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The next JSON-RPC id a remote request carries.
+    next_id: std::sync::atomic::AtomicI64,
 }
 
 struct Session {
     server_url: String,
     tokens: Option<OAuthTokens>,
+    /// The session the server issued at `initialize` (`Mcp-Session-Id`),
+    /// sent on every request after it. `None` for a server that issues none.
+    mcp_session: Option<String>,
+    /// The protocol version `initialize` settled on (`MCP-Protocol-Version`).
+    protocol: Option<String>,
     _tools: Vec<McpToolDef>,
+}
+
+/// The header a Streamable HTTP server names its session in.
+const SESSION_HEADER: &str = "mcp-session-id";
+
+/// The protocol version Nebo asks for at `initialize`.
+pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// `initialize`'s params, the same on both transports: the protocol
+/// version, the client's capabilities (the MCP Apps extension,
+/// `io.modelcontextprotocol/ui`, among them) and who the client is.
+pub(crate) fn initialize_params() -> serde_json::Value {
+    let mut extensions = serde_json::Map::new();
+    extensions.insert(crate::ui::EXTENSION_ID.to_string(), crate::ui::client_extension());
+    json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": { "extensions": extensions },
+        "clientInfo": { "name": "nebo", "version": env!("CARGO_PKG_VERSION") }
+    })
+}
+
+/// Where one request to a remote server goes, and what it carries.
+struct HttpTarget {
+    url: String,
+    token: Option<String>,
+    mcp_session: Option<String>,
+    protocol: Option<String>,
+}
+
+impl HttpTarget {
+    fn request(&self, http: &reqwest::Client) -> reqwest::RequestBuilder {
+        let mut req = http
+            .post(&self.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        if let Some(session) = &self.mcp_session {
+            req = req.header(SESSION_HEADER, session);
+        }
+        if let Some(protocol) = &self.protocol {
+            req = req.header("MCP-Protocol-Version", protocol);
+        }
+        req
+    }
 }
 
 impl McpClient {
@@ -52,6 +105,7 @@ impl McpClient {
             tools_changed,
             tools_changed_rx: std::sync::Mutex::new(Some(tools_changed_rx)),
             refresh_locks: std::sync::Mutex::new(HashMap::new()),
+            next_id: std::sync::atomic::AtomicI64::new(1),
         }
     }
 
@@ -104,70 +158,42 @@ impl McpClient {
     }
 
     /// List tools from an external MCP server (JSON-RPC 2.0 over Streamable HTTP).
-    /// All requests go to the MCP endpoint URL directly, not sub-paths.
+    /// All requests go to the MCP endpoint URL directly, not sub-paths. A
+    /// server first listed here gets the lifecycle's `initialize` handshake
+    /// (its session, if it issues one, is kept for every request after);
+    /// listing it again reuses the session it has.
     pub async fn list_tools(
         &self,
         integration_id: &str,
         server_url: &str,
         access_token: Option<&str>,
     ) -> Result<Vec<McpToolDef>, McpError> {
-        let url = server_url.trim_end_matches('/');
+        let url = server_url.trim_end_matches('/').to_string();
 
         info!(
-            url = url,
+            url = %url,
             has_token = access_token.is_some(),
             "MCP tools/list request"
         );
 
-        let mut req = self
-            .http
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "method": "tools/list",
-                "params": {},
-                "id": 1
-            }));
-        if let Some(token) = access_token {
-            req = req.bearer_auth(token);
-        }
-
-        let resp = req.send().await?;
-        let status = resp.status();
-        let resp_text = resp.text().await.unwrap_or_default();
-
-        if !status.is_success() {
-            let detail = format!(
-                "tools/list returned {} — {}",
-                status,
-                resp_text.chars().take(200).collect::<String>()
-            );
-            return Err(if status == reqwest::StatusCode::UNAUTHORIZED {
-                McpError::Unauthorized(detail)
-            } else {
-                McpError::Other(detail)
-            });
-        }
-
-        // Parse response — could be raw JSON or SSE (event: message\ndata: {...})
-        let content_type = resp_text.chars().next().unwrap_or(' ');
-        debug!(
-            url = url,
-            status = %status,
-            response_len = resp_text.len(),
-            first_char = %content_type,
-            response_preview = %resp_text.chars().take(500).collect::<String>(),
-            "MCP tools/list raw response"
-        );
-
-        let body: serde_json::Value = if resp_text.starts_with('{') || resp_text.starts_with('[') {
-            serde_json::from_str(&resp_text)
-                .map_err(|e| McpError::Other(format!("invalid JSON: {e}")))?
-        } else {
-            // Parse SSE: extract JSON from "data: {...}" lines
-            parse_sse_json(&resp_text)?
+        let known = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(integration_id)
+                .filter(|s| s.server_url.trim_end_matches('/') == url)
+                .map(|s| (s.mcp_session.clone(), s.protocol.clone()))
+        };
+        let (mcp_session, protocol) = match known {
+            Some(handshake) => handshake,
+            None => self.handshake(integration_id, &url, access_token).await?,
+        };
+        let mut target = HttpTarget { url: url.clone(), token: access_token.map(str::to_string), mcp_session, protocol };
+        let body = match self.post(integration_id, &target, "tools/list", json!({}), &[]).await {
+            Err(McpError::SessionExpired(_)) => {
+                (target.mcp_session, target.protocol) = self.handshake(integration_id, &url, access_token).await?;
+                self.post(integration_id, &target, "tools/list", json!({}), &[]).await?
+            }
+            other => other?,
         };
 
         let tools_val = body
@@ -191,6 +217,8 @@ impl McpClient {
                     expires_at: None,
                     scope: None,
                 }),
+                mcp_session: target.mcp_session,
+                protocol: target.protocol,
                 _tools: tools.clone(),
             },
         );
@@ -201,6 +229,36 @@ impl McpClient {
             "listed MCP tools"
         );
         Ok(tools)
+    }
+
+    /// The lifecycle's opening for a remote server: `initialize` with this
+    /// client's capabilities ([`initialize_params`]), then
+    /// `notifications/initialized`. Returns the session the server issued
+    /// (`Mcp-Session-Id`) and the protocol version it settled on. A server
+    /// that answers `initialize` with a JSON-RPC error doesn't keep the
+    /// lifecycle; it is spoken to without a session, as before.
+    async fn handshake(
+        &self,
+        integration_id: &str,
+        url: &str,
+        token: Option<&str>,
+    ) -> Result<(Option<String>, Option<String>), McpError> {
+        let opening = HttpTarget { url: url.to_string(), token: token.map(str::to_string), mcp_session: None, protocol: None };
+        let (body, mcp_session) = self.post_with_session(integration_id, &opening, "initialize", initialize_params(), &[]).await?;
+        if let Some(err) = body.get("error") {
+            warn!(url, error = %err, "MCP server refused initialize; speaking to it without a session");
+            return Ok((None, None));
+        }
+        let protocol = body
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let target = HttpTarget { mcp_session: mcp_session.clone(), protocol: protocol.clone(), ..opening };
+        if let Err(e) = self.notify_http(&target, "notifications/initialized").await {
+            warn!(url, error = %e, "MCP server did not take notifications/initialized");
+        }
+        Ok((mcp_session, protocol))
     }
 
     /// Call a tool on an external MCP server (JSON-RPC 2.0 over Streamable HTTP).
@@ -231,64 +289,10 @@ impl McpClient {
             return session.call_tool(tool_name, input).await;
         }
 
-        let sessions = self.sessions.read().await;
-        let session = sessions
-            .get(integration_id)
-            .ok_or_else(|| McpError::NotFound(format!("session {}", integration_id)))?;
-
-        let url = session.server_url.trim_end_matches('/');
-
-        let mut req = self
-            .http
-            .post(url)
-            .header("Content-Type", "application/json")
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": input,
-                },
-                "id": 2
-            }));
-
-        if let Some(ref tokens) = session.tokens {
-            req = req.bearer_auth(&tokens.access_token);
-        }
-        if let Some(m) = matter {
-            req = req.header("X-Nebo-Memory-Domain", m);
-        }
-
-        let resp = req.send().await?;
-        let status = resp.status();
-        let resp_text = resp.text().await.unwrap_or_default();
-
-        if !status.is_success() {
-            let detail = format!(
-                "tools/call {} returned {} — {}",
-                tool_name,
-                status,
-                resp_text.chars().take(200).collect::<String>()
-            );
-            return Err(if status == reqwest::StatusCode::UNAUTHORIZED {
-                McpError::Unauthorized(detail)
-            } else {
-                McpError::Other(detail)
-            });
-        }
-
-        // Parse response — raw JSON or SSE
-        let body: serde_json::Value = if resp_text.starts_with('{') || resp_text.starts_with('[') {
-            serde_json::from_str(&resp_text)
-                .map_err(|e| McpError::Other(format!("invalid JSON: {e}")))?
-        } else {
-            // A server streams its notifications ahead of the answer; one
-            // that says its tools changed gets them listed again.
-            if sse_says_tools_changed(&resp_text) {
-                let _ = self.tools_changed.send(integration_id.to_string());
-            }
-            parse_sse_json(&resp_text)?
-        };
+        let headers: Vec<(&str, &str)> = matter.map(|m| ("X-Nebo-Memory-Domain", m)).into_iter().collect();
+        let body = self
+            .http_request(integration_id, "tools/call", json!({ "name": tool_name, "arguments": input }), &headers)
+            .await?;
 
         // Check for JSON-RPC error response first
         if let Some(err) = body.get("error") {
@@ -306,6 +310,7 @@ impl McpClient {
             return Ok(McpToolResult {
                 content: format!("Connector error ({}): {}", code, message),
                 is_error: true,
+                result: None,
             });
         }
 
@@ -313,6 +318,157 @@ impl McpClient {
         let result_val = body.get("result").cloned().unwrap_or(body.clone());
 
         Ok(parse_call_result(tool_name, &result_val))
+    }
+
+    /// Read a view (`resources/read` of a `ui://` resource) from a connected
+    /// server, over whichever transport it has. The content must be
+    /// `text/html;profile=mcp-app` (`ui::view_from_read`).
+    pub async fn read_resource(&self, integration_id: &str, uri: &str) -> Result<crate::ui::UiResource, McpError> {
+        let params = json!({ "uri": uri });
+        let result = if let Some(session) = self.stdio_sessions.read().await.get(integration_id).cloned() {
+            session.request("resources/read", params).await?
+        } else {
+            let body = self.http_request(integration_id, "resources/read", params, &[]).await?;
+            if let Some(err) = body.get("error") {
+                let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+                let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+                return Err(McpError::Other(format!("Connector 'resources/read' error ({code}): {message}")));
+            }
+            body.get("result").cloned().unwrap_or(serde_json::Value::Null)
+        };
+        crate::ui::view_from_read(uri, &result)
+    }
+
+    /// One request on a connected remote server's session; the reply's
+    /// whole JSON-RPC body. A server that forgot the session (`404`, as the
+    /// transport says it answers) gets the handshake again and the request
+    /// once more.
+    async fn http_request(
+        &self,
+        integration_id: &str,
+        method: &str,
+        params: serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> Result<serde_json::Value, McpError> {
+        let mut target = {
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(integration_id)
+                .ok_or_else(|| McpError::NotFound(format!("session {}", integration_id)))?;
+            HttpTarget {
+                url: session.server_url.trim_end_matches('/').to_string(),
+                token: session.tokens.as_ref().map(|t| t.access_token.clone()),
+                mcp_session: session.mcp_session.clone(),
+                protocol: session.protocol.clone(),
+            }
+        };
+        match self.post(integration_id, &target, method, params.clone(), headers).await {
+            Err(McpError::SessionExpired(_)) => {
+                info!(integration = integration_id, "MCP server forgot its session; opening a new one");
+                (target.mcp_session, target.protocol) =
+                    self.handshake(integration_id, &target.url, target.token.as_deref()).await?;
+                if let Some(session) = self.sessions.write().await.get_mut(integration_id) {
+                    session.mcp_session = target.mcp_session.clone();
+                    session.protocol = target.protocol.clone();
+                }
+                self.post(integration_id, &target, method, params, headers).await
+            }
+            other => other,
+        }
+    }
+
+    /// POST one JSON-RPC request; the reply's body.
+    async fn post(
+        &self,
+        integration_id: &str,
+        target: &HttpTarget,
+        method: &str,
+        params: serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> Result<serde_json::Value, McpError> {
+        self.post_with_session(integration_id, target, method, params, headers).await.map(|(body, _)| body)
+    }
+
+    /// POST one JSON-RPC request; the reply's body, and the session the
+    /// server issued with it (`Mcp-Session-Id`), if any. The body is raw
+    /// JSON or an SSE stream (its last message is the reply); a server that
+    /// streams that its tools changed gets them listed again.
+    async fn post_with_session(
+        &self,
+        integration_id: &str,
+        target: &HttpTarget,
+        method: &str,
+        params: serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> Result<(serde_json::Value, Option<String>), McpError> {
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut req = target
+            .request(&self.http)
+            .json(&json!({ "jsonrpc": "2.0", "method": method, "params": params, "id": id }));
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+
+        let resp = req.send().await?;
+        let status = resp.status();
+        let issued = resp
+            .headers()
+            .get(SESSION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let resp_text = resp.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            let detail = format!(
+                "{} returned {} — {}",
+                method,
+                status,
+                resp_text.chars().take(200).collect::<String>()
+            );
+            return Err(if status == reqwest::StatusCode::UNAUTHORIZED {
+                McpError::Unauthorized(detail)
+            } else if status == reqwest::StatusCode::NOT_FOUND && target.mcp_session.is_some() {
+                McpError::SessionExpired(detail)
+            } else {
+                McpError::Other(detail)
+            });
+        }
+
+        debug!(
+            url = %target.url,
+            method,
+            status = %status,
+            response_len = resp_text.len(),
+            response_preview = %::types::redact::redact(&resp_text).chars().take(500).collect::<String>(),
+            "MCP raw response"
+        );
+
+        let body: serde_json::Value = if resp_text.starts_with('{') || resp_text.starts_with('[') {
+            serde_json::from_str(&resp_text)
+                .map_err(|e| McpError::Other(format!("invalid JSON: {e}")))?
+        } else {
+            // A server streams its notifications ahead of the answer; one
+            // that says its tools changed gets them listed again.
+            if sse_says_tools_changed(&resp_text) {
+                let _ = self.tools_changed.send(integration_id.to_string());
+            }
+            parse_sse_json(&resp_text)?
+        };
+        Ok((body, issued))
+    }
+
+    /// POST one JSON-RPC notification (no reply is read).
+    async fn notify_http(&self, target: &HttpTarget, method: &str) -> Result<(), McpError> {
+        let resp = target
+            .request(&self.http)
+            .json(&json!({ "jsonrpc": "2.0", "method": method }))
+            .send()
+            .await?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(McpError::Other(format!("{method} returned {}", resp.status())))
+        }
     }
 
     /// Close a session for an integration.
@@ -394,7 +550,7 @@ pub(crate) fn parse_call_result(tool_name: &str, result: &serde_json::Value) -> 
         parts.join("\n")
     };
 
-    McpToolResult { content, is_error }
+    McpToolResult { content, is_error, result: Some(result.clone()) }
 }
 
 /// The JSON-RPC method a server sends when its tool list changed.

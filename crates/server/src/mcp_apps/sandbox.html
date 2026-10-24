@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>Nebo view</title>
+<style>
+html, body { margin: 0; padding: 0; height: 100%; width: 100%; background: transparent; overflow: hidden; }
+iframe { display: block; border: 0; width: 100%; height: 100%; background: transparent; color-scheme: inherit; }
+</style>
+</head>
+<body>
+<script>
+// The MCP Apps sandbox proxy (spec 2026-01-26, "Sandbox proxy"): this page
+// runs on Nebo's view origin, never Nebo's own, under the view's
+// Content-Security-Policy (sent as this page's header). It loads the view's
+// HTML, sent by the host once, into an inner frame of the same origin, so
+// the view inherits the policy, and relays every message between the host
+// and the view except the sandbox-* ones.
+(function () {
+  var params = new URLSearchParams(location.search);
+  var host = params.get('host') || '';
+  if (window.self === window.top || !host) return;
+  // The inner frame is made when the view arrives, its sandbox and the
+  // features the owner allowed set before it exists in the page.
+  var inner = null;
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (event.source === window.parent) {
+      if (event.origin !== host) return;
+      if (data && data.method === 'ui/notifications/sandbox-resource-ready') {
+        if (inner) return;
+        var p = data.params || {};
+        inner = document.createElement('iframe');
+        inner.setAttribute('sandbox', typeof p.sandbox === 'string' ? p.sandbox : 'allow-scripts allow-same-origin allow-forms');
+        var allow = [];
+        var perms = p.permissions || {};
+        if (perms.camera) allow.push('camera');
+        if (perms.microphone) allow.push('microphone');
+        if (perms.geolocation) allow.push('geolocation');
+        if (perms.clipboardWrite) allow.push('clipboard-write');
+        if (allow.length) inner.setAttribute('allow', allow.join('; '));
+        document.body.appendChild(inner);
+        if (typeof p.html === 'string') {
+          var doc = inner.contentDocument;
+          if (doc) { doc.open(); doc.write(p.html); doc.close(); } else { inner.srcdoc = p.html; }
+        }
+        return;
+      }
+      if (inner && inner.contentWindow) inner.contentWindow.postMessage(data, '*');
+    } else if (inner && event.source === inner.contentWindow) {
+      if (data && typeof data.method === 'string' && data.method.indexOf('ui/notifications/sandbox-') === 0) return;
+      window.parent.postMessage(data, host);
+    }
+  });
+  window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/sandbox-proxy-ready', params: {} }, host);
+})();
+</script>
+</body>
+</html>

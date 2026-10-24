@@ -1054,7 +1054,7 @@ impl Asks {
 /// guessed: a schedule, a workflow, a heartbeat, a coworker's request or a
 /// helper has none, and its ask goes to the Inbox.
 pub fn originating_chat(door: &Door, session_key: &str) -> Option<String> {
-    if !matches!(door, Door::Chat | Door::Voice) || types::keyparser::is_subagent_key(session_key) {
+    if !matches!(door, Door::Chat | Door::Voice | Door::View) || types::keyparser::is_subagent_key(session_key) {
         return None;
     }
     let chat = types::keyparser::chat_id_from_thread_key(session_key)?;
@@ -1274,7 +1274,7 @@ fn where_to_answer(door: &Door, origin: tools::Origin) -> &'static str {
              the card in this conversation or in their Inbox, in the Nebo app on any of their devices. \
              Don't retry this action."
         }
-        Door::Chat => {
+        Door::Chat | Door::View => {
             "The owner answers on the card in this conversation or in their Inbox, in the Nebo app on any of \
              their devices, phone or computer. Carry on with anything else; the answer arrives as a \
              notification. Don't retry this action."

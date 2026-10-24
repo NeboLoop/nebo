@@ -55,7 +55,56 @@ impl McpProxyTool {
     }
 }
 
+/// The payload kind of a tool result shown as an MCP App's view: the
+/// view's HTML and metadata, the call's input and its result, stored with
+/// the result so a reopened conversation shows it again with no new call.
+pub const MCP_APP_KIND: &str = "mcp_app";
+
+/// The payload kind of a view's own call's result: the `CallToolResult`
+/// as the server sent it, for the view.
+pub const MCP_RESULT_KIND: &str = "mcp_result";
+
 impl McpProxyTool {
+    /// The `mcp_app` payload for a call of this tool: its view read from
+    /// the server (`resources/read`), with what the view needs to show the
+    /// call. `None` when the view can't be read; the text result stands.
+    async fn view_payload(&self, uri: &str, input: serde_json::Value, served: serde_json::Value) -> Option<serde_json::Value> {
+        let view = match self.bridge.read_resource(&self.integration_id, uri).await {
+            Ok(view) => view,
+            Err(e) => {
+                warn!(tool = %self.name, uri, error = %e, "the tool's view could not be read; showing its text result");
+                return None;
+            }
+        };
+        let meta = view.meta;
+        let csp = meta.csp.clone().unwrap_or_default();
+        info!(tool = %self.name, uri, csp = %mcp::ui::csp_policy(meta.csp.as_ref()), "showing the tool's view");
+        let mut payload = serde_json::json!({
+            "kind": MCP_APP_KIND,
+            "serverId": self.integration_id,
+            "tool": self.def.name,
+            "resourceUri": view.uri,
+            "html": view.html,
+            "csp": {
+                "connectDomains": mcp::ui::allowed_sources(&csp.connect_domains),
+                "resourceDomains": mcp::ui::allowed_sources(&csp.resource_domains),
+                "frameDomains": mcp::ui::allowed_sources(&csp.frame_domains),
+                "baseUriDomains": mcp::ui::allowed_sources(&csp.base_uri_domains),
+            },
+            "cspDeclared": meta.csp.is_some(),
+            "permissions": meta.permissions.unwrap_or_default(),
+            "toolInput": input,
+            "toolResult": served,
+        });
+        if let Some(domain) = meta.domain {
+            payload["domain"] = domain.into();
+        }
+        if let Some(border) = meta.prefers_border {
+            payload["prefersBorder"] = border.into();
+        }
+        Some(payload)
+    }
+
     /// This tool is shared memory's (see [`is_shared_memory`]).
     fn is_shared_memory(&self) -> bool {
         self.store
@@ -131,6 +180,10 @@ impl DynTool for McpProxyTool {
         Some((self.integration_id.clone(), self.def.name.clone()))
     }
 
+    fn visibility(&self) -> mcp::ui::Visibility {
+        self.def.visibility()
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -145,16 +198,26 @@ impl DynTool for McpProxyTool {
         // employee reaches only its own matter on the server side.
         let matter = ctx.memory_matter.clone();
         let domain = input["domain"].as_str().map(str::to_string);
+        let from_view = matches!(ctx.door, types::permissions::Door::View);
         Box::pin(async move {
-            let mut result = call_mcp_tool_scoped(
+            let (mut result, served) = call_scoped(
                 &self.store,
                 &self.bridge,
                 &self.integration_id,
                 &self.def.name,
-                input,
+                input.clone(),
                 matter.as_deref(),
             )
             .await;
+            // A view's own call answers the view: the result as the server
+            // sent it. The employee's call of a tool with a view shows it.
+            if let Some(served) = served {
+                if from_view {
+                    result.payload = Some(serde_json::json!({ "kind": MCP_RESULT_KIND, "toolResult": served }));
+                } else if let Some(uri) = self.def.ui_resource_uri() {
+                    result.payload = self.view_payload(&uri, input, served).await;
+                }
+            }
             // Shared memory's answers say where they came from, so the model
             // never mistakes them for this Nebo's own memory.
             if !result.is_error && self.is_shared_memory() {
@@ -613,8 +676,21 @@ pub async fn call_mcp_tool_scoped(
     input: serde_json::Value,
     matter: Option<&str>,
 ) -> ToolResult {
+    call_scoped(store, bridge, integration_id, tool_name, input, matter).await.0
+}
+
+/// [`call_mcp_tool_scoped`], with the `CallToolResult` as the server sent
+/// it, when it sent one.
+async fn call_scoped(
+    store: &db::Store,
+    bridge: &mcp::Bridge,
+    integration_id: &str,
+    tool_name: &str,
+    input: serde_json::Value,
+    matter: Option<&str>,
+) -> (ToolResult, Option<serde_json::Value>) {
     let first = call_once(store, bridge, integration_id, tool_name, input.clone(), matter).await;
-    if !first.is_error || !mcp::client::is_schema_error(&first.content) {
+    if !first.0.is_error || !mcp::client::is_schema_error(&first.0.content) {
         return first;
     }
     let relisted = match bridge.refresh(integration_id).await {
@@ -628,10 +704,10 @@ pub async fn call_mcp_tool_scoped(
         return first;
     }
     let Some(def) = relisted.tools.iter().find(|d| d.name == tool_name) else {
-        return ToolResult::error(format!(
-            "{}\nThis connector no longer offers {tool_name}.",
-            first.content
-        ));
+        return (
+            ToolResult::error(format!("{}\nThis connector no longer offers {tool_name}.", first.0.content)),
+            None,
+        );
     };
     info!(integration = %integration_id, tool = tool_name, "connector tool changed; trying the call again");
     let mut input = input;
@@ -649,15 +725,14 @@ async fn call_once(
     tool_name: &str,
     input: serde_json::Value,
     matter: Option<&str>,
-) -> ToolResult {
+) -> (ToolResult, Option<serde_json::Value>) {
     let presented = token_for_call(store, bridge, integration_id).await;
     let as_result = |r: mcp::McpToolResult| {
-        if r.is_error {
-            ToolResult::error(r.content)
-        } else {
-            ToolResult::ok(r.content)
-        }
+        let served = r.result;
+        let result = if r.is_error { ToolResult::error(r.content) } else { ToolResult::ok(r.content) };
+        (result, served)
     };
+    let failed = |r: ToolResult| (r, None);
 
     let err = match bridge
         .call_tool_scoped(integration_id, tool_name, input.clone(), matter)
@@ -667,7 +742,7 @@ async fn call_once(
         Err(e) => e,
     };
     let mcp::McpError::Unauthorized(_) = err else {
-        return ToolResult::error(format!("Connector {}/{} failed: {}", integration_id, tool_name, err));
+        return failed(ToolResult::error(format!("Connector {}/{} failed: {}", integration_id, tool_name, err)));
     };
 
     // 401: the server refused the token before its expiry (revoked, or
@@ -682,14 +757,14 @@ async fn call_once(
             .flatten()
             .is_some_and(|i| is_shared_memory(&i));
         if shared {
-            return ToolResult::error(
+            return failed(ToolResult::error(
                 "Shared memory isn't available to this Nebo right now. Carry on without it.",
-            );
+            ));
         }
-        return ToolResult::error(format!(
+        return failed(ToolResult::error(format!(
             "Connector {}/{} refused its sign-in ({}). Ask the owner to reconnect it in Settings > Connectors.",
             integration_id, tool_name, err
-        ));
+        )));
     };
     info!(integration = %integration_id, "MCP 401, renewing the sign-in");
     match refresh_mcp_token(
@@ -705,19 +780,19 @@ async fn call_once(
             .await
         {
             Ok(result) => as_result(result),
-            Err(retry_err) => ToolResult::error(format!(
+            Err(retry_err) => failed(ToolResult::error(format!(
                 "Connector {}/{} failed after renewing its sign-in: {}",
                 integration_id, tool_name, retry_err
-            )),
+            ))),
         },
-        Err(RefreshError::Reauth(why)) => ToolResult::error(format!(
+        Err(RefreshError::Reauth(why)) => failed(ToolResult::error(format!(
             "Connector {}/{}: sign-in expired ({}). Ask the owner to reconnect it in Settings > Connectors.",
             integration_id, tool_name, why
-        )),
-        Err(RefreshError::Unavailable(why)) => ToolResult::error(format!(
+        ))),
+        Err(RefreshError::Unavailable(why)) => failed(ToolResult::error(format!(
             "Connector {}/{} couldn't renew its sign-in just now ({}). Try again in a few minutes.",
             integration_id, tool_name, why
-        )),
+        ))),
     }
 }
 
@@ -1352,5 +1427,201 @@ mod refresh_coordinator_tests {
         assert!(matches!(r, Err(RefreshError::Reauth(_))), "{r:?}");
         assert_eq!(server.lock().unwrap().requests.len(), 1, "a refusal is not retried");
         assert_eq!(status(&f).as_deref(), Some("needs_reauth"));
+    }
+}
+
+/// MCP Apps end to end against a reference server (`fixtures/mcp_app_map.html`):
+/// the handshake advertises the extension and keeps the server's session,
+/// the tool with a view shows it, the app-only tool never reaches the
+/// employee and only a view may call it, and a view may not call a tool
+/// its server keeps from views.
+#[cfg(test)]
+mod mcp_app_tests {
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use crate::origin::{Origin, ToolContext};
+
+    const VIEW: &str = include_str!("../fixtures/mcp_app_map.html");
+    const SESSION: &str = "places-session-1";
+
+    #[derive(Default)]
+    struct Places {
+        /// Every request: its method, and the session header it carried.
+        seen: Vec<(String, Option<String>, Value)>,
+    }
+
+    fn tools() -> Value {
+        json!([
+            {"name": "show_place", "description": "Show a place on a map.",
+             "inputSchema": {"type": "object", "properties": {"place": {"type": "string"}}},
+             "_meta": {"ui": {"resourceUri": "ui://places/map.html"}}},
+            {"name": "book_visit", "description": "Book a visit.",
+             "inputSchema": {"type": "object", "properties": {"who": {"type": "string"}}},
+             "_meta": {"ui": {"resourceUri": "ui://places/map.html", "visibility": ["app"]}}},
+            {"name": "admin_reset", "description": "Model only.",
+             "inputSchema": {"type": "object", "properties": {}},
+             "_meta": {"ui": {"visibility": ["model"]}}}
+        ])
+    }
+
+    fn answer(req: &Value) -> Option<Value> {
+        let id = req.get("id").cloned()?;
+        let result = match req["method"].as_str().unwrap_or("") {
+            "initialize" => json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}, "resources": {}}, "serverInfo": {"name": "places", "version": "1"}}),
+            "tools/list" => json!({"tools": tools()}),
+            "resources/read" => json!({"contents": [{
+                "uri": req["params"]["uri"], "mimeType": "text/html;profile=mcp-app", "text": VIEW,
+                "_meta": {"ui": {"csp": {"connectDomains": ["https://tile.example.org", "http://localhost:27895"]},
+                                  "permissions": {"geolocation": {}}, "prefersBorder": true}}
+            }]}),
+            "tools/call" => match req["params"]["name"].as_str().unwrap_or("") {
+                "show_place" => json!({"content": [{"type": "text", "text": "Paris is at 48.85, 2.35."}],
+                                       "structuredContent": {"lat": 48.85, "lng": 2.35}}),
+                "book_visit" => json!({"content": [{"type": "text", "text": format!("Booked for {}.", req["params"]["arguments"]["who"].as_str().unwrap_or(""))}]}),
+                _ => json!({"content": [{"type": "text", "text": "reset"}]}),
+            },
+            _ => json!({}),
+        };
+        Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    }
+
+    async fn serve(server: Arc<Mutex<Places>>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let server = server.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                        let header = |name: &str| head.lines().find_map(|l| l.strip_prefix(name)).map(|v| v.trim().to_string());
+                        let len: usize = header("content-length:").and_then(|v| v.parse().ok()).unwrap_or(0);
+                        if buf.len() < end + 4 + len {
+                            continue;
+                        }
+                        let req: Value = serde_json::from_slice(&buf[end + 4..end + 4 + len]).unwrap_or_default();
+                        let method = req["method"].as_str().unwrap_or("").to_string();
+                        server.lock().unwrap().seen.push((method.clone(), header("mcp-session-id:"), req.clone()));
+                        let resp = match answer(&req) {
+                            Some(body) => {
+                                let body = body.to_string();
+                                let session = if method == "initialize" { format!("Mcp-Session-Id: {SESSION}\r\n") } else { String::new() };
+                                format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                            }
+                            None => "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                        };
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/mcp")
+    }
+
+    struct World {
+        server: Arc<Mutex<Places>>,
+        registry: Arc<crate::registry::Registry>,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn world() -> World {
+        let server = Arc::new(Mutex::new(Places::default()));
+        let url = serve(server.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
+        store.create_mcp_integration("int-places", "places", "http", Some(&url), "none", None, None).unwrap();
+        let registry = Arc::new(crate::registry::Registry::new(crate::gate::test_gate()));
+        let client = Arc::new(mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate())));
+        let bridge = Arc::new(mcp::Bridge::new(client, registry.clone()));
+        registry.set_bridge(bridge.clone());
+        registry.set_store(store.clone());
+        bridge.connect("int-places", "places", &url, None, None).await.unwrap();
+        World { server, registry, _dir: dir }
+    }
+
+    fn door(d: types::permissions::Door) -> ToolContext {
+        ToolContext { door: d, ..ToolContext::new(Origin::User) }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_handshake_advertises_mcp_apps_and_keeps_the_servers_session() {
+        let w = world().await;
+        let seen = &w.server.lock().unwrap().seen;
+        let init = seen.iter().find(|(m, _, _)| m == "initialize").expect("initialize sent");
+        assert_eq!(
+            init.2["params"]["capabilities"]["extensions"]["io.modelcontextprotocol/ui"]["mimeTypes"],
+            json!(["text/html;profile=mcp-app"])
+        );
+        assert!(init.1.is_none(), "no session before the server issues one");
+        let list = seen.iter().find(|(m, _, _)| m == "tools/list").unwrap();
+        assert_eq!(list.1.as_deref(), Some(SESSION.to_lowercase().as_str()));
+        assert!(seen.iter().any(|(m, _, _)| m == "notifications/initialized"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_app_only_tool_never_reaches_the_employee() {
+        let w = world().await;
+        let listed: Vec<String> = w.registry.list().await.into_iter().map(|d| d.name).collect();
+        assert!(listed.contains(&"mcp__places__show_place".to_string()));
+        assert!(listed.contains(&"mcp__places__admin_reset".to_string()));
+        assert!(!listed.contains(&"mcp__places__book_visit".to_string()), "{listed:?}");
+        assert!(w.registry.definition("mcp__places__book_visit").await.is_none());
+        assert!(w.registry.deferred_entries().await.iter().all(|e| e.definition.name != "mcp__places__book_visit"));
+
+        let by_employee = w.registry.execute(&door(types::permissions::Door::Chat), "mcp__places__book_visit", json!({"who": "x"})).await;
+        assert!(by_employee.is_error, "the employee can't call it");
+        assert!(!w.server.lock().unwrap().seen.iter().any(|(m, _, r)| m == "tools/call" && r["params"]["name"] == "book_visit"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_view_calls_only_tools_its_server_lets_views_call() {
+        let w = world().await;
+        let view = door(types::permissions::Door::View);
+        let booked = w.registry.execute(&view, "mcp__places__book_visit", json!({"who": "Dana"})).await;
+        assert!(!booked.is_error, "{}", booked.content);
+        let payload = booked.payload.expect("the view gets the server's result");
+        assert_eq!(payload["kind"], super::MCP_RESULT_KIND);
+        assert_eq!(payload["toolResult"]["content"][0]["text"], "Booked for Dana.");
+
+        let refused = w.registry.execute(&view, "mcp__places__admin_reset", json!({})).await;
+        assert!(refused.is_error, "a model-only tool is refused to a view");
+        let builtin = w.registry.execute(&view, "find_tools", json!({"query": "x"})).await;
+        assert!(builtin.is_error, "a view reaches no built-in tool");
+        assert!(!w.server.lock().unwrap().seen.iter().any(|(m, _, r)| m == "tools/call" && r["params"]["name"] == "admin_reset"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_employees_call_of_a_tool_with_a_view_carries_the_view() {
+        let w = world().await;
+        let shown = w.registry.execute(&door(types::permissions::Door::Chat), "mcp__places__show_place", json!({"place": "Paris"})).await;
+        assert!(!shown.is_error, "{}", shown.content);
+        assert_eq!(shown.content, "Paris is at 48.85, 2.35.\n{\n  \"lat\": 48.85,\n  \"lng\": 2.35\n}");
+        let app = shown.payload.expect("the view rides with the result");
+        assert_eq!(app["kind"], super::MCP_APP_KIND);
+        assert_eq!(app["serverId"], "int-places");
+        assert_eq!(app["tool"], "show_place");
+        assert_eq!(app["resourceUri"], "ui://places/map.html");
+        assert_eq!(app["html"], VIEW);
+        assert_eq!(app["csp"]["connectDomains"], json!(["https://tile.example.org"]), "this computer is never declared in");
+        assert_eq!(app["cspDeclared"], true);
+        assert_eq!(app["permissions"], json!({"geolocation": {}}));
+        assert_eq!(app["prefersBorder"], true);
+        assert_eq!(app["toolInput"], json!({"place": "Paris"}));
+        assert_eq!(app["toolResult"]["structuredContent"]["lat"], 48.85);
+        let read = w.server.lock().unwrap().seen.iter().find(|(m, _, _)| m == "resources/read").map(|(_, s, r)| (s.clone(), r.clone())).unwrap();
+        assert_eq!(read.1["params"]["uri"], "ui://places/map.html");
+        assert!(read.0.is_some(), "on the server's session");
     }
 }

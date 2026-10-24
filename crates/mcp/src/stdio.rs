@@ -109,15 +109,7 @@ impl StdioSession {
     }
 
     async fn initialize(&self) -> Result<(), McpError> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": { "name": "nebo", "version": env!("CARGO_PKG_VERSION") }
-            }),
-        )
-        .await?;
+        self.request("initialize", crate::client::initialize_params()).await?;
         // `initialized` is a notification — no id, no response expected.
         self.notify("notifications/initialized", json!({})).await
     }
@@ -150,7 +142,7 @@ impl StdioSession {
     }
 
     /// Send a JSON-RPC request and await its correlated response.
-    async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+    pub(crate) async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);

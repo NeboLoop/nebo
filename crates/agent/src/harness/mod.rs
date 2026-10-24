@@ -29,6 +29,7 @@ pub mod turn;
 pub mod turn_end;
 pub mod usage;
 pub mod verify;
+pub mod view_context;
 pub mod workflow_turn;
 
 use std::collections::{HashMap, HashSet};
@@ -104,6 +105,8 @@ pub struct Harness {
     pub(crate) active_turns: ActiveTurns,
     /// The owner's phone position, for the employees it is shared with.
     pub(crate) phone_locations: Arc<crate::phone_location::PhoneLocations>,
+    /// What the conversations' MCP App views told the employee.
+    pub(crate) view_contexts: Arc<view_context::ViewContexts>,
     /// Jev, the permission judge asked first about a call the code can't
     /// decide (PRD-Permissions §4.7); `None` goes straight to the aux
     /// classifier.
@@ -151,6 +154,7 @@ impl Harness {
             goal_check_ins: Default::default(),
             active_turns: Default::default(),
             phone_locations: Default::default(),
+            view_contexts: Default::default(),
             decide: None,
             workspace: None,
             build_sessions: Default::default(),
@@ -259,6 +263,12 @@ impl Harness {
     /// Where the owner's phone reports its position (`PUT /phone/location`).
     pub fn phone_locations(&self) -> &crate::phone_location::PhoneLocations {
         &self.phone_locations
+    }
+
+    /// What the conversations' MCP App views told the employee
+    /// (`ui/update-model-context`).
+    pub fn view_contexts(&self) -> &view_context::ViewContexts {
+        &self.view_contexts
     }
 
     /// Where a session runs, as it is told: the environment's fields after
