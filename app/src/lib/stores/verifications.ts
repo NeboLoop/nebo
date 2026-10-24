@@ -300,7 +300,7 @@ export function lineWords(v: VerificationView, tr: Tr): string {
   }
 }
 
-const PHASES = new Set(["working", "checks", "reviewers", "fixing", "landing", "live"]);
+const PHASES = new Set(["working", "checks", "reviewers", "fixing", "live"]);
 
 /** What the loop is doing now, while it runs; "" once it waits or is done. */
 export function phaseWords(v: VerificationView, tr: Tr): string {

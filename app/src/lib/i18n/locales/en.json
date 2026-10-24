@@ -4551,7 +4551,6 @@
 			"checks": "Running the project's own checks.",
 			"reviewers": "Reviewers are reading the change.",
 			"fixing": "Fixing what the reviewers found. The next round checks the fixes.",
-			"landing": "Putting the change into the project.",
 			"live": "Checking it live."
 		},
 		"sheet": {

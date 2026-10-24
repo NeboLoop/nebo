@@ -4551,7 +4551,6 @@
 			"checks": "Die eigenen Prüfungen des Projekts laufen.",
 			"reviewers": "Die Prüfer lesen die Änderung.",
 			"fixing": "Was die Prüfer gefunden haben, wird behoben. Die nächste Runde prüft die Korrekturen.",
-			"landing": "Die Änderung wird ins Projekt übernommen.",
 			"live": "Wird live geprüft."
 		},
 		"sheet": {

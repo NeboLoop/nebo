@@ -4551,7 +4551,6 @@
 			"checks": "Trwają własne testy projektu.",
 			"reviewers": "Recenzenci czytają zmianę.",
 			"fixing": "Trwa poprawianie tego, co znaleźli recenzenci. Następna runda sprawdzi poprawki.",
-			"landing": "Trwa dodawanie zmiany do projektu.",
 			"live": "Trwa sprawdzanie na żywo."
 		},
 		"sheet": {

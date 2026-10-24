@@ -4551,7 +4551,6 @@
 			"checks": "Đang chạy các bài kiểm tra của chính dự án.",
 			"reviewers": "Người đánh giá đang đọc thay đổi.",
 			"fixing": "Đang sửa những gì người đánh giá tìm ra. Vòng sau sẽ kiểm tra các bản sửa.",
-			"landing": "Đang đưa thay đổi vào dự án.",
 			"live": "Đang kiểm tra trực tiếp."
 		},
 		"sheet": {

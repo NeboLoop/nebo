@@ -4551,7 +4551,6 @@
 			"checks": "Projenin kendi kontrolleri çalışıyor.",
 			"reviewers": "İnceleyiciler değişikliği okuyor.",
 			"fixing": "İnceleyicilerin bulduğu sorunlar düzeltiliyor. Sonraki tur düzeltmeleri kontrol eder.",
-			"landing": "Değişiklik projeye ekleniyor.",
 			"live": "Canlı kontrol ediliyor."
 		},
 		"sheet": {

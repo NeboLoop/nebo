@@ -4551,7 +4551,6 @@
 			"checks": "De eigen controles van het project draaien.",
 			"reviewers": "Reviewers lezen de wijziging.",
 			"fixing": "Wat de reviewers vonden, wordt opgelost. De volgende ronde controleert de oplossingen.",
-			"landing": "De wijziging gaat het project in.",
 			"live": "Wordt live gecontroleerd."
 		},
 		"sheet": {

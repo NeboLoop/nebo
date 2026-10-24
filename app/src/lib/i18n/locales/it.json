@@ -4551,7 +4551,6 @@
 			"checks": "Esecuzione dei controlli del progetto.",
 			"reviewers": "I revisori stanno leggendo la modifica.",
 			"fixing": "Correzione di ciò che hanno trovato i revisori. Il turno successivo controlla le correzioni.",
-			"landing": "Inserimento della modifica nel progetto.",
 			"live": "Controllo dal vivo."
 		},
 		"sheet": {

@@ -4551,7 +4551,6 @@
 			"checks": "Rodando os testes do próprio projeto.",
 			"reviewers": "Os revisores estão lendo a alteração.",
 			"fixing": "Corrigindo o que os revisores encontraram. A próxima rodada verifica as correções.",
-			"landing": "Colocando a alteração no projeto.",
 			"live": "Verificando ao vivo."
 		},
 		"sheet": {

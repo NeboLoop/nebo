@@ -40,8 +40,7 @@ pub struct Badge {
     /// What the loop is doing now: `working` (the change is still being
     /// written), `checks` (the project's own checks run), `reviewers` (the
     /// reviewers read it), `fixing` (the builder fixes what they found),
-    /// `landing` (catching up and landing), `live` (checking it live),
-    /// `waiting` (on the owner) or `done`.
+    /// `live` (checking it live), `waiting` (on the owner) or `done`.
     pub phase: String,
     /// The review round it is on, or last had (0 before the first).
     pub round: usize,

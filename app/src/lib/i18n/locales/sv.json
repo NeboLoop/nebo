@@ -4551,7 +4551,6 @@
 			"checks": "Projektets egna kontroller körs.",
 			"reviewers": "Granskarna läser ändringen.",
 			"fixing": "Det granskarna hittade åtgärdas. Nästa omgång kontrollerar åtgärderna.",
-			"landing": "Ändringen läggs in i projektet.",
 			"live": "Kontrolleras live."
 		},
 		"sheet": {

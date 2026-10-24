@@ -12067,6 +12067,61 @@ mod tests {
         })
     }
 
+    /// Review round 5, in place: work unchanged since a clean review (its
+    /// one minor deferred, no code touched) keeps that verdict and is not
+    /// reviewed again, unless the rules a review reads changed since (the
+    /// employee's own rules here): then it is reviewed again, under them.
+    /// The same skip holds for a helper's copy, which the same step checks.
+    #[test]
+    fn unchanged_work_is_reviewed_again_only_under_new_rules() {
+        const ONE_MINOR: &str = r#"{"findings": [{"severity": "minor", "title": "No docstring", "evidence": "total.py:1", "repro": "help(total)", "impact": "unclear", "fix": "Add a docstring"}], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#;
+        for rules_change in [false, true] {
+            crate::test_home::with_home(|_| {
+                let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+                rt.block_on(async {
+                    let (_project, file) = small_project(true).await;
+                    let mut steps = vec![
+                        Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                        Step::Say("Done."),
+                        verdict(ONE_MINOR),
+                        Step::Say("r1-correctness-1: deferred: the module has no docstrings yet."),
+                    ];
+                    if rules_change {
+                        steps.push(verdict(r#"{"findings": [], "verified_ok": [{"checked": "totals round to cents"}], "prior": [{"id": "r1-correctness-1", "state": "deferred"}]}"#));
+                    }
+                    steps.push(Step::Say("Verified."));
+                    let model = Scripted::new(steps);
+                    let h = verifying_harness(&model).await;
+                    h.store.create_agent("dev", Some("agent"), "Dev", "", "", "{}", None, None).unwrap();
+                    let store = h.store.clone();
+                    let mut req = owner("Make total() add a and b");
+                    req.seat.agent_id = "dev".into();
+                    // The owner adds a rule while the builder answers the minor.
+                    let model_calls = model.clone();
+                    if rules_change {
+                        tokio::spawn(async move {
+                            while model_calls.calls().len() < 3 {
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                            }
+                            store.set_agent_rules_from_packages("dev", "Every total rounds to cents.", "s").unwrap();
+                        });
+                    }
+                    run_turn(&h, req).await;
+                    let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    let reviews = h.store.verification_rounds(&v.id).unwrap().into_iter().filter(|r| r.kind == "review").count();
+                    assert_eq!(v.state, "verified", "{v:?}");
+                    let reviewers: Vec<ChatRequest> = model.calls().into_iter().filter(is_reviewer).collect();
+                    if rules_change {
+                        assert_eq!(reviews, 2, "reviewed again under the new rule");
+                        assert!(reviewers[1].messages.iter().any(|m| m.content.contains("Every total rounds to cents.")), "the second review read it");
+                    } else {
+                        assert_eq!((reviews, reviewers.len()), (1, 1), "the same bytes under the same rules are not reviewed again");
+                    }
+                })
+            });
+        }
+    }
+
     /// Review 2026-10-20 B2: reviewers read their own read-only snapshot of
     /// the change, never the project itself; a check that rewrites the
     /// project's files during a round means what was reviewed is not what is

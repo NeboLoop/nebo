@@ -4551,7 +4551,6 @@
 			"checks": "Menjalankan semakan projek sendiri.",
 			"reviewers": "Penyemak sedang membaca perubahan.",
 			"fixing": "Membaiki apa yang ditemui penyemak. Pusingan seterusnya menyemak pembaikan itu.",
-			"landing": "Memasukkan perubahan ke dalam projek.",
 			"live": "Menyemaknya secara langsung."
 		},
 		"sheet": {

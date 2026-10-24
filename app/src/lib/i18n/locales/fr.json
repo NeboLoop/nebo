@@ -4551,7 +4551,6 @@
 			"checks": "Lancement des tests du projet.",
 			"reviewers": "Les relecteurs lisent la modification.",
 			"fixing": "Correction de ce que les relecteurs ont trouvé. Le tour suivant vérifie les corrections.",
-			"landing": "Ajout de la modification au projet.",
 			"live": "Vérification en direct."
 		},
 		"sheet": {

@@ -4551,7 +4551,6 @@
 			"checks": "Ejecutando las pruebas propias del proyecto.",
 			"reviewers": "Los revisores están leyendo el cambio.",
 			"fixing": "Corrigiendo lo que encontraron los revisores. La siguiente ronda revisa las correcciones.",
-			"landing": "Integrando el cambio en el proyecto.",
 			"live": "Comprobándolo en vivo."
 		},
 		"sheet": {

@@ -4551,7 +4551,6 @@
 			"checks": "Menjalankan pemeriksaan proyek sendiri.",
 			"reviewers": "Peninjau sedang membaca perubahan.",
 			"fixing": "Memperbaiki temuan peninjau. Putaran berikutnya memeriksa perbaikannya.",
-			"landing": "Memasukkan perubahan ke proyek.",
 			"live": "Memeriksanya secara langsung."
 		},
 		"sheet": {
