@@ -1085,8 +1085,12 @@ export function createChatController(config: ChatControllerConfig) {
     };
   }
 
+  /** Stop, or "send now" when a message is queued behind the running work:
+   *  the frame says `deliver`, and the bot stops only the reply so a turn
+   *  answers the message at once (the code check goes on). */
   function stop() {
-    ws.send('cancel', turnTarget());
+    const queued = messages.some((m) => m.type === 'user' && m.pending);
+    ws.send('cancel', { ...turnTarget(), ...(queued ? { deliver: true } : {}) });
     clearDeliveryTimer();
     isLoading = false;
     resetStreaming();

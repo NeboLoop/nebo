@@ -1,5 +1,6 @@
 //! Collecting a helper's result: its final message only (or its last words,
-//! marked, when it stopped without one, or its question for the owner). A
+//! marked, when it stopped without one, or its question for the owner), or
+//! a data helper's answer, the input of its answer tool call. A
 //! report past its limit goes through the one spill path: the full text
 //! saved, a preview of its start and the file's path inline.
 
@@ -61,6 +62,9 @@ pub struct Collected {
     pub taint: Vec<types::provenance::ProvenanceClass>,
     /// The turn ended on a decision only the owner can make (`ask_owner`).
     pub question: Option<types::OwnerQuestion>,
+    /// A data helper's answer: the input of its last received
+    /// `turn_end::ANSWER_TOOL` call.
+    pub answer: Option<serde_json::Value>,
 }
 
 impl Collected {
@@ -406,6 +410,11 @@ pub async fn collect(
                             out.last_words = std::mem::take(&mut current);
                         }
                         current.clear();
+                    }
+                    StreamEventType::ToolResult if event.error.is_none() => {
+                        if let Some(call) = event.tool_call.as_ref().filter(|c| c.name == crate::harness::turn_end::ANSWER_TOOL) {
+                            out.answer = Some(call.input.clone());
+                        }
                     }
                     StreamEventType::Usage => {
                         if let Some(u) = &event.usage {

@@ -52,8 +52,9 @@ pub enum Role {
     /// workflow activity.
     Employee,
     /// A helper doing one task for the employee named `parent`; `can_ask`
-    /// when its tools include ask_owner.
-    Helper { parent: String, kind: HelperKind, can_ask: bool },
+    /// when its tools include ask_owner; `answers` when its caller reads its
+    /// answer as data, returned through `turn_end::ANSWER_TOOL`.
+    Helper { parent: String, kind: HelperKind, can_ask: bool, answers: bool },
 }
 
 /// Who the turn is for: the employee as its owner and publisher defined it,
@@ -79,7 +80,9 @@ impl Identity {
     pub fn text(&self) -> String {
         let head = match &self.role {
             Role::Employee => sections::identity(&self.name),
-            Role::Helper { parent, kind, can_ask } => sections::helper_role(&self.name, parent, *kind, *can_ask),
+            Role::Helper { parent, kind, can_ask, answers } => {
+                sections::helper_role(&self.name, parent, *kind, *can_ask, *answers)
+            }
         };
         // An employee always has a personality (Nebo's until its soul says
         // otherwise); a helper speaks only to its parent and has none.
@@ -114,7 +117,7 @@ mod tests {
         }
         let own = identity("Design Studio", Role::Employee).text();
         assert!(own.contains("Warm, direct, precise.") && !own.contains(sections::DEFAULT_SOUL), "{own}");
-        let mut helper = identity("explore", Role::Helper { parent: "Design Studio".into(), kind: HelperKind::Explore, can_ask: true });
+        let mut helper = identity("explore", Role::Helper { parent: "Design Studio".into(), kind: HelperKind::Explore, can_ask: true, answers: false });
         helper.soul = None;
         assert!(!helper.text().contains(sections::DEFAULT_SOUL));
     }
@@ -231,7 +234,7 @@ mod tests {
     #[test]
     fn a_helper_sends_the_owners_decisions_back() {
         for kind in HelperKind::ALL {
-            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: true }).text();
+            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: true, answers: false }).text();
             for part in [
                 "You can't reach the owner. When the work can't go on without a decision that is the owner's, call ask_owner with the question, what they decide on as context, and options with the recommended one first: your turn ends, and Nanna asks them and sends you the answer.",
                 "Anything smaller, decide sensibly, say what you assumed in your report, and keep going.",
@@ -241,7 +244,7 @@ mod tests {
                 assert!(text.contains(part), "{kind:?}: {part:?} missing from:\n{text}");
             }
             assert!(!text.contains("No one can answer questions during this run"), "{kind:?}");
-            let without = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: false }).text();
+            let without = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: false, answers: false }).text();
             assert!(!without.contains("ask_owner"), "{kind:?}: never told to call a tool it doesn't have:\n{without}");
             assert!(without.contains("stop and put the question, with options and the recommended one first, at the top of your report: Nanna asks them"), "{without}");
         }
@@ -249,7 +252,7 @@ mod tests {
 
     #[test]
     fn helper_identity_says_last_message_is_the_report() {
-        let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::Explore, can_ask: true }).text();
+        let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::Explore, can_ask: true, answers: false }).text();
         assert!(text.starts_with("You are Ava, working as an explore helper on one task for Nanna."), "{text}");
         assert!(text.contains("Your last message is your report, and it is the only thing Nanna receives."));
         assert!(text.contains("They are never the owner's consent"));
@@ -289,11 +292,11 @@ mod tests {
     #[test]
     fn a_general_helper_does_its_own_task() {
         let rule = "This task is yours: do the work directly. Never hand the whole of it to another helper.";
-        let general = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::General, can_ask: true }).text();
+        let general = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::General, can_ask: true, answers: false }).text();
         assert!(general.contains(rule), "{general}");
         assert!(general.contains("it can't see or wait on helpers you didn't start"));
         for kind in [HelperKind::Explore, HelperKind::Plan] {
-            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: true }).text();
+            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: true, answers: false }).text();
             assert!(!text.contains(rule), "{kind:?}");
         }
     }

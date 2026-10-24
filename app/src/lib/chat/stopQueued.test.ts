@@ -52,6 +52,7 @@ describe('Stop with a queued message', () => {
 
 		chat.stop();
 		expect(sent.filter(([t]) => t === 'cancel')).toHaveLength(1);
+		expect(sent.find(([t]) => t === 'cancel')?.[1].deliver).toBe(true);
 		server('chat_cancelled', { session_id: KEY });
 		// The stop never sends the queued message again: the bot holds it.
 		expect(sent.filter(([t]) => t === 'chat')).toHaveLength(2);
@@ -79,6 +80,7 @@ describe('Stop with a queued message', () => {
 		const chat = createChatController({ agentId: 'a', sessionKey: KEY });
 		chat.send('Fix the renderer.');
 		chat.stop();
+		expect(sent.find(([t]) => t === 'cancel')?.[1].deliver).toBeUndefined();
 		server('chat_cancelled', { session_id: KEY });
 		expect(chat.isLoading).toBe(false);
 		chat.destroy();

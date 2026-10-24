@@ -2,8 +2,8 @@
 //!
 //! The pipeline is
 //! Scope → Search → URL-dedup → Fetch/Extract → 3-vote adversarial Verify → Synthesize,
-//! every stage a bounded fan-out whose sub-agent is a helper of the run whose final answer
-//! is one schema-validated JSON object (`agent::structured_agent`).
+//! every stage a bounded fan-out whose sub-agent is a helper of the run returning its answer,
+//! one schema-validated JSON object, through the answer tool (`agent::structured_agent`).
 //!
 //! This module holds the load-bearing *deterministic* logic — the data model, JSON-schema
 //! builders, URL normalisation, fetch-budget allocation, claim ranking, the survival rule,

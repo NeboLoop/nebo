@@ -5,7 +5,8 @@
 //! hears only its brief ([`brief`]): the request, the change, where the
 //! code is, the round's check results and the rules. It never sees how the
 //! builder worked. It is told to refute the change and to drop anything it
-//! cannot show, and it answers as data ([`findings::answer_schema`]). It
+//! cannot show, and it returns its verdict as data through the answer tool
+//! ([`findings::answer_schema`] is its input schema). It
 //! runs on the employee's own model and level, under the same limits as any
 //! of the employee's work, and the owner's Stop ends it.
 
@@ -26,6 +27,9 @@ pub const INLINE_PATCH_CHARS: usize = 60_000;
 pub struct RoundInput<'a> {
     pub verification_id: &'a str,
     pub round: u32,
+    /// Which run of the round's reviewers this is: 1, then one more each
+    /// time the reviewers that could not finish run again, fresh.
+    pub attempt: u32,
     /// A later round: the reviewer checks the fixes (the delta) and the
     /// riskiest area, with the earlier findings as context.
     pub delta: bool,
@@ -64,7 +68,7 @@ pub struct RoundInput<'a> {
 pub struct LensReview {
     pub lens: Lens,
     /// The review, or why there is none (it stopped, failed, or never
-    /// answered in shape).
+    /// returned its verdict).
     pub review: Result<Review, String>,
     /// Its session, where its steps and their cost are kept.
     pub session_key: String,
@@ -96,9 +100,13 @@ pub fn build_dir(scratch: &Path) -> PathBuf {
     scratch.join("build")
 }
 
-/// The node a reviewer's session is named by.
-pub fn node(verification_id: &str, round: u32, lens: Lens) -> String {
-    format!("verify-{verification_id}-r{round}-{}", lens.as_str())
+/// The node a reviewer's session is named by: a fresh one for each
+/// `attempt` of its lens in the round.
+pub fn node(verification_id: &str, round: u32, lens: Lens, attempt: u32) -> String {
+    match attempt {
+        0 | 1 => format!("verify-{verification_id}-r{round}-{}", lens.as_str()),
+        n => format!("verify-{verification_id}-r{round}-{}-{n}", lens.as_str()),
+    }
 }
 
 /// Run one round: a reviewer per lens, all at once, for the turn `parent`.
@@ -112,7 +120,7 @@ pub async fn run_round(
 ) -> Vec<LensReview> {
     let asks = input.lenses.iter().map(|&lens| {
         let ask = Ask {
-            node: node(input.verification_id, input.round, lens),
+            node: node(input.verification_id, input.round, lens, input.attempt),
             description: format!("Reviewing: {}", lens.as_str()),
             kind: HelperKind::Review,
             prompt: brief(lens, input),
@@ -303,12 +311,9 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
         ));
     }
     out.push_str(input.rules);
-    out.push_str(
-        "\n\n## Your answer\nWhen you are done, answer with one JSON object and nothing else:\n\
-         {\"findings\": [{\"severity\": \"blocker|major|minor\", \"kind\": \"defect|decision\", \"title\": \"...\", \
-         \"evidence\": \"path:line\", \"repro\": \"steps or worked numbers\", \"impact\": \"...\", \"fix\": \"...\"}], \
-         \"verified_ok\": [{\"checked\": \"what you checked that held\"}], \"prior\": [{\"id\": \"...\", \"state\": \
-         \"fixed|open|deferred\", \"note\": \"...\"}]}\n\
+    out.push_str(&format!(
+        "\n\n## Your verdict\nWhen you are done, call {} with your verdict: `findings`, `verified_ok` and, \
+         in a later round, `prior`. That call is your whole answer: words you write are never read.\n\
          - blocker: wrong results, lost or corrupted data, a security hole, money wrong, or the build or tests fail.\n\
          - major: a real defect or regression someone will hit.\n\
          - minor: worth fixing, harmless meanwhile.\n\
@@ -316,7 +321,8 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
          charge, promise or call something), never how to fix a bug: anything broken, missing or wrong with a clear \
          fix is a defect, with that fix. A decision gives at least two concrete choices in `options` and the one you \
          recommend in `recommended`; one without them is read as a defect.\n",
-    );
+        crate::harness::turn_end::ANSWER_TOOL
+    ));
     out
 }
 
@@ -350,6 +356,7 @@ mod tests {
         RoundInput {
             verification_id: "v1",
             round: if delta { 2 } else { 1 },
+            attempt: 1,
             delta,
             lenses: &[Lens::Correctness],
             spec: "Show the invoice total.",

@@ -13,6 +13,13 @@
 //! reviewed again where catching up touched what it changed), and lands as
 //! one commit. Then the builder reports to the owner from the record.
 //!
+//! A reviewer returns its verdict through its answer tool; one that can't
+//! finish runs again, alone and fresh, in the same round: an incomplete
+//! review never ends the loop. A round runs in a task of its own, so the
+//! owner's "send now" (a queued message delivered while it runs) stops only
+//! the builder's reply: the round goes on and the turn that answers him
+//! joins it.
+//!
 //! The owner decides what only they can: a finding that is a product or
 //! business call, a loop that stopped making progress (two rounds without a
 //! new low in open blockers and majors, or a fixed finding back), edits of
@@ -62,7 +69,7 @@ pub enum Closed {
 }
 
 /// What one turn's verify loop keeps between its rounds.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Shared {
     /// Verifications whose owner chose to land them after committing their
     /// own edits: edits still in the way then are said, not asked again.
@@ -135,6 +142,21 @@ const CONFLICT_TRIES: usize = 3;
 const STALL_GO_ONS: usize = CONFLICT_TRIES;
 
 impl Shared {
+    /// Take in what a round run in a task of its own kept ([`InFlight`]).
+    fn merge(&mut self, from: Shared) {
+        self.after_owner.extend(from.after_owner);
+        self.reported.extend(from.reported);
+        self.minors_offered.extend(from.minors_offered);
+        for (id, n) in from.conflicts {
+            let mine = self.conflicts.entry(id).or_default();
+            *mine = (*mine).max(n);
+        }
+        for (id, n) in from.went_on {
+            let mine = self.went_on.entry(id).or_default();
+            *mine = (*mine).max(n);
+        }
+    }
+
     /// Count a landing of `id` that met a conflict; whether it is stuck.
     fn stuck(&mut self, id: &str) -> bool {
         let n = self.conflicts.entry(id.to_string()).or_default();
@@ -152,6 +174,58 @@ impl Shared {
     fn go_on(&mut self, id: &str) {
         *self.went_on.entry(id.to_string()).or_default() += 1;
     }
+}
+
+/// A verification's step running in a task of its own: its round's checks
+/// and reviewers. It outlives the turn that started it when the owner sends
+/// a queued message now (`detach_rounds`): that turn stops to hear him, the
+/// round goes on, and the session's next end check joins it. A stop with
+/// nothing queued stops it with the turn (the check pauses).
+struct InFlight {
+    session_key: String,
+    result: futures::future::Shared<futures::future::BoxFuture<'static, (Step, Option<Work>, Shared)>>,
+    /// Stops the round's checks and reviewers.
+    stop: CancellationToken,
+    /// Carries what the round says on the stream of the turn that started
+    /// it; cut when that turn stops to hear the owner, so its stream ends.
+    relay: tokio::task::AbortHandle,
+    /// Set by the owner's "send now": the turn's stop leaves the round
+    /// running.
+    detached: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The steps in flight, by verification id.
+static IN_FLIGHT: std::sync::LazyLock<Mutex<std::collections::HashMap<String, InFlight>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn in_flight() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, InFlight>> {
+    IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The owner sent a message queued on `session_key` now: the rounds its
+/// turn is running go on when the turn stops to hear him, for the turn that
+/// answers him to join. Returns how many go on.
+pub fn detach_rounds(session_key: &str) -> usize {
+    let flights = in_flight();
+    let mut n = 0;
+    for f in flights.values().filter(|f| f.session_key == session_key) {
+        f.detached.store(true, std::sync::atomic::Ordering::SeqCst);
+        n += 1;
+    }
+    n
+}
+
+/// The owner's Stop on `session_key` with nothing queued: the rounds it
+/// has running stop with its turn, joined or not.
+pub fn stop_rounds(session_key: &str) {
+    for f in in_flight().values().filter(|f| f.session_key == session_key) {
+        f.stop.cancel();
+    }
+}
+
+/// Whether verification `id` has a step running in its own task.
+fn is_in_flight(id: &str) -> bool {
+    in_flight().contains_key(id)
 }
 
 impl Verify {
@@ -214,7 +288,9 @@ impl Verify {
         let mut ended = Vec::new();
         for work in self.work.snapshot().await {
             let Some(v) = store.get_verification(&work.id).ok().flatten() else { continue };
-            if !matches!(v.state.as_str(), "running" | "paused") {
+            // A round that goes on past this turn (the owner's "send now")
+            // is still being checked: the turn that answers him joins it.
+            if !matches!(v.state.as_str(), "running" | "paused") || is_in_flight(&v.id) {
                 continue;
             }
             let (state, reason) = match &why {
@@ -247,6 +323,7 @@ impl Verify {
 }
 
 /// What the verify check of a turn runs with.
+#[derive(Clone)]
 pub struct VerifyCheck {
     pub harness: Harness,
     pub helpers: Arc<Helpers>,
@@ -276,6 +353,8 @@ enum Purpose {
     Stalled { open: usize, brief: String },
     /// Reviewed, but no build or test could run.
     NoChecks,
+    /// Reviewers ran [`REVIEW_TRIES`] times and still could not finish.
+    ReviewFailed,
     /// The owner's own edits are in the way of landing verified work.
     OwnerEdits,
 }
@@ -336,7 +415,8 @@ fn owner_said(words: &str, brief: &str) -> String {
 /// (`Decision`) is carried out as he put it, words or choice.
 fn instruction(purpose: &Purpose, answer: Option<&Reply>) -> Option<String> {
     match (purpose, answer) {
-        (Purpose::Decision { .. }, _) => None,
+        // His words to reviewers that could not finish send them on.
+        (Purpose::Decision { .. } | Purpose::ReviewFailed, _) => None,
         (Purpose::Stalled { brief, .. }, Some(Reply::Words(words))) => Some(owner_said(words, brief)),
         (_, Some(Reply::Words(words))) => Some(owner_said(words, "")),
         _ => None,
@@ -350,6 +430,7 @@ fn went_on(answer: Option<&Reply>) -> bool {
 }
 
 /// Where one work's round left it.
+#[derive(Clone)]
 enum Step {
     /// The builder has more to do: what it is told.
     Continue(String),
@@ -397,9 +478,12 @@ impl EndCheck for VerifyCheck {
         let mut told: Vec<String> = Vec::new();
         for work in works {
             let id = work.id.clone();
-            match self.step(work, &notes).await {
-                Step::Continue(text) => told.push(text),
-                Step::Finished | Step::Gone => {}
+            match self.run_step(work, &notes).await {
+                Some(Step::Continue(text)) => told.push(text),
+                Some(Step::Finished | Step::Gone) => {}
+                // The owner sent a queued message now: the turn stops to
+                // hear him and the round goes on without it.
+                None => return EndVerdict::Exit(crate::harness::turn::TurnExit::Cancelled),
             }
             self.harness.verification_changed(&id);
         }
@@ -431,15 +515,33 @@ impl EndCheck for VerifyCheck {
             .iter()
             .map(|v| record_for_report(store, v))
             .collect();
-        EndVerdict::Continue(TurnEvent::Verify(format!(
-            "The checking is done. Now report to the owner in plain words: what you built; what each round of review \
-             caught and what you fixed; what is verified and what is not (never more than the record below says); \
-             whether it landed in their project or waits in its copy; and anything that needs them. If the work \
-             deploys or releases, wait until it is live and check its health, logs and data before you say it works, \
-             and say what you checked.\n\n{}",
-            records.join("\n\n")
-        )))
+        EndVerdict::Continue(TurnEvent::Verify(report_brief(&unreported, &records)))
     }
+}
+
+/// What the builder is told once every verification of the turn is
+/// settled: report from the record. Landing is the loop's own step, so the
+/// brief never tells the builder the owner must review or merge the work:
+/// what landed is reported as landed, and what didn't says why from the
+/// record.
+fn report_brief(settled: &[db::Verification], records: &[String]) -> String {
+    let all_landed = settled.iter().all(|v| !v.landed_ref.is_empty());
+    let lead = if all_landed {
+        "The checking is done and your change landed in the project. Now report to the owner in plain words what \
+         landed: what you built, and the commit it landed as; what each round of review caught and what you fixed; \
+         and what is verified (never more than the record below says)."
+    } else {
+        "The checking is done. Now report to the owner in plain words: what you built; what each round of review \
+         caught and what you fixed; what is verified and what is not (never more than the record below says); where \
+         the work is now (landed as a commit, or still in its copy and why, from the record); and any decision of \
+         theirs it still needs. Landing is the checking's own step: never tell the owner they must review or merge \
+         the work."
+    };
+    format!(
+        "{lead} If the work deploys or releases, wait until it is live and check its health, logs and data before you \
+         say it works, and say what you checked.\n\n{}",
+        records.join("\n\n")
+    )
 }
 
 /// The riskiest of `lenses`: the one a later round reads the fixes through,
@@ -509,14 +611,14 @@ fn record_for_report(store: &db::Store, v: &db::Verification) -> String {
             _ => {}
         }
     }
+    // Every open finding in full, minors included, from the row's own
+    // open list: the counts above never name findings this leaves out.
     let open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
-    for f in open.iter().filter(|f| f.severity.blocks()) {
-        out.push_str(&format!(
-            "\n- Still open [{}]: {} ({})",
-            severity_word(f.severity),
-            f.title,
-            f.evidence
-        ));
+    if !open.is_empty() {
+        out.push_str(&format!("\n- Still open ({}):", open.len()));
+        for f in &open {
+            out.push_str(&finding_block(f).replace("\n", "\n  "));
+        }
     }
     if v.landed_ref.is_empty() {
         out.push_str(&format!(
@@ -540,6 +642,22 @@ fn severity_word(s: Severity) -> &'static str {
     }
 }
 
+/// One open finding in full, as every message to the builder carries it:
+/// its id, severity, title, evidence, repro, impact and fix. The builder
+/// never has to look for a finding anywhere else.
+fn finding_block(f: &Finding) -> String {
+    format!(
+        "\n- {} [{}] {}: {}\n  Repro: {}\n  Impact: {}\n  Fix: {}",
+        f.id,
+        severity_word(f.severity),
+        f.title,
+        f.evidence,
+        f.repro,
+        f.impact,
+        f.fix
+    )
+}
+
 /// What the builder is told after a round with findings.
 fn findings_brief(
     project: &str,
@@ -554,7 +672,8 @@ fn findings_brief(
          and major below in your working copy; a blocker or major can't be deferred. For each minor, fix it or defer it \
          with a reason. End your reply with one line per finding: `<id>: fixed: what you changed`, `<id>: deferred: why` \
          (minors only), or `<id>: disputed: why it is not a defect` (and leave that code as it is). The next round's \
-         reviewers check each line against the code.",
+         reviewers check each line against the code, and it runs as soon as you end your reply: keep going, never \
+         stop to report or to wait for the owner.",
         lenses
             .iter()
             .map(|l| l.as_str())
@@ -562,16 +681,7 @@ fn findings_brief(
             .join(", ")
     );
     for f in open {
-        out.push_str(&format!(
-            "\n- {} [{}] {}: {}\n  Repro: {}\n  Impact: {}\n  Fix: {}",
-            f.id,
-            severity_word(f.severity),
-            f.title,
-            f.evidence,
-            f.repro,
-            f.impact,
-            f.fix
-        ));
+        out.push_str(&finding_block(f));
     }
     let failed: Vec<&CheckRun> = checks.iter().filter(|c| !c.passed).collect();
     if !failed.is_empty() {
@@ -592,6 +702,87 @@ fn findings_brief(
 impl VerifyCheck {
     fn store(&self) -> &Arc<db::Store> {
         &self.harness.store
+    }
+
+    /// One work's next step, run in a task of its own ([`InFlight`]), or
+    /// the one already running for it (started by an earlier turn the
+    /// owner's "send now" stopped). The turn's stop stops it too, unless the
+    /// owner sent a queued message now: then it goes on and `None` says so.
+    /// A round whose code changed while it ran says its findings are from
+    /// the version it started on; the next round reviews the code as it is.
+    async fn run_step(&self, work: Work, notes: &str) -> Option<Step> {
+        let id = work.id.clone();
+        let (result, stop, detached, relay) = {
+            let mut flights = in_flight();
+            let flight = flights.entry(id.clone()).or_insert_with(|| {
+                let stop = CancellationToken::new();
+                // The round speaks on this turn's stream through a relay the
+                // turn can cut, and keeps its loop state in a copy merged
+                // back when it is joined.
+                let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<ai::StreamEvent>(64);
+                let mut kept = self.verify.shared().clone();
+                let stream = kept.tool_ctx.as_mut().and_then(|c| c.stream_tx.replace(relay_tx));
+                let relay = tokio::spawn(async move {
+                    while let Some(event) = relay_rx.recv().await {
+                        if let Some(stream) = &stream
+                            && stream.send(event).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                })
+                .abort_handle();
+                let verify = Verify { shared: Arc::new(Mutex::new(kept)), ..self.verify.clone() };
+                let me = VerifyCheck { cancel: stop.clone(), verify, ..self.clone() };
+                let (notes, id) = (notes.to_string(), id.clone());
+                let task = tokio::spawn(async move {
+                    let step = me.step(work, &notes).await;
+                    let work = me.verify.work.snapshot().await.into_iter().find(|w| w.id == id);
+                    let kept = me.verify.shared().clone();
+                    (step, work, kept)
+                });
+                let result = futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                    task.await.unwrap_or_else(|e| {
+                        tracing::error!(error = %e, "a verification's step ended without a result");
+                        (Step::Finished, None, Shared::default())
+                    })
+                }));
+                InFlight { session_key: self.session_key.clone(), result, stop, relay, detached: Default::default() }
+            });
+            // This turn is the one it reports to now.
+            flight.detached.store(false, std::sync::atomic::Ordering::SeqCst);
+            (flight.result.clone(), flight.stop.clone(), flight.detached.clone(), flight.relay.clone())
+        };
+        let (step, done, kept) = tokio::select! {
+            out = result.clone() => out,
+            _ = self.cancel.cancelled() => {
+                if detached.load(std::sync::atomic::Ordering::SeqCst) {
+                    tracing::info!(verification = %id, "the owner sent a message now: the round goes on");
+                    // The round no longer speaks on this turn's stream: the
+                    // turn ends now, and its stream with it.
+                    relay.abort();
+                    return None;
+                }
+                stop.cancel();
+                result.await
+            }
+        };
+        in_flight().remove(&id);
+        self.verify.shared().merge(kept);
+        let Some(work) = done else { return Some(step) };
+        self.verify.work.put(work.clone()).await;
+        let changed = match (work.shadow.snapshot().await, &work.last) {
+            (Ok(now), Some(reviewed)) => &now != reviewed,
+            _ => false,
+        };
+        Some(match step {
+            Step::Continue(text) if changed => Step::Continue(format!(
+                "This round reviewed your code as it was when the round started; you changed it since, so what \
+                 follows is about that earlier version. Fix what still applies; the next round reviews your code as \
+                 it is now.\n\n{text}"
+            )),
+            other => other,
+        })
     }
 
     /// Make a round's folder for its reviewers: the copy of `head` and the
@@ -626,6 +817,14 @@ impl VerifyCheck {
 
     fn tool_ctx(&self) -> tools::ToolContext {
         self.verify.shared().tool_ctx.clone().unwrap_or_default()
+    }
+
+    /// Whether `v`'s reviewers have spent the employee's own spending limit
+    /// for a run.
+    fn over_spend_cap(&self, v: &db::Verification) -> bool {
+        let store = self.store();
+        let cap_cents = store.agent_run_spend_cap_cents(&self.agent_id);
+        cap_cents > 0 && store.reviewers_cost(&v.reviewer_prefix).unwrap_or(0) >= cap_cents * 1_000_000
     }
 
     fn now() -> i64 {
@@ -832,10 +1031,7 @@ impl VerifyCheck {
         }
 
         // The employee's own spending limit for a run holds here too.
-        let cap_cents = store.agent_run_spend_cap_cents(&self.agent_id);
-        if cap_cents > 0
-            && store.reviewers_cost(&v.reviewer_prefix).unwrap_or(0) >= cap_cents * 1_000_000
-        {
+        if self.over_spend_cap(&v) {
             self.finish(&v, "not_verified", Some(Why::new("spend_limit")));
             return Step::Finished;
         }
@@ -893,6 +1089,18 @@ impl VerifyCheck {
             RoundEnd::Clean => self.land(work, notes).await,
         }
     }
+}
+
+/// Runs of a round's reviewers that could not finish before the owner is
+/// asked whether they run again.
+const REVIEW_TRIES: u32 = 3;
+
+/// Why reviewers that could not finish stopped running again.
+enum RerunEnd {
+    /// The employee's spending limit for a run was reached.
+    SpendLimit,
+    /// The owner's answer when asked (`None`: nobody could answer).
+    Owner(Option<Reply>),
 }
 
 /// How a review round ended.
@@ -1065,6 +1273,7 @@ impl VerifyCheck {
         // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
         // change the builder's copy, the one that lands. A round of checks
         // alone has none.
+        let mut rerun_end: Option<RerunEnd> = None;
         let reviews: Vec<LensReview> = if lenses.is_empty() {
             Vec::new()
         } else {
@@ -1077,6 +1286,7 @@ impl VerifyCheck {
             let input = RoundInput {
                 verification_id: &v.id,
                 round,
+                attempt: 1,
                 delta,
                 lenses,
                 spec: &v.spec,
@@ -1111,8 +1321,62 @@ impl VerifyCheck {
                 live.detail["reviewers"][r.lens.as_str()] = json!(state);
                 self.record_round(&live);
             };
-            let reviews: Vec<LensReview> =
+            let mut reviews: Vec<LensReview> =
                 review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
+            // A reviewer that couldn't finish runs again, fresh, in the same
+            // round, the others' reviews kept: an incomplete review never
+            // ends the loop. After [`REVIEW_TRIES`] runs the owner decides
+            // whether they run again; with nobody to ask, or past the
+            // employee's spending limit, the round ends incomplete.
+            let mut attempt = 1;
+            loop {
+                let unfinished: Vec<Lens> = reviews.iter().filter(|r| r.review.is_err()).map(|r| r.lens).collect();
+                if unfinished.is_empty() || self.cancel.is_cancelled() {
+                    break;
+                }
+                if self.over_spend_cap(v) {
+                    rerun_end = Some(RerunEnd::SpendLimit);
+                    break;
+                }
+                if attempt % REVIEW_TRIES == 0 {
+                    if self.verify.shared().gone_on_enough(&v.id) {
+                        break;
+                    }
+                    let why: Vec<String> = reviews
+                        .iter()
+                        .filter_map(|r| r.review.as_ref().err().map(|e| format!("- {}: {e}", r.lens.as_str())))
+                        .collect();
+                    let question = format!(
+                        "The review of {} could not finish: {} reviewer{} failed {attempt} times. Run {} again?",
+                        work.project_root.display(),
+                        unfinished.len(),
+                        if unfinished.len() == 1 { "" } else { "s" },
+                        if unfinished.len() == 1 { "it" } else { "them" }
+                    );
+                    let purpose = Purpose::ReviewFailed;
+                    let answer = self.ask_owner(&v.id, &question, &why.join("\n"), &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+                    if !went_on(answer.as_ref()) {
+                        rerun_end = Some(RerunEnd::Owner(answer));
+                        break;
+                    }
+                    self.verify.shared().go_on(&v.id);
+                }
+                attempt += 1;
+                tracing::info!(verification = %v.id, round, attempt, lenses = ?unfinished, "reviewers that could not finish run again");
+                {
+                    let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
+                    for lens in &unfinished {
+                        live.detail["reviewers"][lens.as_str()] = json!("running");
+                    }
+                    self.record_round(&live);
+                }
+                let again = RoundInput { lenses: &unfinished, attempt, ..input };
+                for rerun in review::run_round(&self.helpers, &self.parent(), &again, &heard).await {
+                    if let Some(slot) = reviews.iter_mut().find(|r| r.lens == rerun.lens) {
+                        *slot = rerun;
+                    }
+                }
+            }
             row = live.into_inner().unwrap_or_else(|p| p.into_inner());
             let _ = std::fs::remove_dir_all(&round_dir);
             if self.cancel.is_cancelled() {
@@ -1128,9 +1392,9 @@ impl VerifyCheck {
             Err(e) => Some(format!("the copy could not be read again: {e}")),
         };
 
-        // A reviewer that couldn't finish (stopped, failed, no balance)
-        // leaves the round unreviewed: nothing passes on a review that
-        // didn't happen.
+        // A reviewer that still couldn't finish after its runs again
+        // (stopped, failed, no balance) leaves the round unreviewed: nothing
+        // passes on a review that didn't happen.
         let failed: Vec<String> = reviews
             .iter()
             .filter_map(|r| {
@@ -1273,7 +1537,15 @@ impl VerifyCheck {
 
         if !failed.is_empty() {
             tracing::warn!(verification = %v.id, failed = %failed.join("; "), "a review could not finish");
-            self.finish(&after, "not_verified", Some(Why::new("review_incomplete")));
+            match rerun_end {
+                Some(RerunEnd::SpendLimit) => self.finish(&after, "not_verified", Some(Why::new("spend_limit"))),
+                Some(RerunEnd::Owner(answer)) => {
+                    if let Some(step) = self.answered(work, &after, &Purpose::ReviewFailed, answer.as_ref()).await {
+                        return step.into();
+                    }
+                }
+                None => self.finish(&after, "not_verified", Some(Why::new("review_incomplete"))),
+            }
             return RoundEnd::Finished;
         }
         if !unanswered.is_empty() {
@@ -1286,7 +1558,7 @@ impl VerifyCheck {
                 &work.project_root.display().to_string(),
                 round,
                 lenses,
-                &open,
+                &v_open,
                 &runs,
                 &decided,
             );
@@ -1314,23 +1586,19 @@ impl VerifyCheck {
                 &work.project_root.display().to_string(),
                 round,
                 lenses,
-                &open,
+                &v_open,
                 &runs,
                 &decided,
             ));
         }
         // The minors: fixed, or deferred with a reason, once.
-        let minors: Vec<Finding> = open
-            .iter()
-            .filter(|f| f.severity == Severity::Minor)
-            .cloned()
-            .collect();
-        if !minors.is_empty() && self.verify.shared().minors_offered.insert(v.id.clone()) {
+        let minors = v_open.iter().any(|f| f.severity == Severity::Minor);
+        if minors && self.verify.shared().minors_offered.insert(v.id.clone()) {
             return RoundEnd::Continue(findings_brief(
                 &work.project_root.display().to_string(),
                 round,
                 lenses,
-                &minors,
+                &v_open,
                 &runs,
                 &[],
             ));
@@ -1340,8 +1608,8 @@ impl VerifyCheck {
             // changes the checks made go back to the builder, and the next
             // round reviews them.
             return RoundEnd::Continue(format!(
-                "The project's own checks changed files in your working copy while this round ran, so what was \
-                 reviewed is not what is there now:\n{stat}\nLook at those changes in your copy, keep or undo them, and \
+                "Your working copy changed while this round ran (the project's own checks, or your own edits), so \
+                 what was reviewed is not what is there now:\n{stat}\nLook at those changes in your copy, keep or undo them, and \
                  end your reply; the next round reviews them."
             ));
         }
@@ -1719,6 +1987,17 @@ impl VerifyCheck {
                     self.finish(v, "not_verified", Some(Why::new("stalled").with("open", *open)));
                     Some(Step::Finished)
                 }
+            },
+            Purpose::ReviewFailed => match answer {
+                Some(LAND_ANYWAY) => {
+                    Some(self.land_unverified(work, v, Why::new("review_incomplete")).await.map_or(Step::Finished, Step::Continue))
+                }
+                Some(STOP_HERE) | None => {
+                    self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
+                    Some(Step::Finished)
+                }
+                // Run again: a later round reviews the change.
+                Some(_) => None,
             },
             Purpose::NoChecks => Some(match answer {
                 Some(LAND_ANYWAY) => self.land_unverified(work, v, Why::new("no_checks")).await.map_or(Step::Finished, Step::Continue),
