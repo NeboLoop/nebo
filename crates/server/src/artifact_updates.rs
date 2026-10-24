@@ -439,8 +439,8 @@ pub(crate) fn notify_updates_available(state: &AppState) {
         // Settings → Updates, at this package, with its Update button.
         let action_url = tools::owner_notify::link::update(&a.artifact_id);
         let options = [
-            db::models::ItemOption { label: "Update now".into(), value: "yes".into() },
-            db::models::ItemOption { label: "Later".into(), value: "no".into() },
+            db::models::ItemOption { label: "Update now".into(), value: "yes".into(), description: None },
+            db::models::ItemOption { label: "Later".into(), value: "no".into(), description: None },
         ];
         let n = tools::owner_notify::OwnerNotification {
             id: &notif_id,

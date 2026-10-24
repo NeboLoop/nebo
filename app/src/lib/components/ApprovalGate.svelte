@@ -129,6 +129,14 @@
     input?: Record<string, unknown>;
     batch?: { id: string; tool: string; input?: Record<string, unknown> }[] | null;
     relayed?: boolean;
+    employee?: string;
+    action?: string;
+    actionKey?: string;
+    actionValues?: Record<string, string>;
+    reason?: string;
+    reasonKey?: string;
+    reasonValues?: Record<string, string>;
+    allowAlways?: boolean;
   }>('approval_request', async (d) => {
     if (!d?.request_id) return;
     // Several gated calls in one step: one card listing each action, one decision.
@@ -145,10 +153,21 @@
           }
         : describe(d.tool ?? '', d.input);
     const agent =
+      d.employee ??
       d.agentName ??
       (await resolveAgentName(d.session_id)) ??
       $t('components.approvalGate.yourAgent');
-    approvalRaised({ requestId: d.request_id, sessionId: d.session_id ?? '', agent, relayed: d.relayed === true, ...described });
+    // The decision card's words, as the server says them: one call's
+    // "wants to …" (a card of several calls keeps its own headline), why it
+    // asks, and whether Always allow is offered.
+    const words = {
+      ...(d.batch && d.batch.length > 1 ? {} : { action: d.action, actionKey: d.actionKey, actionValues: d.actionValues }),
+      reason: d.reason,
+      reasonKey: d.reasonKey,
+      reasonValues: d.reasonValues,
+      allowAlways: d.allowAlways ?? true
+    };
+    approvalRaised({ requestId: d.request_id, sessionId: d.session_id ?? '', agent, relayed: d.relayed === true, ...described, ...words });
   });
 
   // Answered anywhere (here, another client, a loop reply): the card settles.

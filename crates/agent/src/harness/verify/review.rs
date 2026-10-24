@@ -328,9 +328,12 @@ pub fn brief(lens: Lens, input: &RoundInput<'_>) -> String {
          - minor: worth fixing, harmless meanwhile.\n\
          - kind \"decision\": only a product or business choice that is the owner's to make (what to offer, \
          charge, promise or call something), never how to fix a bug: anything broken, missing or wrong with a clear \
-         fix is a defect, with that fix. A decision gives at least two concrete choices in `options` and the one you \
-         recommend in `recommended`; one without them is read as a defect.\n",
-        crate::harness::turn_end::ANSWER_TOOL
+         fix is a defect, with that fix. A decision gives at least two concrete choices in `options` and the label of \
+         the one you recommend in `recommended`; one without them is read as a defect. Each choice is a button on the \
+         owner's card: a `label` of at most {} words (\"Round to cents\") and a one-line `description` of what it \
+         means for him, never a sentence or a paragraph as the label.\n",
+        crate::harness::turn_end::ANSWER_TOOL,
+        super::findings::LABEL_WORDS
     ));
     out
 }

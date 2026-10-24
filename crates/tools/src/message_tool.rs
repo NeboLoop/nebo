@@ -76,20 +76,7 @@ impl DynTool for MessageTool {
     }
 
     fn rule_key(&self, input: &serde_json::Value) -> String {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = input
-            .get("resource")
-            .and_then(|v| v.as_str())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| infer_resource(action));
-        match (resource, action) {
-            ("sms", "send") => "sms_message_send",
-            ("sms", "conversations") => "sms_conversations",
-            ("sms", "search") => "sms_search",
-            ("sms", _) => "sms_read",
-            _ => "message",
-        }
-        .to_string()
+        rule_key(input).to_string()
     }
 
     /// Who a text goes to: the phone number a recipient rule matches.
@@ -191,6 +178,24 @@ impl DynTool for MessageTool {
                 )),
             }
         })
+    }
+}
+
+/// What a call of this tool does, as its rule key: the one reading of its
+/// resource and action, for its rules, its sentence and its card.
+pub(crate) fn rule_key(input: &serde_json::Value) -> &'static str {
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let resource = input
+        .get("resource")
+        .and_then(|v| v.as_str())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| infer_resource(action));
+    match (resource, action) {
+        ("sms", "send") => "sms_message_send",
+        ("sms", "conversations") => "sms_conversations",
+        ("sms", "search") => "sms_search",
+        ("sms", _) => "sms_read",
+        _ => "message",
     }
 }
 

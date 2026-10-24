@@ -251,7 +251,7 @@ pub(crate) fn after_answer(state: &AppState, ask: &Ask) {
 pub(crate) fn offer_options() -> Vec<db::models::ItemOption> {
     [("Yes, handle these", "yes"), ("Ask me each time", "no"), ("Don't offer again", "never")]
         .into_iter()
-        .map(|(label, value)| db::models::ItemOption { label: label.into(), value: value.into() })
+        .map(|(label, value)| db::models::ItemOption { label: label.into(), value: value.into(), description: None })
         .collect()
 }
 
@@ -380,7 +380,7 @@ pub(crate) fn handled(state: &AppState, h: &Handled) {
     let body = format!("{employee} went ahead under your rule, without asking you.");
     let link = tools::owner_notify::link::session_chat(&state.store, &h.agent_id, &h.session_key);
     let options: Vec<db::models::ItemOption> = if h.undoable {
-        vec![db::models::ItemOption { label: "Undo".into(), value: UNDO.into() }]
+        vec![db::models::ItemOption { label: "Undo".into(), value: UNDO.into(), description: None }]
     } else {
         Vec::new()
     };

@@ -832,10 +832,16 @@ fn with_question_item<R>(w: &WaitingAsk, f: impl FnOnce(&tools::owner_notify::Ow
     // A card done in the app (install, connect) has no answer on the card:
     // its link is where it is done.
     let options: Vec<db::models::ItemOption> = if w.answerable {
+        // Each choice's one-line description, as its card carries it.
+        let described = option_descriptions(w);
         w.options
             .iter()
             .zip(&w.values)
-            .map(|(label, value)| db::models::ItemOption { label: label.clone(), value: value.clone() })
+            .map(|(label, value)| db::models::ItemOption {
+                label: label.clone(),
+                value: value.clone(),
+                description: described.get(label.as_str()).cloned(),
+            })
             .collect()
     } else {
         Vec::new()
@@ -856,6 +862,28 @@ fn with_question_item<R>(w: &WaitingAsk, f: impl FnOnce(&tools::owner_notify::Ow
     extra["chatId"] = serde_json::json!(w.chat_id);
     extra["askId"] = serde_json::json!(w.id);
     f(&n, extra)
+}
+
+/// The descriptions a waiting question's card gives its choices, by label
+/// (an option as `{label, description}`; a plain string has none).
+fn option_descriptions(w: &WaitingAsk) -> std::collections::HashMap<&str, String> {
+    w.widgets
+        .as_ref()
+        .and_then(|ws| ws.get(0))
+        .and_then(|first| first.get("options"))
+        .and_then(|o| o.as_array())
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|o| {
+                    let label = o.get("label")?.as_str()?;
+                    let description = o.get("description")?.as_str()?.trim();
+                    let label = w.options.iter().find(|l| l.as_str() == label)?;
+                    (!description.is_empty()).then(|| (label.as_str(), description.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A parked question as the owner's hub item, which pushes it to his phone
@@ -895,6 +923,44 @@ pub(crate) fn approval_is_relayed(card: &tools::ApprovalCard) -> bool {
 /// The decisions an approval card takes: the words on its buttons and the
 /// decision each sends ([`crate::chat_dispatch::answer_approval`]).
 pub(crate) const APPROVAL_DECISIONS: [(&str, &str); 3] = [("Allow once", "once"), ("Always allow", "always"), ("Deny", "deny")];
+
+/// An approval's decision card words, the same fields a permission ask's
+/// card carries (`permission_asks::decision_words`): who asks
+/// (`employee`), what the call would do after "wants to" (`action`,
+/// `actionKey`, `actionValues`), why it asks (`reason`, `reasonKey`,
+/// `reasonValues`), its one-line risk (`warningKey`) and whether "Always
+/// allow" means anything (`allowAlways`). A suggested goal is agreed each
+/// time, so it never offers Always allow.
+pub(crate) fn approval_words(employee: &str, tool: &str, input: &serde_json::Value) -> serde_json::Value {
+    let intent = tools::humanize::intent(tool, input);
+    let goal = tool == "suggest_goal";
+    let (reason, reason_key) = if goal {
+        ("Work continues until a check confirms it's met.", "permissionAsk.reason.agreesGoal")
+    } else {
+        ("", "")
+    };
+    serde_json::json!({
+        "employee": employee,
+        "action": intent.text,
+        "actionKey": intent.key,
+        "actionValues": intent.values,
+        "reason": reason,
+        "reasonKey": reason_key,
+        "reasonValues": {},
+        "warningKey": null,
+        "allowAlways": !goal,
+    })
+}
+
+/// `request` (an `approval_request` payload) with its decision card words
+/// ([`approval_words`]) beside its call.
+pub(crate) fn with_approval_words(mut request: serde_json::Value, employee: &str) -> serde_json::Value {
+    let words = approval_words(employee, request["tool"].as_str().unwrap_or(""), &request["input"]);
+    if let (Some(r), serde_json::Value::Object(words)) = (request.as_object_mut(), words) {
+        r.extend(words);
+    }
+    request
+}
 
 /// An approval decision in the owner's words.
 pub(crate) fn approval_answer_label(decision: &str) -> &'static str {
@@ -936,9 +1002,12 @@ fn with_approval_item<R>(
     let id = approval_push_id(request_id);
     let title = waiting_on_you(employee);
     let link = tools::owner_notify::link::assistant();
+    // Always allow only where it means something (`allowAlways`).
+    let always = card.event["allowAlways"].as_bool().unwrap_or(true);
     let options: Vec<db::models::ItemOption> = APPROVAL_DECISIONS
         .iter()
-        .map(|(label, value)| db::models::ItemOption { label: label.to_string(), value: value.to_string() })
+        .filter(|(_, value)| always || *value != "always")
+        .map(|(label, value)| db::models::ItemOption { label: label.to_string(), value: value.to_string(), description: None })
         .collect();
     let n = tools::owner_notify::OwnerNotification {
         id: &id,
@@ -954,6 +1023,11 @@ fn with_approval_item<R>(
     };
     let mut extra = blocking_fields();
     extra["approvalId"] = serde_json::json!(request_id);
+    for key in ["employee", "action", "actionKey", "actionValues", "reason", "reasonKey", "reasonValues", "warningKey", "allowAlways"] {
+        if let Some(v) = card.event.get(key) {
+            extra[key] = v.clone();
+        }
+    }
     Some(f(&n, extra))
 }
 
@@ -1060,6 +1134,47 @@ pub(crate) mod tests {
         assert_eq!(item["approvalId"], "t1");
         assert_eq!(item["needsYou"], true);
         assert!(push(&card(false)).is_none(), "a direct chat's card stays there");
+    }
+
+    /// 1b (10-24): the phone draws the one decision card from the same
+    /// words the desktop's card has. An approval carries who asks, what it
+    /// would do after "wants to", why, and whether Always allow means
+    /// anything (never on a suggested goal), on its event and its Inbox item.
+    #[test]
+    fn an_approval_says_who_wants_to_do_what_and_why() {
+        let en: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/src/lib/i18n/locales/en.json")).unwrap()).unwrap();
+        let goal = with_approval_words(serde_json::json!({ "request_id": "g1", "tool": "suggest_goal", "input": { "condition": "tests pass" }, "relayed": true }), "Chief");
+        assert_eq!(goal["employee"], "Chief");
+        assert_eq!((goal["action"].as_str(), goal["actionKey"].as_str()), (Some("agree on a goal for this work"), Some("decision.wants.agreeGoal")));
+        assert_eq!(goal["allowAlways"], false, "a goal is agreed each time");
+        assert_eq!(goal["reasonKey"], "permissionAsk.reason.agreesGoal");
+        assert_eq!(en["permissionAsk"]["reason"]["agreesGoal"], goal["reason"], "the English is the apps' English");
+        let shell = approval_words("Bookkeeper", "run_command", &serde_json::json!({ "command": "ls ~" }));
+        assert_eq!((shell["action"].as_str(), shell["allowAlways"].as_bool()), (Some("run ls ~"), Some(true)));
+
+        let card = tools::ApprovalCard { event: goal, session_key: "agent:chief:coworker:assistant".into(), agent_id: "chief".into(), summary: "s".into(), since: 1 };
+        let (options, item) = with_approval_item("g1", &card, "Chief", |n, extra| (n.options.to_vec(), n.hub_item(extra))).unwrap();
+        assert_eq!(options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), ["once", "deny"], "no Always allow on a goal");
+        assert_eq!((item["actionKey"].as_str(), item["allowAlways"].as_bool(), item["employee"].as_str()), (Some("decision.wants.agreeGoal"), Some(false), Some("Chief")));
+    }
+
+    /// A question's Inbox item carries each choice's description beside its
+    /// label and value, as its card does.
+    #[test]
+    fn an_inbox_question_carries_each_choices_description() {
+        let mut w = question("q1", "Which plan?", &["Yearly", "Monthly"]);
+        w.card.relayed = true;
+        w.card.widgets = Some(serde_json::json!([{ "type": "options", "options": [{ "label": "Yearly", "description": "Two months free" }, "Monthly"] }]));
+        let options = with_question_item(&w.card, |n, _| n.options.to_vec());
+        assert_eq!(
+            options,
+            [
+                db::models::ItemOption { label: "Yearly".into(), value: "Yearly".into(), description: Some("Two months free".into()) },
+                db::models::ItemOption { label: "Monthly".into(), value: "Monthly".into(), description: None }
+            ]
+        );
+        assert_eq!(serde_json::to_value(&options[1]).unwrap(), serde_json::json!({ "label": "Monthly", "value": "Monthly" }));
     }
 
     pub(crate) fn question(id: &str, prompt: &str, options: &[&str]) -> Waiting {

@@ -952,6 +952,7 @@ export interface InvokeResponse {
 export interface ItemOption {
 	label: string
 	value: string
+	description?: string
 }
 
 export interface LayerApplyResponse {
@@ -1375,6 +1376,9 @@ export interface PermissionAskCard {
 	sessionKey: string
 	sentence: string
 	what: string
+	action: string
+	actionKey?: string
+	actionValues: Record<string, string>
 	why: string
 	statedReason?: string
 	details: AskDetail[]

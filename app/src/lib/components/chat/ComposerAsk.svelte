@@ -5,8 +5,9 @@
   the next. The mic answers it by voice, in this chat's call. The X closes
   it without answering: the composer comes back, and
   a chip above it ("1 question waiting") reopens it. The Inbox still has it.
-  Its cards are the ones the chat and the Inbox show, on the same answer
-  paths: answered here or there, it leaves everywhere.
+  Each is the ONE decision card (DecisionCard) the chat and the Inbox show,
+  on the same answer paths: answered here or there, it leaves everywhere.
+  Stop, in the card's corner, stops the employee's work.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
@@ -21,13 +22,19 @@
     asks,
     onasksubmit,
     ondismiss,
-    onvoice
+    onvoice,
+    asker = null,
+    onstop
   }: {
     asks: ComposerAsk[];
     onasksubmit?: (requestId: string, value: string) => void;
     ondismiss: () => void;
     /** The mic: answer it by voice, in this chat's call. */
     onvoice?: () => void;
+    /** The chat's employee: who asks its questions. */
+    asker?: { id: string; name: string } | null;
+    /** Stop the employee's work; absent when nothing runs. */
+    onstop?: () => void;
   } = $props();
 
   const ask = $derived(asks[0]);
@@ -48,11 +55,11 @@
     </div>
     {#key ask.id}
       {#if ask.kind === 'question'}
-        <AskWidget requestId={ask.id} prompt={ask.prompt} widgets={ask.widgets} onSubmit={(id, value) => onasksubmit?.(id, value)} {ondismiss} />
+        <AskWidget requestId={ask.id} prompt={ask.prompt} widgets={ask.widgets} onSubmit={(id, value) => onasksubmit?.(id, value)} {ondismiss} {asker} {onstop} />
       {:else if ask.kind === 'permission'}
-        <PermissionAskCard ask={ask.ask} via="chat" />
+        <PermissionAskCard ask={ask.ask} via="chat" {onstop} />
       {:else}
-        <ApprovalAskCard approval={ask.approval} />
+        <ApprovalAskCard approval={ask.approval} {onstop} />
       {/if}
     {/key}
   </div>

@@ -536,8 +536,8 @@ fn held_for_ok(state: &AppState, run_id: &str, key: &str, assignment_id: Option<
         None => String::new(),
     };
     let options = [
-        db::models::ItemOption { label: "Approve".into(), value: HELD_APPROVE.into() },
-        db::models::ItemOption { label: "Change".into(), value: HELD_CHANGE.into() },
+        db::models::ItemOption { label: "Approve".into(), value: HELD_APPROVE.into(), description: None },
+        db::models::ItemOption { label: "Change".into(), value: HELD_CHANGE.into(), description: None },
     ];
     let lead = project.as_ref().map(|p| p.lead_agent_id.clone());
     let n = tools::owner_notify::OwnerNotification {
@@ -620,8 +620,8 @@ fn paused_at_limit(state: &AppState, project_id: &str, run_id: &str) -> Result<(
     let title = format!("{} is paused at its limit", project.title);
     let link = tools::owner_notify::link::project(&project.team_id, &project.id);
     let options = [
-        db::models::ItemOption { label: "Continue".into(), value: LIMIT_CONTINUE.into() },
-        db::models::ItemOption { label: "Stop".into(), value: LIMIT_STOP.into() },
+        db::models::ItemOption { label: "Continue".into(), value: LIMIT_CONTINUE.into(), description: None },
+        db::models::ItemOption { label: "Stop".into(), value: LIMIT_STOP.into(), description: None },
     ];
     let n = tools::owner_notify::OwnerNotification {
         id: &id,

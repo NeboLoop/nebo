@@ -827,12 +827,15 @@ impl OwnerForward<'_> {
     pub(crate) async fn forward_approval(&self, tc: &ai::ToolCall) {
         // No client started a coworker's run: the card opens wherever the
         // owner is, and stays open for whoever connects until it is decided.
-        let request = crate::handlers::ws::EventOrigin::unclaimed(self.session_key).stamp(serde_json::json!({
-            "request_id": tc.id,
-            "tool": tc.name,
-            "input": tc.input,
-            "relayed": crate::handlers::asks::relayed(self.door, self.session_key),
-        }));
+        let request = crate::handlers::ws::EventOrigin::unclaimed(self.session_key).stamp(crate::handlers::asks::with_approval_words(
+            serde_json::json!({
+                "request_id": tc.id,
+                "tool": tc.name,
+                "input": tc.input,
+                "relayed": crate::handlers::asks::relayed(self.door, self.session_key),
+            }),
+            self.agent_name,
+        ));
         let card = tools::ApprovalCard {
             event: request.clone(),
             session_key: self.session_key.to_string(),

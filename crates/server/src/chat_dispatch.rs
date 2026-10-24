@@ -1349,7 +1349,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
                                 let summary = spec_tools.describe(&tc.name, &tc.input).await;
-                                let request = approvals_origin.stamp(serde_json::json!({
+                                let employee = crate::handlers::permissions::employee_name(&ask_state, &approvals_agent_id);
+                                let request = approvals_origin.stamp(crate::handlers::asks::with_approval_words(serde_json::json!({
                                     "request_id": tc.id,
                                     "tool": tc.name,
                                     "input": tc.input,
@@ -1358,7 +1359,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     // Not raised in a conversation the owner is in: shown in the
                                     // assistant's chat (`handlers::asks::relayed`).
                                     "relayed": crate::handlers::asks::relayed(&ask_door, &sid),
-                                }));
+                                }), &employee));
                                 let card = tools::ApprovalCard {
                                     event: request.clone(),
                                     session_key: sid.to_string(),

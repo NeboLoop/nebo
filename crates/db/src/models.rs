@@ -695,6 +695,10 @@ impl Notification {
 pub struct ItemOption {
     pub label: String,
     pub value: String,
+    /// One line under the label: what the choice means (a question's
+    /// `{label, description}` option).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// A new Inbox item, as the one writer (`tools::owner_notify::emit`) stores it.
