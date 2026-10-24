@@ -38,8 +38,20 @@ const PARKED_POLL: Duration = Duration::from_millis(250);
 /// [`CHANGE_APPROACH_NOTE`]) and the owner is there to stop it. Live
 /// 2026-10-03: `write_file` with only a path was answered "`content` is
 /// missing" 22 times in a row; at 3 the owner's turns were stopped by a
-/// grep that found nothing. The run's step caps bound the cost either way.
+/// grep that found nothing. A run going in circles, attended or not, is
+/// stopped by [`LOOP_ROUNDS`].
 pub(crate) const MAX_IDENTICAL_FAILURES: usize = 8;
+
+/// Rounds in a row in which every call came back exactly as it did before
+/// in the turn (same tool, input and result, success or failure), with no
+/// wait among them, before the run stops: it is going in circles, one call
+/// or several in turn. Any call with a new answer, a wait, or the owner
+/// speaking starts the count over, so long work that keeps getting
+/// somewhere runs to its end. An employee's turn has no step cap: this,
+/// the owner's spending limit for a run, and his Stop are what end a run
+/// that doesn't. A cycle of edits that put a file back and forth is caught
+/// the same way: each edit answers the same as it did before.
+pub(crate) const LOOP_ROUNDS: usize = 8;
 
 /// Time between two runs of the same call after which the world may have
 /// moved, so the call's count starts over.
@@ -83,6 +95,10 @@ pub(crate) const ALREADY_READ_NOTE: &str = "Not run again: this exact call (same
 pub(crate) const STUCK_NOTICE: &str = "I stopped here: one step kept failing the same way, eight times in a row, \
      so I'm not repeating it. Tell me how you'd like to go on, or ask me to try it a different way.";
 
+/// What the owner reads when a run stops going in circles ([`LOOP_ROUNDS`]).
+pub(crate) const LOOP_NOTICE: &str = "I stopped here: I kept repeating the same steps and getting the same \
+     results, so going on wouldn't get anywhere. Tell me how you'd like to go on, or ask me to try it a different way.";
+
 /// How often each outcome of a call (tool, input, success or failure, and
 /// the result) came back in a row this turn, counted since anything last
 /// changed: a call that changed something (a file written or edited, a
@@ -97,6 +113,10 @@ pub(crate) struct Repeats {
     /// Read-only calls ([`call_key`]) that answered the same way twice in a
     /// row: [`Repeats::changes`] and the time when each last ran.
     reads: HashMap<u64, (u64, std::time::Instant)>,
+    /// Every outcome the turn has seen, for [`Repeats::round`].
+    outcomes: HashSet<u64>,
+    /// Rounds in a row that brought nothing new ([`LOOP_ROUNDS`]).
+    stale_rounds: usize,
 }
 
 /// One call as the rule for repeats tells it: its tool and its exact input.
@@ -138,9 +158,23 @@ impl Repeats {
     }
 
     /// Something changed outside the calls (the owner spoke): every count
-    /// and every standing read starts over.
+    /// and every standing read starts over, and so does the count of rounds
+    /// that brought nothing new.
     pub(crate) fn changed(&mut self) {
         self.changes += 1;
+        self.stale_rounds = 0;
+    }
+
+    /// One round's outcomes ([`Repeats::count`]'s, each call's tool, input
+    /// and result): whether the run is now going in circles, [`LOOP_ROUNDS`]
+    /// rounds in a row with every outcome one it had already, and no wait.
+    pub(crate) fn round(&mut self, outcomes: &[u64], waited: bool) -> bool {
+        let mut new = waited;
+        for o in outcomes {
+            new |= self.outcomes.insert(*o);
+        }
+        self.stale_rounds = if new { 0 } else { self.stale_rounds + 1 };
+        self.stale_rounds >= LOOP_ROUNDS
     }
 
     /// A read-only call that ran at `now`, counted first
@@ -638,6 +672,9 @@ pub(crate) async fn run_tool_round(
     let mut loaded = Vec::new();
     let answers = matches!(cx.turn_mode, Some(crate::harness::TurnMode::Helper { answer: Some(_), .. }));
     let mut answered = false;
+    // The round's outcomes, for the loop detector ([`Repeats::round`]).
+    let mut round_outcomes: Vec<u64> = Vec::with_capacity(results.len());
+    let waited = tool_calls.iter().any(|tc| waits(&tc.input));
     for (idx, entry) in results.into_iter().enumerate() {
         let Some((tc, mut result)) = entry else { continue };
         // The same call answered the same way again, with nothing changed
@@ -652,6 +689,7 @@ pub(crate) async fn run_tool_round(
         let outcome = crate::harness::simple_hash(format!("{}\0{}\0{}\0{}", result.is_error, tc.name, tc.input, result.content).as_bytes());
         let now = std::time::Instant::now();
         let times = failures.count(outcome, now, waits(&tc.input), !result.is_error && !read_only);
+        round_outcomes.push(outcome);
         // A read that answered in words the same way twice in a row stands
         // for the same call until something changes; one with a picture or
         // files never does.
@@ -744,6 +782,12 @@ pub(crate) async fn run_tool_round(
         {
             warn!(session_id = %session_id, error = %e, "failed to save tool message to DB");
         }
+    }
+
+    // A run going in circles stops, attended or not ([`LOOP_ROUNDS`]).
+    if failures.round(&round_outcomes, waited) {
+        warn!(session_id, iteration, "every call of the last rounds came back as before: the run stops");
+        terminal_error.get_or_insert_with(|| (LOOP_NOTICE.to_string(), None, None));
     }
 
     // A workflow step parked on the owner: the run suspends with the
