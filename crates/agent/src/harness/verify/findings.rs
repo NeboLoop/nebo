@@ -6,6 +6,8 @@
 //! what became of each earlier finding. A finding that is the owner's call
 //! (a product or business decision, not a defect) says so, with at least two
 //! options and a recommended one: the loop asks the owner, never the builder.
+//! Each option is a short label and a one-line description ([`Choice`]), the
+//! shape the owner's question card shows.
 //! A "decision" without them is no question anyone can answer, and is read
 //! as a defect for the builder ([`settle`]), unless the owner already made
 //! that call.
@@ -57,11 +59,66 @@ pub struct Finding {
     pub repro: String,
     pub impact: String,
     pub fix: String,
-    /// A decision's choices, and the one recommended.
+    /// A decision's choices, and the label of the one recommended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub options: Vec<String>,
+    pub options: Vec<Choice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended: Option<String>,
+}
+
+/// The most words a choice's label has: the card shows it as a button.
+pub const LABEL_WORDS: usize = 6;
+/// The most characters a choice's label has, the schema's check of
+/// [`LABEL_WORDS`].
+pub const LABEL_CHARS: usize = 48;
+
+/// One choice for the owner: a short label (the button, and the answer it
+/// sends) and a one-line description of what it means. The same
+/// `{label, description}` an `ask_owner` option is. A choice stored as a
+/// plain string (a row from before the shape) reads as its label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ChoiceIn")]
+pub struct Choice {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+impl Choice {
+    /// A choice with no description: its label alone.
+    pub fn label(label: &str) -> Self {
+        Choice { label: label.to_string(), description: String::new() }
+    }
+
+    /// The choice as an `ask_owner` option: `{label}`, with its
+    /// `description` when it has one.
+    pub fn option(&self) -> serde_json::Value {
+        if self.description.is_empty() {
+            serde_json::json!({ "label": self.label })
+        } else {
+            serde_json::json!({ "label": self.label, "description": self.description })
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ChoiceIn {
+    Label(String),
+    Full {
+        label: String,
+        #[serde(default)]
+        description: String,
+    },
+}
+
+impl From<ChoiceIn> for Choice {
+    fn from(c: ChoiceIn) -> Self {
+        match c {
+            ChoiceIn::Label(label) => Choice { label, description: String::new() },
+            ChoiceIn::Full { label, description } => Choice { label, description },
+        }
+    }
 }
 
 impl Finding {
@@ -98,13 +155,16 @@ pub const MIN_CHOICES: usize = 2;
 
 impl Finding {
     /// A decision's choices as the owner sees them: the recommended one
-    /// first, then the rest, each once, none blank.
-    pub fn choices(&self) -> Vec<&str> {
-        let mut out: Vec<&str> = Vec::new();
-        for o in self.recommended.iter().chain(self.options.iter()) {
-            let o = o.trim();
-            if !o.is_empty() && !out.contains(&o) {
-                out.push(o);
+    /// first, then the rest, each label once, none blank. A recommended
+    /// label that is none of the options is a choice of its own.
+    pub fn choices(&self) -> Vec<Choice> {
+        let recommended = self.recommended.as_deref().map(str::trim).filter(|r| !r.is_empty());
+        let first = recommended.map(|r| self.options.iter().find(|o| o.label.trim() == r).cloned().unwrap_or_else(|| Choice::label(r)));
+        let mut out: Vec<Choice> = Vec::new();
+        for o in first.iter().chain(self.options.iter()) {
+            let label = o.label.trim();
+            if !label.is_empty() && !out.iter().any(|c| c.label == label) {
+                out.push(Choice { label: label.to_string(), description: o.description.trim().to_string() });
             }
         }
         out
@@ -279,15 +339,26 @@ pub fn answer_schema() -> serde_json::Value {
                         "kind": {
                             "type": "string",
                             "enum": ["defect", "decision"],
-                            "description": "decision: only a product or business choice that is the owner's to make (what to offer, charge, promise or call something), with at least two choices in options and the one you recommend in recommended. Anything broken, missing or wrong with a clear fix is a defect."
+                            "description": "decision: only a product or business choice that is the owner's to make (what to offer, charge, promise or call something), with at least two choices in options and the label of the one you recommend in recommended. Anything broken, missing or wrong with a clear fix is a defect."
                         },
                         "title": { "type": "string" },
                         "evidence": { "type": "string", "description": "path:line" },
                         "repro": { "type": "string", "description": "Steps or worked numbers that show it." },
                         "impact": { "type": "string" },
                         "fix": { "type": "string" },
-                        "options": { "type": "array", "items": { "type": "string" } },
-                        "recommended": { "type": "string" }
+                        "options": {
+                            "type": "array",
+                            "description": "A decision's choices, each a button on the owner's card: a short label and a one-line description. Never a paragraph: what he needs to know goes in repro and impact.",
+                            "items": {
+                                "type": "object",
+                                "required": ["label", "description"],
+                                "properties": {
+                                    "label": { "type": "string", "maxLength": LABEL_CHARS, "description": format!("At most {LABEL_WORDS} words, e.g. \"Round to cents\".") },
+                                    "description": { "type": "string", "description": "One line: what this choice means for him." }
+                                }
+                            }
+                        },
+                        "recommended": { "type": "string", "description": "The label of the option you recommend." }
                     }
                 }
             },
@@ -481,26 +552,74 @@ mod tests {
         let mut bare = finding("", Severity::Major, "src/routes/contact/+page.svelte:19", "Contact form does nothing on static site");
         bare.kind = Kind::Decision;
         let mut one = bare.clone();
-        one.options = vec!["Use a form service".into()];
+        one.options = vec![Choice::label("Use a form service")];
         one.recommended = Some("Use a form service".into());
         let mut unrecommended = bare.clone();
-        unrecommended.options = vec!["A".into(), "B".into()];
+        unrecommended.options = vec![Choice::label("A"), Choice::label("B")];
         let mut blank = bare.clone();
-        blank.options = vec![" ".into(), "".into()];
+        blank.options = vec![Choice::label(" "), Choice::label("")];
         blank.recommended = Some(" ".into());
         let mut real = bare.clone();
         real.title = "Which plan is the default?".into();
-        real.options = vec!["Monthly".into(), "Yearly".into()];
+        real.options = vec![Choice::label("Monthly"), Choice { label: "Yearly".into(), description: "Two months free".into() }];
         real.recommended = Some("Yearly".into());
         let mut all = vec![bare.clone(), one, unrecommended, blank, real];
         settle(&mut all, &[]);
         let kinds: Vec<Kind> = all.iter().map(|f| f.kind).collect();
         assert_eq!(kinds, [Kind::Defect, Kind::Defect, Kind::Defect, Kind::Defect, Kind::Decision]);
-        assert_eq!(all[4].choices(), ["Yearly", "Monthly"], "the recommended one first, each once");
+        assert_eq!(
+            all[4].choices(),
+            [Choice { label: "Yearly".into(), description: "Two months free".into() }, Choice::label("Monthly")],
+            "the recommended one first, each once, with its description"
+        );
         // A call he already made, raised again without its choices, stays his.
         let mut again = vec![bare.clone()];
         settle(&mut again, &[bare]);
         assert_eq!(again[0].kind, Kind::Decision);
+    }
+
+    /// Live 2026-10-24: the code check's calls reached the owner as three
+    /// paragraphs on the "Waiting on you" sheet instead of a selection. A
+    /// decision's options are each a short label and a one-line
+    /// description, the question card's `{label, description}`; the schema
+    /// refuses a bare sentence or a label that is a paragraph, and the
+    /// reviewer is told to call again.
+    #[test]
+    fn a_decisions_options_are_short_labels_with_a_description() {
+        let call = |options: serde_json::Value| {
+            serde_json::json!({
+                "findings": [{"severity": "major", "kind": "decision", "title": "Which plan is the default?", "evidence": "plans.ts:4", "repro": "r", "impact": "i", "fix": "f", "options": options, "recommended": "Yearly"}],
+                "verified_ok": [{"checked": "c"}]
+            })
+        };
+        let good = call(serde_json::json!([
+            {"label": "Yearly", "description": "Two months free, billed once a year."},
+            {"label": "Monthly", "description": "Billed every month, cancel any time."}
+        ]));
+        assert!(a2ui_validation::validate(&answer_schema(), &good, "answer").is_ok());
+        let review: Review = serde_json::from_value(good).unwrap();
+        assert_eq!(review.findings[0].choices()[0], Choice { label: "Yearly".into(), description: "Two months free, billed once a year.".into() });
+        assert_eq!(review.findings[0].choices()[0].option(), serde_json::json!({"label": "Yearly", "description": "Two months free, billed once a year."}));
+
+        let sentence = call(serde_json::json!(["Make yearly the default plan so most people save two months", "Monthly"]));
+        assert!(a2ui_validation::validate(&answer_schema(), &sentence, "answer").is_err(), "a bare string is no choice");
+        let no_description = call(serde_json::json!([{"label": "Yearly"}, {"label": "Monthly"}]));
+        assert!(a2ui_validation::validate(&answer_schema(), &no_description, "answer").is_err(), "the description is required");
+        let paragraph = call(serde_json::json!([
+            {"label": "Make yearly the default plan so that most people who sign up save two months", "description": "d"},
+            {"label": "Monthly", "description": "d"}
+        ]));
+        assert!(a2ui_validation::validate(&answer_schema(), &paragraph, "answer").is_err(), "a label is a few words");
+
+        // A finding stored before the shape (its options plain strings)
+        // still reads, each string its label.
+        let old: Finding = serde_json::from_value(serde_json::json!({
+            "severity": "major", "kind": "decision", "title": "t", "evidence": "e", "repro": "r", "impact": "i", "fix": "f",
+            "options": ["Monthly", "Yearly"], "recommended": "Yearly"
+        }))
+        .unwrap();
+        assert_eq!(old.choices(), [Choice::label("Yearly"), Choice::label("Monthly")]);
+        assert_eq!(old.choices()[0].option(), serde_json::json!({"label": "Yearly"}));
     }
 
     #[test]

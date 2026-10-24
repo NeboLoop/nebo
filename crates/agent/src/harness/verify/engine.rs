@@ -40,7 +40,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::checks::{self, CheckRun};
-use super::findings::{self, Finding, Kind, Severity};
+use super::findings::{self, Choice, Finding, Kind, Severity};
 use super::lenses::{self, Lens};
 use super::review::{self, LensReview, RoundInput};
 use super::shadow::{ChangeSet, Snapshot};
@@ -389,6 +389,12 @@ enum Purpose {
 
 const KEEP_GOING: &str = "Keep going";
 const STOP_HERE: &str = "Stop here";
+
+/// The choices of the loop's own questions (a stalled loop, reviewers that
+/// could not finish): their labels alone, worded by [`choice_key`].
+fn loop_choices() -> [Choice; 2] {
+    [Choice::label(KEEP_GOING), Choice::label(STOP_HERE)]
+}
 /// The message key a choice of the loop's is worded by in the owner's
 /// language (`verify.ask.*` in the apps); `None` for a reviewer's own
 /// choices, shown as written.
@@ -883,27 +889,29 @@ impl VerifyCheck {
     }
 
     /// Ask the owner one question with choices, the recommended one first,
-    /// on the conversation's card (and the mobile app). `None` when nobody
-    /// can answer in this run. The question waits on the row while it is
-    /// asked, so a restart asks it again. A question with no choices is
-    /// never asked: the owner would have nothing to pick but Skip.
+    /// on the conversation's card (and the mobile app). Each choice goes as
+    /// the card's `{label, description}`; the label is the answer. `None`
+    /// when nobody can answer in this run. The question waits on the row
+    /// while it is asked, so a restart asks it again. A question with no
+    /// choices is never asked: the owner would have nothing to pick but Skip.
     async fn ask_owner(
         &self,
         id: &str,
         question: &Question,
         context: &str,
-        options: &[&str],
+        options: &[Choice],
         purpose: &Purpose,
     ) -> Option<Reply> {
-        if options.iter().all(|o| o.trim().is_empty()) {
+        if options.iter().all(|o| o.label.trim().is_empty()) {
             tracing::error!(verification = %id, question = %question.text, "a question for the owner with no choices was not asked");
             return None;
         }
         // In the owner's language: the question's keys and each choice's.
         let mut words = question.words.clone();
         if words.is_object() {
-            words["optionKeys"] = json!(options.iter().map(|o| choice_key(o)).collect::<Vec<_>>());
+            words["optionKeys"] = json!(options.iter().map(|o| choice_key(&o.label)).collect::<Vec<_>>());
         }
+        let options: Vec<serde_json::Value> = options.iter().map(Choice::option).collect();
         let ask = json!({ "question": question.text, "context": context, "options": options, "purpose": purpose, "words": words });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
@@ -1010,15 +1018,9 @@ impl VerifyCheck {
         if v.state == "paused"
             && let Some(ask) = v.pending_ask.clone()
         {
-            let options: Vec<String> = ask["options"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|o| o.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let opts: Vec<&str> = options.iter().map(String::as_str).collect();
+            // Each choice as it was asked: `{label, description}`, or a
+            // plain label on a row from before that shape.
+            let opts: Vec<Choice> = serde_json::from_value(ask["options"].clone()).unwrap_or_default();
             let question = Question { text: ask["question"].as_str().unwrap_or("").to_string(), words: ask["words"].clone() };
             let context = ask["context"].as_str().unwrap_or("");
             let purpose = serde_json::from_value::<Purpose>(ask["purpose"].clone()).ok();
@@ -1416,7 +1418,7 @@ impl VerifyCheck {
                         ),
                     );
                     let purpose = Purpose::ReviewFailed;
-                    let answer = self.ask_owner(&v.id, &question, &why.join("\n"), &[KEEP_GOING, STOP_HERE], &purpose).await;
+                    let answer = self.ask_owner(&v.id, &question, &why.join("\n"), &loop_choices(), &purpose).await;
                     if !went_on(answer.as_ref()) {
                         rerun_end = Some(RerunEnd::Owner(answer));
                         break;
@@ -1734,7 +1736,7 @@ impl VerifyCheck {
             return Some(Step::Finished);
         }
         let purpose = Purpose::Stalled { open, brief: brief.to_string() };
-        let answer = self.ask_owner(&v.id, question, context, &[KEEP_GOING, STOP_HERE], &purpose).await;
+        let answer = self.ask_owner(&v.id, question, context, &loop_choices(), &purpose).await;
         if went_on(answer.as_ref()) {
             self.verify.shared().go_on(&v.id);
         }

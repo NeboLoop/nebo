@@ -48,7 +48,7 @@ describe('asks in the composer', () => {
 		expect(html).toContain('data-testid="composer-ask"');
 		expect(html).toContain('1 of 3');
 		expect(html).toMatch(/aria-label="Close"/);
-		expect(html).toMatch(/<span class="ask-option-label">Acme[\s\S]*?<span class="ask-option-description">Cheaper, slower<\/span>/);
+		expect(html).toMatch(/<span class="decision-choice-label"[^>]*>[\s\S]*?Acme[\s\S]*?<span class="decision-choice-description"[^>]*>Cheaper, slower<\/span>/);
 		expect(html).not.toContain('Delete the folder');
 		// One alone: no count.
 		const one = render(ComposerAsk, { props: { asks: asks.slice(1, 2), ondismiss: () => {} } }).body;

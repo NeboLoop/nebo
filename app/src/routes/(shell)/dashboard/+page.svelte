@@ -28,6 +28,8 @@
   import { storage } from '$lib/storage';
   import { openAsks } from '$lib/stores/permissionAsks';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
+  import DecisionCard from '$lib/components/DecisionCard.svelte';
+  import { approvalChoices, emphasized } from '$lib/chat/decision';
   import RunningNow from '$lib/components/background/RunningNow.svelte';
 
   // The phone has no sidebar on screen: the header's back chevron opens the
@@ -163,8 +165,9 @@
     if (e.runId) return goto(`/dashboard?runs=1&agent=${e.id}&run=${e.runId}`);
     openChat(e);
   }
-  function answer(a: components.DashboardApproval, approved: boolean) {
-    getWebSocketClient().send('approval_response', { request_id: a.id, approved, always: false });
+  /** An approval's answer from its card: once, always, or deny. */
+  function answer(a: components.DashboardApproval, decision: string) {
+    getWebSocketClient().send('approval_response', { request_id: a.id, approved: decision !== 'deny', always: decision === 'always' });
     load();
   }
 
@@ -400,17 +403,16 @@
           {#if a.kind === 'permission_ask'}
             {#if ask}<PermissionAskCard {ask} via="inbox" />{/if}
           {:else}
-          <section class="rounded-2xl border border-warning/60 bg-warning/10 px-4 py-3 flex flex-wrap items-center gap-3">
-            <div class="flex items-center gap-2.5 min-w-0">
-              <AgentAvatar name={a.agentName} color={colors[a.agentId]} shape={shapes[a.agentId]} size="sm" />
-              <p class="m-0 text-[13px]"><b>{$t('dashboard.needsOkay', { values: { name: a.agentName } })}</b> {a.summary} <span class="text-base-content/50">· {formatRelative(a.since * 1000, 'short')}</span></p>
-            </div>
-            <div class="flex gap-1.5 ms-auto shrink-0">
-              <button class="btn btn-primary btn-sm rounded-full" onclick={() => answer(a, true)}>{$t('dashboard.approve')}</button>
-              <button class="btn btn-sm rounded-full" onclick={() => answer(a, false)}>{$t('dashboard.decline')}</button>
-              {#if a.chatId}<button class="btn btn-ghost btn-sm rounded-full" onclick={() => goto(`/${a.agentId}/threads/${a.chatId}`)}>{$t('dashboard.openChat')}</button>{/if}
-            </div>
-          </section>
+          <DecisionCard
+            who={{ id: a.agentId, name: a.agentName, color: colors[a.agentId], shape: shapes[a.agentId] }}
+            line={emphasized($t, 'permissionAsk.title', { name: a.agentName })}
+            action={a.summary}
+            reason={formatRelative(a.since * 1000, 'short')}
+            choices={approvalChoices($t)}
+            onchoose={(id) => answer(a, id)}
+          >
+            {#if a.chatId}<button type="button" class="decision-link" onclick={() => goto(`/${a.agentId}/threads/${a.chatId}`)}>{$t('dashboard.openChat')}</button>{/if}
+          </DecisionCard>
           {/if}
         {/each}
 

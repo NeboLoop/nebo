@@ -7,7 +7,9 @@
   link. The assistant's offer to handle a kind of item (`rule_offer`) spells
   out what the rule covers, what it will do and what still comes to the
   owner. Every answer goes through the one answer path (answerItem), and an
-  answer from anywhere settles the card in place.
+  answer from anywhere settles the card in place. An open decision is the ONE
+  decision card (DecisionCard); a permission ask or an approval still waiting
+  is its own card, the same one its chat shows.
 -->
 <script lang="ts" module>
   /** What an offer proposes, as the staged proposal's content carries it. */
@@ -40,6 +42,12 @@
   import { plainText } from '$lib/markdown';
   import { notifications } from '$lib/stores/notifications';
   import { addToast } from '$lib/stores/toast';
+  import { openAsks } from '$lib/stores/permissionAsks';
+  import { approvals } from '$lib/stores/approvals';
+  import DecisionCard from '$lib/components/DecisionCard.svelte';
+  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
+  import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
+  import type { DecisionChoice, DecisionRow } from '$lib/chat/decision';
   import {
     answerItem,
     answerVia,
@@ -95,6 +103,42 @@
       .catch(() => {});
   });
 
+  /** A permission ask or an approval still waiting: its own card. */
+  const permission = $derived(open && current.id.startsWith('permission-ask:') ? $openAsks.find((a) => `permission-ask:${a.id}` === current.id) : undefined);
+  const approval = $derived(open && current.id.startsWith('approval:') ? $approvals.find((a) => `approval:${a.requestId}` === current.id && !a.decision) : undefined);
+
+  /** "Something else": his own words. */
+  const OWN = '\u0000own';
+  const REVIEW = '\u0000review';
+  /** The item's answers as the card's buttons: the first filled, the rest
+   *  outlined; one answered on its own screen is a Review button. */
+  const choices = $derived<DecisionChoice[]>(
+    options.length === 0
+      ? [{ id: REVIEW, label: $t('inbox.review'), tone: 'filled' }]
+      : [
+          ...options.map((o, i): DecisionChoice => ({ id: o.value, label: o.label, tone: i === 0 ? 'filled' : 'outlined' })),
+          ...(ownWords && !writing ? [{ id: OWN, label: $t('inbox.somethingElse'), tone: 'outlined' as const }] : [])
+        ]
+  );
+  /** An offer's terms, folded behind "Show details". */
+  const offerRows = $derived<DecisionRow[]>(
+    offer && proposal
+      ? [
+          { label: $t('inbox.ruleCovers'), value: proposal.covers ?? '' },
+          ...(proposal.does ? [{ label: $t('inbox.ruleDoes'), value: proposal.does }] : []),
+          ...(proposal.stillAsks ? [{ label: $t('inbox.ruleStillAsks'), value: proposal.stillAsks }] : []),
+          ...(proposal.bot ? [{ label: $t('inbox.ruleBot'), value: proposal.bot }] : [])
+        ]
+      : []
+  );
+
+  function choose(id: string) {
+    if (id === OWN) writing = true;
+    else if (id === REVIEW) {
+      if (current.actionUrl) onopen(current.actionUrl);
+    } else void answer(id);
+  }
+
   async function answer(value: string) {
     if (busy || !value.trim()) return;
     busy = true;
@@ -109,7 +153,38 @@
   }
 </script>
 
-<div class="inbox-card {offer && open ? 'inbox-card-offer' : ''}" data-testid="needs-you-card">
+{#if permission}
+  <PermissionAskCard ask={permission} via="inbox" />
+{:else if approval}
+  <ApprovalAskCard {approval} />
+{:else if open}
+  <DecisionCard
+    who={{ id: current.agentId ?? '', name, color, shape }}
+    line={[
+      { text: offer ? $t('inbox.yourAssistant', { values: { name: assistantName || name } }) : name, bold: true },
+      { text: ` · ${formatRelative(current.createdAt, 'short')}`, bold: false }
+    ]}
+    action={current.title}
+    reason={current.body ? plainText(current.body) : ''}
+    rows={offerRows}
+    {choices}
+    {busy}
+    onchoose={choose}
+  >
+    {#if offer && proposal?.cantUndo}<p class="inbox-cant-undo">{$t('inbox.cantUndo')}</p>{/if}
+    {#if writing}
+      <form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); void answer(words); }}>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input class="input input-sm flex-1 min-w-0" bind:value={words} placeholder={$t('inbox.yourAnswer')} autofocus />
+        <button type="submit" class="btn btn-primary btn-sm" disabled={busy || !words.trim()}>{$t('inbox.send')}</button>
+      </form>
+    {/if}
+    {#if options.length > 0 && current.actionUrl && current.linkLabel}
+      <button type="button" class="decision-link" onclick={() => current.actionUrl && onopen(current.actionUrl)}>↗ {current.linkLabel}</button>
+    {/if}
+  </DecisionCard>
+{:else}
+<div class="inbox-card" data-testid="needs-you-card">
   <div class="inbox-card-meta">
     <AgentAvatar id={current.agentId ?? ''} {name} {color} {shape} size="sm" />
     <span class="truncate">{offer ? $t('inbox.yourAssistant', { values: { name: assistantName || name } }) : name}</span>
@@ -118,68 +193,14 @@
   <div class="inbox-card-title">{current.title}</div>
   {#if current.body}<p class="inbox-card-body">{plainText(current.body)}</p>{/if}
 
-  {#if offer && proposal}
-    <dl class="inbox-facts">
-      <dt>{$t('inbox.ruleCovers')}</dt><dd>{proposal.covers}</dd>
-      {#if proposal.does}<dt>{$t('inbox.ruleDoes')}</dt><dd>{proposal.does}</dd>{/if}
-      {#if proposal.stillAsks}<dt>{$t('inbox.ruleStillAsks')}</dt><dd>{proposal.stillAsks}</dd>{/if}
-      {#if proposal.bot}<dt>{$t('inbox.ruleBot')}</dt><dd>{proposal.bot}</dd>{/if}
-    </dl>
-    {#if proposal.cantUndo}<p class="inbox-cant-undo">{$t('inbox.cantUndo')}</p>{/if}
-  {/if}
-
   {#if current.status === 'update'}
     {#if current.actionUrl}
       <div><button type="button" class="inbox-link" onclick={() => current.actionUrl && onopen(current.actionUrl)}>↗ {current.linkLabel || $t('common.open')}</button></div>
     {/if}
-  {:else if !open}
+  {:else}
     <p class="inbox-answered">
       {current.status === 'archived' ? $t('inbox.putAway') : $t('inbox.youAnswered', { values: { answer: current.answer ?? '' } })}
     </p>
-  {:else if options.length === 0}
-    <div class="flex items-center gap-2">
-      <button type="button" class="btn btn-primary btn-sm" onclick={() => current.actionUrl && onopen(current.actionUrl)}>{$t('inbox.review')}</button>
-    </div>
-  {:else if offer}
-    <div class="grid grid-cols-2 gap-2">
-      {#each options as o, i (o.value)}
-        <button
-          type="button"
-          class="btn btn-sm {i === 0 ? 'btn-primary col-span-2' : 'btn-ghost bg-primary/10 text-primary'}"
-          disabled={busy}
-          onclick={() => answer(o.value)}
-        >{o.label}</button>
-      {/each}
-    </div>
-  {:else if ownWords}
-    <div class="flex flex-wrap gap-2">
-      {#each options as o (o.value)}
-        <button type="button" class="inbox-chip" disabled={busy} onclick={() => answer(o.value)}>{o.label}</button>
-      {/each}
-      {#if !writing}
-        <button type="button" class="inbox-chip inbox-chip-quiet" disabled={busy} onclick={() => (writing = true)}>{$t('inbox.somethingElse')}</button>
-      {/if}
-    </div>
-    {#if writing}
-      <form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); void answer(words); }}>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input class="input input-sm flex-1 min-w-0" bind:value={words} placeholder={$t('inbox.yourAnswer')} autofocus />
-        <button type="submit" class="btn btn-primary btn-sm" disabled={busy || !words.trim()}>{$t('inbox.send')}</button>
-      </form>
-    {/if}
-  {:else}
-    <div class="flex flex-wrap items-center gap-2">
-      {#each options as o, i (o.value)}
-        <button
-          type="button"
-          class="btn btn-sm {i === 0 ? 'btn-primary' : 'btn-ghost border border-base-content/15'}"
-          disabled={busy}
-          onclick={() => answer(o.value)}
-        >{o.label}</button>
-      {/each}
-      {#if current.actionUrl && current.linkLabel}
-        <button type="button" class="inbox-link" onclick={() => current.actionUrl && onopen(current.actionUrl)}>↗ {current.linkLabel}</button>
-      {/if}
-    </div>
   {/if}
 </div>
+{/if}

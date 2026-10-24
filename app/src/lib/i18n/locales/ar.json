@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {يتجدد اليوم} zero {يتجدد اليوم} one {يتجدد غدًا} two {يتجدد بعد يومين} few {يتجدد خلال # أيام} many {يتجدد خلال # يومًا} other {يتجدد خلال # يوم}}",
 		"workIncluded": "العمل اليومي مشمول",
-		"needsOkay": "{name} ينتظر موافقتك.",
-		"approve": "نعم، تابع",
-		"decline": "ليس هذه المرة",
 		"openChat": "فتح المحادثة",
 		"runs": "التشغيلات",
 		"employees": "الموظفون",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} يحتاج موافقتك",
-		"allowAlways": "اسمح دائمًا",
-		"thisOnce": "هذه المرة فقط",
-		"no": "لا",
 		"allowedAlways": "مسموح من الآن",
 		"allowedOnce": "مسموح هذه المرة",
 		"declined": "مرفوض",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "هذا التطبيق من المتجر. لا يمكنه إلا ما تسمح به.",
 		"ownHint": "أنشأت هذا التطبيق هنا، لذا يمكنه فعل ما يطلبه.",
 		"notAnswered": "بدون رد"
+	},
+	"decision": {
+		"allowOnce": "اسمح مرة واحدة",
+		"alwaysAllow": "اسمح دائمًا",
+		"decline": "رفض",
+		"risk": "الخطر"
 	}
 }

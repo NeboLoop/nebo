@@ -4,10 +4,11 @@
 // The owner: the question card was white on the white chat with a faint
 // border ("make it a different color so it stands off the background"), and
 // an answered card stayed a full card with the question and a blue pill.
-// Every OPEN ask (a question, a permission ask, an approval) is now one
-// tinted `.ask-card`; an answered one collapses in place to a muted
-// one-line receipt with no card chrome, and tapping it opens the question
-// read-only (a native <details>, folded until tapped).
+// Every OPEN ask (a question, a permission ask, an approval) is now the one
+// tinted decision card (`.ask-card decision-card`); an answered one
+// collapses in place to a muted one-line receipt with no card chrome, and
+// tapping it opens the question read-only (a native <details>, folded
+// until tapped).
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { render } from 'svelte/server';
 import { addMessages, init } from 'svelte-i18n';
@@ -82,7 +83,7 @@ describe('ask cards', () => {
 
 	it('an open question is a tinted ask card, not a receipt', () => {
 		const html = ask(undefined, { disabled: false });
-		expect(html).toContain('class="ask-card"');
+		expect(html).toContain('class="ask-card decision-card"');
 		expect(html).not.toContain('ask-receipt');
 		expect(html).not.toContain('bg-base-200 px-4');
 	});
@@ -116,29 +117,70 @@ describe('ask cards', () => {
 		expect(open).toContain('ask-select');
 		expect(open).toMatch(/<option[^>]*value=""[^>]*>Choose one…<\/option>/);
 		expect(open).toMatch(/<option[^>]*value="Hooli"/);
-		expect(open).not.toContain('class="ask-option"');
+		expect(open).not.toContain('class="decision-choice');
 		const done = render(AskWidget, { props: { requestId: 'r1', prompt: 'Which brand?', widgets: select, response: 'Hooli', onSubmit: () => {} } }).body;
 		expect(summary(done)).toBe('Asked · Which brand? → Hooli');
 		// Without `style`, the same options are buttons, as before.
-		expect(ask()).toContain('class="ask-option"');
+		expect(ask()).toContain('class="decision-choice');
 		expect(ask()).not.toContain('ask-select');
 	});
 
-	it('an option is a bold label with its one-line description under it, a line between each, then Other and Submit', () => {
+	// 1b (owner, 10-24): one decision card everywhere. A question's choices
+	// are the card's full-width stacked buttons: a bold label with its
+	// one-line description, the recommended (first) one filled, the rest
+	// outlined, Other last. A single pick on a card of one question answers
+	// it at once, so there is no Submit.
+	it('an option is a full-width button, a bold label with its description, the first filled, Other last', () => {
 		const html = ask();
-		expect(html).toMatch(/<span class="ask-option-label">Hiring[\s\S]*?<span class="ask-option-description">Two roles open<\/span>/);
-		expect(html).toMatch(/<span class="ask-option-label">Marketing/);
-		expect(html).toContain('class="ask-options"');
-		expect(html).toMatch(/<span class="ask-option-label">Other<\/span>/);
-		expect(html).toMatch(/<button[^>]*class="btn btn-sm btn-primary"[^>]*disabled[^>]*>Submit<\/button>/);
-		// The styles are in app.css: a separator between rows, the label bold,
-		// the description smaller and gray, a selected state.
+		const labels = [...html.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]));
+		expect(labels).toEqual(['Marketing', 'Sales', 'Hiring', 'Other']);
+		expect(html).toMatch(/<span class="decision-choice-label"[^>]*>[\s\S]*?Hiring[\s\S]*?<span class="decision-choice-description"[^>]*>Two roles open<\/span>/);
+		const tones = [...html.matchAll(/class="decision-choice ([^"]*)"/g)].map((m) => m[1].trim());
+		expect(tones).toEqual(['decision-choice-filled', 'decision-choice-outlined', 'decision-choice-outlined', 'decision-choice-outlined']);
+		expect(html).not.toMatch(/>Submit<\/button>/);
+		// The recommended one comes first, with its tag.
+		const recommended = [{ type: 'options' as const, options: ['Sales', { label: 'Hiring', recommended: true }] }];
+		const rec = render(AskWidget, { props: { requestId: 'r1', prompt: question, widgets: recommended, onSubmit: () => {} } }).body;
+		const recLabels = [...rec.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]));
+		expect(recLabels[0]).toContain('Hiring');
+		expect(rec).toContain('decision-choice-badge');
+		// Several picks: toggles, then Submit.
+		const multi = [{ type: 'options' as const, multiSelect: true, options: ['Sales', 'Hiring'] }];
+		const many = render(AskWidget, { props: { requestId: 'r1', prompt: question, widgets: multi, onSubmit: () => {} } }).body;
+		expect(many).toMatch(/role="checkbox"/);
+		expect(many).toMatch(/>Submit<\/button>/);
+		// The styles are in app.css: stacked full-width buttons, the label
+		// bold, the description smaller, a picked state.
 		const css = readFileSync('src/app.css', 'utf8');
 		const rule = (sel: string) => css.match(new RegExp(`\\n${sel.replace(/[.]/g, '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
-		expect(rule('.ask-options')).toContain('divide-y');
-		expect(rule('.ask-option-label')).toContain('font-semibold');
-		expect(rule('.ask-option-description')).toMatch(/text-xs[\s\S]*text-base-content\/70/);
-		expect(rule('.ask-option-on')).toContain('--color-primary');
+		expect(rule('.decision-choices')).toContain('flex-col');
+		expect(rule('.decision-choice')).toContain('w-full');
+		expect(rule('.decision-choice-filled')).toContain('btn-primary');
+		expect(rule('.decision-choice-label')).toContain('font-semibold');
+		expect(rule('.decision-choice-description')).toContain('text-xs');
+		expect(rule('.decision-choice-on')).toContain('--color-primary');
+	});
+
+	it('an open question has its asker on the card, and Stop alone in the corner when its work runs', () => {
+		const html = render(AskWidget, { props: { requestId: 'r1', prompt: question, widgets, onSubmit: () => {}, asker: { id: 'a1', name: 'Bookkeeper' }, onstop: () => {} } }).body;
+		expect(html).toMatch(/class="decision-head"[\s\S]*?<svg|class="decision-head"[\s\S]*?Bookkeeper/);
+		expect(html).toMatch(/class="decision-stop"[^>]*>Stop<\/button>/);
+		expect(html.indexOf('decision-stop')).toBeLessThan(html.indexOf('decision-choices'));
+		expect(ask()).not.toContain('decision-stop');
+	});
+
+	it('an install or a sign-in stays in the chat on the same card: its icon, its name bold, the button, Skip', () => {
+		const install = [{ type: 'install_plugin' as const, name: 'Shopify', code: 'PLUG-1', description: 'Your store, orders and products' }];
+		const html = render(AskWidget, { props: { requestId: 'i1', prompt: 'Install Shopify?', widgets: install, onSubmit: () => {} } }).body;
+		expect(html).toContain('ask-card decision-card');
+		expect(html).toContain('decision-icon');
+		expect(html.replace(/<!--[^>]*-->/g, '')).toMatch(/<b>Shopify<\/b>/);
+		const labels = [...html.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]));
+		expect(labels).toEqual(['Install', 'Skip']);
+		const connect = [{ type: 'connect_account' as const, plugin: 'gmail', label: 'Gmail', agentId: 'a1' }];
+		const signIn = render(AskWidget, { props: { requestId: 'c1', prompt: 'Sign in', widgets: connect, onSubmit: () => {} } }).body;
+		expect(signIn).toContain('decision-icon');
+		expect([...signIn.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]))).toEqual(['Sign in', 'Skip']);
 	});
 
 	it('several questions are one card of steps by their headers, the first open, Next to go on', () => {
@@ -167,8 +209,18 @@ describe('ask cards', () => {
 
 	it('an open permission ask is the same tinted card; settled, the same receipt', () => {
 		const open = render(PermissionAskCard, { props: { ask: permission, via: 'chat' } }).body;
-		expect(open).toContain('ask-card permission-ask-card');
+		expect(open).toContain('ask-card decision-card');
 		expect(open).not.toContain('ask-receipt');
+		// One order everywhere: Allow once, Always allow, Decline.
+		const labels = [...open.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]));
+		expect(labels).toEqual(['Allow once', 'Always allow', 'Decline']);
+		const tones = [...open.matchAll(/class="decision-choice ([^"]*)"/g)].map((m) => m[1].trim());
+		expect(tones).toEqual(['decision-choice-filled', 'decision-choice-filled', 'decision-choice-outlined']);
+		// Its employee's name is the bold word of the line.
+		expect(open.replace(/<!--[^>]*-->/g, '')).toMatch(/<b>Bookkeeper<\/b> wants your OK/);
+		// A critical target never offers Always allow.
+		const critical = render(PermissionAskCard, { props: { ask: { ...permission, allowAlways: false }, via: 'chat' } }).body;
+		expect([...critical.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]))).toEqual(['Allow once', 'Decline']);
 
 		for (const [status, answer, lead] of [
 			['allowed', 'allow_always', 'Allowed · always'],
@@ -211,6 +263,8 @@ describe('ask cards', () => {
 		expect(shown).toContain('To +13855550100');
 		expect(shown).toContain('Message Your invoice is ready.');
 		expect(shown).toContain('Always let Bookkeeper send texts');
+		// What "always" covers is the note right under Always allow.
+		expect(html).toMatch(/Always allow[\s\S]*?<\/button>\s*(<!--[^>]*-->\s*)*<p class="decision-choice-note"[^>]*>Always let Bookkeeper send texts<\/p>/);
 		expect(shown).not.toMatch(/\bmessage\b|Using/);
 
 		// Nothing to say leaves the lines out: no empty "Why", no details fold.
@@ -238,9 +292,13 @@ describe('ask cards', () => {
 			reasonKey: 'permissionAsk.reason.removesFolders',
 			warningKey: 'permissionAsk.warning.recursivelyForceRemovesFiles'
 		};
-		expect(text(render(PermissionAskCard, { props: { ask: removal, via: 'chat' } }).body)).toContain(
-			'Removing a folder outside its work needs your OK. It may remove whole folders of files, without asking.'
-		);
+		// The reason sits under the header; the command's one-line risk is a
+		// row in the folded details.
+		const removed = render(PermissionAskCard, { props: { ask: { ...removal, command: 'rm -rf ~/old' }, via: 'chat' } }).body;
+		expect(removed).toMatch(/class="decision-reason"[^>]*>Removing a folder outside its work needs your OK\.<\/p>/);
+		const rows = text(removed.slice(removed.indexOf('decision-rows')));
+		expect(rows).toContain('Command rm -rf ~/old');
+		expect(rows).toContain('Risk It may remove whole folders of files, without asking.');
 
 		const unknown = { ...permission, reason: 'Its own words.', reasonKey: 'permissionAsk.reason.noSuchCase' };
 		expect(text(render(PermissionAskCard, { props: { ask: unknown, via: 'chat' } }).body)).toContain('Its own words.');
@@ -248,7 +306,10 @@ describe('ask cards', () => {
 
 	it('an approval matches: tinted while open, a receipt once decided', () => {
 		const approval = { requestId: 'g1', sessionId: 's', agent: 'Bookkeeper', actionType: 'suggest_goal', actionDetail: '', headline: 'Agree on this goal?' };
-		expect(render(ApprovalAskCard, { props: { approval } }).body).toContain('ask-card permission-ask-card');
+		const open = render(ApprovalAskCard, { props: { approval } }).body;
+		expect(open).toContain('ask-card decision-card');
+		expect([...open.matchAll(/<span class="decision-choice-label"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => text(m[1]))).toEqual(['Allow once', 'Always allow', 'Decline']);
+		expect(open).toMatch(/class="decision-action"[^>]*>Agree on this goal\?<\/p>/);
 		const decided = render(ApprovalAskCard, { props: { approval: { ...approval, decision: 'once' } } }).body;
 		expect(decided).not.toContain('ask-card');
 		expect(summary(decided)).toBe('Allowed · this once · Agree on this goal?');

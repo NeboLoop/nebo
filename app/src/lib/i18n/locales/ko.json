@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {오늘 갱신} other {#일 후 갱신}}",
 		"workIncluded": "일상 업무는 요금에 포함됩니다",
-		"needsOkay": "{name}이(가) 당신의 승인을 기다립니다.",
-		"approve": "네, 진행하세요",
-		"decline": "이번에는 하지 않기",
 		"openChat": "채팅 열기",
 		"runs": "실행",
 		"employees": "직원",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name}이(가) 승인을 기다립니다",
-		"allowAlways": "항상 허용",
-		"thisOnce": "이번만",
-		"no": "아니요",
 		"allowedAlways": "이제부터 허용됨",
 		"allowedOnce": "이번에 허용됨",
 		"declined": "거절됨",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "이 앱은 마켓플레이스에서 왔습니다. 허용한 일만 할 수 있습니다.",
 		"ownHint": "이 앱은 여기서 만들었으므로 요청한 일을 할 수 있습니다.",
 		"notAnswered": "답하지 않음"
+	},
+	"decision": {
+		"allowOnce": "한 번 허용",
+		"alwaysAllow": "항상 허용",
+		"decline": "거절",
+		"risk": "위험"
 	}
 }

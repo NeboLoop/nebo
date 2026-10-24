@@ -80,9 +80,13 @@
 		/** Shown in place of the composer: Escape closes the card, unanswered,
 		 *  instead of skipping the question. */
 		ondismiss?: () => void;
+		/** The employee who asks, drawn on the card. */
+		asker?: { id: string; name: string } | null;
+		/** Stop the employee's work, from the card's corner. */
+		onstop?: () => void;
 	}
 
-	let { requestId, prompt, widgets, response, cancelled = false, disabled = false, onSubmit, ondismiss }: Props = $props();
+	let { requestId, prompt, widgets, response, cancelled = false, disabled = false, onSubmit, ondismiss, asker = null, onstop }: Props = $props();
 
 	import Plug from 'lucide-svelte/icons/plug';
 	import Check from 'lucide-svelte/icons/check';
@@ -93,6 +97,8 @@
 	import { authLoginAccount, listPlugins, submitCode } from '$lib/api/nebo';
 	import { isSignInFor, openSignInLink } from '$lib/utils/pluginSignIn';
 	import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
+	import DecisionCard from '$lib/components/DecisionCard.svelte';
+	import { questionOrder, type DecisionChoice } from '$lib/chat/decision';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
 	// Accounts, then answer the parked ask_request so the tool call resumes.
@@ -229,6 +235,48 @@
 	const stepQuestionHtml = $derived(step ? parseMarkdown(wordedQuestion($t, step.question, step.widget)) : '');
 	const isLast = $derived(at >= steps.length - 1);
 	const stepAnswered = $derived(step ? stepValue(step, current) !== '' : false);
+	/** A card done in the app (an install, a hire, a sign-in). */
+	const inApp = $derived(widget?.type === 'install_plugin' || widget?.type === 'hire_employee' || widget?.type === 'connect_account');
+
+	/** "Other": his own words answer the step. */
+	const OTHER = '\u0000other';
+	/** The step's choices as the card's buttons: the recommended one first
+	 *  and filled, the rest outlined, then Other. A long list is a dropdown
+	 *  instead. */
+	const questionChoices = $derived<DecisionChoice[]>(
+		step && !step.select
+			? [
+					...questionOrder(options).map((o, i): DecisionChoice => ({
+						id: o.label,
+						label: optionText(o.label),
+						description: o.description,
+						tone: i === 0 && !step.multi ? 'filled' : 'outlined',
+						on: current.picked.includes(o.label),
+						badge: o.recommended ? $t('chat.recommended') : undefined
+					})),
+					...(!step.widget.answers && options.length > 0
+						? [{ id: OTHER, label: $t('chat.askOther'), tone: 'outlined' as const, on: current.otherOn }]
+						: [])
+				]
+			: []
+	);
+	/** The owner picks, then sends with Next or Submit: several picks, a
+	 *  dropdown, his own words, or a card of several questions. A single
+	 *  pick on a card of one question answers it at once. */
+	const picksFirst = $derived(!!step && (steps.length > 1 || step.multi || step.select || current.otherOn || options.length === 0));
+
+	/** A tap on one of the step's buttons. */
+	function choose(id: string) {
+		if (!step) return;
+		if (id === OTHER) {
+			setAnswer(chooseOther(step, current));
+			return;
+		}
+		setAnswer(pick(step, current, id));
+		if (step.multi) return;
+		if (isLast) sendAll();
+		else go(at + 1);
+	}
 
 	function setAnswer(a: StepAnswer) {
 		const next = [...stepAnswers];
@@ -306,107 +354,59 @@
 			{/if}
 		{/each}
 	</AskReceipt>
-{:else}
-<div class="ask-card">
-	{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
-	{#if steps.length <= 1}
-		<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
-	{/if}
-
-	{#if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}
-		{@const hiring = widget.type === 'hire_employee'}
-		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
-			<div class="rounded-md bg-base-200 p-2">
-				{#if installDone}<Check class="w-5 h-5 text-success" />{:else if hiring}<UserPlus class="w-5 h-5" />{:else}<Download class="w-5 h-5" />{/if}
-			</div>
-			<div class="flex-1 min-w-0">
-				{#if hireList.length > 1}
-					<ul class="text-sm font-medium space-y-0.5">
-						{#each hireList as h (h.code)}
-							<li class="flex items-center gap-1.5 truncate">
-								{#if h.code && hiredCodes.has(h.code)}<Check class="w-3.5 h-3.5 text-success shrink-0" />{/if}
-								<span class="truncate">{h.name}</span>
-							</li>
-						{/each}
-					</ul>
-				{:else}
-					<div class="text-sm font-medium truncate">{widget.name ?? widget.plugin}</div>
-				{/if}
-				{#if installError}
-					<div class="text-xs text-error">{installError}</div>
-				{:else if hireList.length <= 1 && widget.description}
-					<div class="text-xs text-base-content/70 line-clamp-2">{widget.description}</div>
-				{/if}
-			</div>
-			<button
-				type="button"
-				class="btn btn-sm btn-primary"
-				disabled={installing}
-				onclick={() => widget && startInstall(widget)}
-			>
-				{#if installing}<span class="loading loading-spinner loading-xs"></span>{/if}
-				{#if hiring}
-					{#if hireList.length > 1}{installing ? $t('chat.hiringCount', { values: { done: hiredCodes.size, count: hireList.length } }) : $t('chat.hireCount', { values: { count: hireList.length } })}{:else}{installing ? $t('chat.hiring') : $t('chat.hire')}{/if}
-				{:else}{installing ? $t('chat.installing') : $t('chat.install')}{/if}
-			</button>
-		</div>
-		<div class="mt-2 flex">
-			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
-		</div>
-	{:else if widget?.type === 'connect_account'}
-		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
-			<div class="rounded-md bg-base-200 p-2">
-				{#if connectDone}<Check class="w-5 h-5 text-success" />{:else}<Plug class="w-5 h-5" />{/if}
-			</div>
-			<div class="flex-1 min-w-0">
-				<div class="text-sm font-medium truncate">{widget.employee ? $t('chat.connectAccountFor', { values: { label: widget.label ?? widget.plugin, employee: widget.employee } }) : (widget.label ?? widget.plugin)}</div>
-				{#if connectError}
-					<div class="text-xs text-error">{connectError}</div>
-				{:else}
-					<div class="text-xs text-base-content/70">{$t('chat.connectAccountHint')}</div>
-				{/if}
-			</div>
-			<button
-				type="button"
-				class="btn btn-sm btn-primary"
-				disabled={connecting || !credentialsComplete(credFields, creds)}
-				onclick={() => widget && startConnect(widget)}
-			>
-				{#if connecting}<span class="loading loading-spinner loading-xs"></span>{/if}
-				{connecting ? $t('chat.connecting') : $t('chat.connect')}
-			</button>
-		</div>
+{:else if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}
+	{@const hiring = widget.type === 'hire_employee'}
+	<!-- Done in the app: stays in the chat, on the same card. -->
+	<DecisionCard
+		line={hireList.length > 1 ? [] : [{ text: widget.name ?? widget.plugin ?? '', bold: true }]}
+		title={hireList.length > 1 ? hires : undefined}
+		reason={installError ?? (hireList.length <= 1 ? widget.description ?? '' : '')}
+		choices={[
+			{
+				id: 'go',
+				tone: 'filled',
+				working: installing,
+				label: hiring
+					? hireList.length > 1
+						? installing ? $t('chat.hiringCount', { values: { done: hiredCodes.size, count: hireList.length } }) : $t('chat.hireCount', { values: { count: hireList.length } })
+						: installing ? $t('chat.hiring') : $t('chat.hire')
+					: installing ? $t('chat.installing') : $t('chat.install')
+			},
+			{ id: SKIP_VALUE, tone: 'outlined', label: $t('common.skip') }
+		]}
+		onchoose={(id) => (id === 'go' ? widget && startInstall(widget) : submit(SKIP_VALUE))}
+		{body}
+	>
+		{#snippet icon()}{#if installDone}<Check class="w-5 h-5 text-success" />{:else if hiring}<UserPlus class="w-5 h-5" />{:else}<Download class="w-5 h-5" />{/if}{/snippet}
+	</DecisionCard>
+{:else if widget?.type === 'connect_account'}
+	<DecisionCard
+		line={[{ text: widget.employee ? $t('chat.connectAccountFor', { values: { label: widget.label ?? widget.plugin ?? '', employee: widget.employee } }) : (widget.label ?? widget.plugin ?? ''), bold: true }]}
+		reason={connectError ?? $t('chat.connectAccountHint')}
+		choices={[
+			{ id: 'go', tone: 'filled', working: connecting, disabled: !credentialsComplete(credFields, creds), label: connecting ? $t('chat.connecting') : $t('chat.connect') },
+			{ id: SKIP_VALUE, tone: 'outlined', label: $t('common.skip') }
+		]}
+		onchoose={(id) => (id === 'go' ? widget && startConnect(widget) : submit(SKIP_VALUE))}
+		{body}
+	>
+		{#snippet icon()}{#if connectDone}<Check class="w-5 h-5 text-success" />{:else}<Plug class="w-5 h-5" />{/if}{/snippet}
 		{#if credFields.length > 0 && !connectDone}
-			<div class="mt-2 flex flex-col gap-2">
+			<div class="decision-fields">
 				<CredentialFields fields={credFields} bind:values={creds} disabled={connecting} onenter={() => widget && startConnect(widget)} />
 			</div>
 		{/if}
-		<div class="mt-2 flex">
-			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
-		</div>
-	{:else if step}
-		{#if steps.length > 1}
-			<!-- The wizard's steps, by their headers: where he is, and a way back
-			     to any he answered. -->
-			<div class="ask-steps" role="tablist">
-				{#each steps as s, i}
-					<button
-						type="button"
-						role="tab"
-						class="ask-step"
-						class:ask-step-current={i === at}
-						class:ask-step-done={i !== at && stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== ''}
-						aria-selected={i === at}
-						onclick={() => go(i)}
-					>{s.header}</button>
-				{/each}
-			</div>
-			<div class="ask-question prose prose-sm max-w-none">{@html stepQuestionHtml}</div>
-		{/if}
-		{#if widget?.label}
-			<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>
-		{/if}
-
+	</DecisionCard>
+{:else if step}
+	<DecisionCard
+		who={asker}
+		{title}
+		{body}
+		choices={questionChoices}
+		multi={step.multi}
+		onchoose={choose}
+		{onstop}
+	>
 		{#if step.select}
 			<select
 				class="select select-bordered select-sm ask-select"
@@ -418,45 +418,6 @@
 					<option value={option.label}>{optionText(option.label)}{option.recommended ? ` · ${$t('chat.recommended')}` : ''}</option>
 				{/each}
 			</select>
-		{:else}
-			<!-- One list: a label in bold, what it means under it, a line
-			     between each, and the chosen ones marked. -->
-			<div class="ask-options" role={step.multi ? 'group' : 'radiogroup'}>
-				{#each options as option}
-					{@const on = current.picked.includes(option.label)}
-					<button
-						type="button"
-						class="ask-option"
-						class:ask-option-on={on}
-						role={step.multi ? 'checkbox' : 'radio'}
-						aria-checked={on}
-						onclick={() => setAnswer(pick(step, current, option.label))}
-					>
-						<span class="ask-option-text">
-							<span class="ask-option-label">
-								{optionText(option.label)}
-								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
-							</span>
-							{#if option.description}<span class="ask-option-description">{option.description}</span>{/if}
-						</span>
-						<span class="ask-option-mark" class:ask-option-mark-multi={step.multi}>{#if on}<Check class="w-3.5 h-3.5" />{/if}</span>
-					</button>
-				{/each}
-				{#if !step.widget.answers && options.length > 0}
-					<!-- His own words, typed here. -->
-					<button
-						type="button"
-						class="ask-option"
-						class:ask-option-on={current.otherOn}
-						role={step.multi ? 'checkbox' : 'radio'}
-						aria-checked={current.otherOn}
-						onclick={() => setAnswer(chooseOther(step, current))}
-					>
-						<span class="ask-option-text"><span class="ask-option-label">{$t('chat.askOther')}</span></span>
-						<span class="ask-option-mark" class:ask-option-mark-multi={step.multi}>{#if current.otherOn}<Check class="w-3.5 h-3.5" />{/if}</span>
-					</button>
-				{/if}
-			</div>
 		{/if}
 		{#if current.otherOn || options.length === 0}
 			<!-- svelte-ignore a11y_autofocus -->
@@ -476,18 +437,67 @@
 				}}
 			/>
 		{/if}
-
 		<div class="ask-actions">
 			<button type="button" class="ask-skip" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			{#if steps.length > 1 && at > 0}
 				<button type="button" class="btn btn-sm btn-ghost" onclick={() => go(at - 1)}>{$t('common.back')}</button>
 			{/if}
-			{#if isLast}
-				<button type="button" class="btn btn-sm btn-primary" disabled={!steps.every((s, i) => stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== '')} onclick={sendAll}>{$t('common.submit')}</button>
-			{:else}
-				<button type="button" class="btn btn-sm btn-primary" disabled={!stepAnswered} onclick={() => go(at + 1)}>{$t('common.next')}</button>
+			{#if picksFirst}
+				{#if isLast}
+					<button type="button" class="btn btn-sm btn-primary" disabled={!steps.every((s, i) => stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== '')} onclick={sendAll}>{$t('common.submit')}</button>
+				{:else}
+					<button type="button" class="btn btn-sm btn-primary" disabled={!stepAnswered} onclick={() => go(at + 1)}>{$t('common.next')}</button>
+				{/if}
 			{/if}
 		</div>
-	{/if}
-</div>
+	</DecisionCard>
 {/if}
+
+<!-- The question, as its card's header: what he decides on (the brief,
+     the draft) above it, the steps by their headers when there are
+     several, then the one on screen. -->
+{#snippet title()}
+	{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
+	{#if steps.length > 1}
+		<div class="ask-steps" role="tablist">
+			{#each steps as s, i}
+				<button
+					type="button"
+					role="tab"
+					class="ask-step"
+					class:ask-step-current={i === at}
+					class:ask-step-done={i !== at && stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== ''}
+					aria-selected={i === at}
+					onclick={() => go(i)}
+				>{s.header}</button>
+			{/each}
+		</div>
+		<div class="ask-question prose prose-sm max-w-none">{@html stepQuestionHtml}</div>
+	{:else}
+		<div class="ask-question prose prose-sm max-w-none">{@html promptHtml}</div>
+	{/if}
+	{#if widget?.label}
+		<p class="decision-reason">{widget.label}</p>
+	{/if}
+{/snippet}
+
+<!-- A card done in the app: what it is about, and the employee's own
+     words about it. -->
+{#snippet body()}
+	{#if inApp && contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
+	{#if inApp && promptHtml}
+		<div class="decision-prompt prose prose-sm max-w-none">{@html promptHtml}</div>
+	{/if}
+{/snippet}
+
+<!-- The team on one hire card, each ticked as it lands. -->
+{#snippet hires()}
+	<ul class="decision-list">
+		{#each hireList as h (h.code)}
+			<li class="decision-list-item">
+				{#if h.code && hiredCodes.has(h.code)}<Check class="w-3.5 h-3.5 text-success shrink-0" />{/if}
+				<span class="truncate">{h.name}</span>
+			</li>
+		{/each}
+	</ul>
+{/snippet}

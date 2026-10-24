@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {Verlengt vandaag} one {Verlengt morgen} other {Verlengt over # dagen}}",
 		"workIncluded": "Dagelijks werk inbegrepen",
-		"needsOkay": "{name} heeft je akkoord nodig.",
-		"approve": "Ja, ga je gang",
-		"decline": "Deze keer niet",
 		"openChat": "Chat openen",
 		"runs": "Runs",
 		"employees": "Medewerkers",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} wacht op je akkoord",
-		"allowAlways": "Altijd toestaan",
-		"thisOnce": "Alleen deze keer",
-		"no": "Nee",
 		"allowedAlways": "Vanaf nu toegestaan",
 		"allowedOnce": "Deze keer toegestaan",
 		"declined": "Geweigerd",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "Deze app komt uit de marketplace. Hij mag alleen wat jij toestaat.",
 		"ownHint": "Je hebt deze app hier gemaakt, dus hij mag doen wat hij vraagt.",
 		"notAnswered": "Nog niet beantwoord"
+	},
+	"decision": {
+		"allowOnce": "Eén keer toestaan",
+		"alwaysAllow": "Altijd toestaan",
+		"decline": "Weigeren",
+		"risk": "Risico"
 	}
 }

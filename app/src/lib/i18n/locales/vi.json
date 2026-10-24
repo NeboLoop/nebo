@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {Gia hạn hôm nay} =1 {Gia hạn ngày mai} other {Gia hạn sau # ngày}}",
 		"workIncluded": "Đã bao gồm công việc hằng ngày",
-		"needsOkay": "{name} cần bạn phê duyệt.",
-		"approve": "Được, tiếp tục",
-		"decline": "Lần này thì không",
 		"openChat": "Mở trò chuyện",
 		"runs": "Lượt chạy",
 		"employees": "Nhân viên",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} cần bạn đồng ý",
-		"allowAlways": "Luôn cho phép",
-		"thisOnce": "Chỉ lần này",
-		"no": "Không",
 		"allowedAlways": "Được phép từ giờ",
 		"allowedOnce": "Được phép lần này",
 		"declined": "Đã từ chối",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "Ứng dụng này đến từ marketplace. Nó chỉ được làm những gì bạn cho phép.",
 		"ownHint": "Bạn đã tạo ứng dụng này ở đây, nên nó được làm những gì nó yêu cầu.",
 		"notAnswered": "Chưa trả lời"
+	},
+	"decision": {
+		"allowOnce": "Cho phép một lần",
+		"alwaysAllow": "Luôn cho phép",
+		"decline": "Từ chối",
+		"risk": "Rủi ro"
 	}
 }

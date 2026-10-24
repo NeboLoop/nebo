@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {Odnawia się dzisiaj} one {Odnawia się jutro} few {Odnawia się za # dni} many {Odnawia się za # dni} other {Odnawia się za # dnia}}",
 		"workIncluded": "Codzienna praca w cenie",
-		"needsOkay": "{name} czeka na Twoją zgodę.",
-		"approve": "Tak, działaj",
-		"decline": "Nie tym razem",
 		"openChat": "Otwórz rozmowę",
 		"runs": "Przebiegi",
 		"employees": "Pracownicy",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} czeka na Twoją zgodę",
-		"allowAlways": "Zawsze zezwalaj",
-		"thisOnce": "Tylko tym razem",
-		"no": "Nie",
 		"allowedAlways": "Dozwolone od teraz",
 		"allowedOnce": "Dozwolone tym razem",
 		"declined": "Odrzucono",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "Ta aplikacja pochodzi z marketplace. Może tylko to, na co pozwolisz.",
 		"ownHint": "Ta aplikacja powstała tutaj, więc może robić to, o co prosi.",
 		"notAnswered": "Bez odpowiedzi"
+	},
+	"decision": {
+		"allowOnce": "Zezwól raz",
+		"alwaysAllow": "Zawsze zezwalaj",
+		"decline": "Odrzuć",
+		"risk": "Ryzyko"
 	}
 }

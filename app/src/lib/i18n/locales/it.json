@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {Si rinnova oggi} one {Si rinnova domani} other {Si rinnova tra # giorni}}",
 		"workIncluded": "Lavoro quotidiano incluso",
-		"needsOkay": "{name} ha bisogno del tuo via libera.",
-		"approve": "Sì, procedi",
-		"decline": "Non questa volta",
 		"openChat": "Apri la conversazione",
 		"runs": "Esecuzioni",
 		"employees": "Dipendenti",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} ha bisogno del tuo OK",
-		"allowAlways": "Consenti sempre",
-		"thisOnce": "Solo questa volta",
-		"no": "No",
 		"allowedAlways": "Consentito d'ora in poi",
 		"allowedOnce": "Consentito questa volta",
 		"declined": "Rifiutato",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "Questa app viene dal marketplace. Può fare solo ciò che consenti.",
 		"ownHint": "Hai creato questa app qui, quindi può fare ciò che chiede.",
 		"notAnswered": "Senza risposta"
+	},
+	"decision": {
+		"allowOnce": "Consenti una volta",
+		"alwaysAllow": "Consenti sempre",
+		"decline": "Rifiuta",
+		"risk": "Rischio"
 	}
 }

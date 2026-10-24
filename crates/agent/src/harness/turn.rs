@@ -11248,7 +11248,7 @@ mod tests {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
                 let (_project, file) = small_project(true).await;
-                let decision = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let decision = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": [{"label": "cents", "description": "Round each total to the cent."}, {"label": "dollars", "description": "Round each total to the dollar."}], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
                 let (reviewing, go) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
@@ -11788,7 +11788,18 @@ mod tests {
             input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
-                let options: Vec<&str> = input["options"].as_array().map(|a| a.iter().filter_map(|o| o.as_str()).collect()).unwrap_or_default();
+                // Each choice as the card shows it: its label, and its description.
+                let options: Vec<String> = input["options"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|o| {
+                                let label = o["label"].as_str()?;
+                                Some(o["description"].as_str().map_or(label.to_string(), |d| format!("{label} ({d})")))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.asked.lock().unwrap().push(format!("{} [{}]", input["question"].as_str().unwrap_or(""), options.join(" | ")));
                 if let Some(f) = &self.on_ask {
                     f();
@@ -11863,8 +11874,8 @@ mod tests {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
                 let (_project, file) = small_project(true).await;
-                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
-                let again: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "rounds to cents"}]}"#;
+                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": [{"label": "cents", "description": "Round each total to the cent."}, {"label": "dollars", "description": "Round each total to the dollar."}], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let again: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": [{"label": "cents", "description": "Round each total to the cent."}, {"label": "dollars", "description": "Round each total to the dollar."}], "recommended": "cents"}], "verified_ok": [{"checked": "rounds to cents"}]}"#;
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
@@ -11885,6 +11896,12 @@ mod tests {
                 h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
                 run_turn(&h, owner("Make total() add a and b")).await;
                 assert_eq!(asked.lock().unwrap().len(), 1, "asked once: {:?}", asked.lock().unwrap());
+                // Each choice reaches the card as a short label with its
+                // description, the recommended one first.
+                assert_eq!(
+                    asked.lock().unwrap()[0],
+                    "Round totals to cents or to dollars [cents (Round each total to the cent.) | dollars (Round each total to the dollar.)]"
+                );
                 let calls = model.calls();
                 assert!(calls[5].messages.iter().any(|m| m.content.contains("The owner already decided")), "the answer came back, not a second question");
             })
@@ -11900,7 +11917,7 @@ mod tests {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
                 let (_project, file) = small_project(true).await;
-                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let decision: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": [{"label": "cents", "description": "Round each total to the cent."}, {"label": "dollars", "description": "Round each total to the dollar."}], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
                 let bare: &'static str = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "switch every total to whole dollars"}], "verified_ok": [{"checked": "rounds to cents"}]}"#;
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
@@ -11944,7 +11961,7 @@ mod tests {
                 let (_project, file) = small_project(true).await;
                 let review: &'static str = r#"{"findings": [
                     {"severity": "major", "kind": "decision", "title": "Contact form does nothing on static site", "evidence": "total.py:1", "repro": "submit the form", "impact": "messages are lost", "fix": "post it to a form endpoint"},
-                    {"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "dollars"}
+                    {"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": [{"label": "cents", "description": "Round each total to the cent."}, {"label": "dollars", "description": "Round each total to the dollar."}], "recommended": "dollars"}
                 ], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
@@ -11963,7 +11980,7 @@ mod tests {
                 let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
                 h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
                 run_turn(&h, owner("Make total() add a and b")).await;
-                assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars [dollars | cents]"], "only the real call, recommended first");
+                assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars [dollars (Round each total to the dollar.) | cents (Round each total to the cent.)]"], "only the real call, recommended first");
                 let calls = model.calls();
                 let brief = calls[3].messages.iter().rev().find(|m| m.content.contains("Independent reviewers")).expect("the builder's findings");
                 assert!(brief.content.contains("Contact form does nothing on static site") && brief.content.contains("Fix: post it to a form endpoint"), "{}", brief.content);

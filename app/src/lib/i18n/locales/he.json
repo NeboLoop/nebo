@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {מתחדש היום} one {מתחדש מחר} two {מתחדש בעוד יומיים} many {מתחדש בעוד # ימים} other {מתחדש בעוד # ימים}}",
 		"workIncluded": "העבודה היומיומית כלולה",
-		"needsOkay": "{name} ממתין לאישורך.",
-		"approve": "כן, המשך",
-		"decline": "לא הפעם",
 		"openChat": "פתח צ'אט",
 		"runs": "הרצות",
 		"employees": "עובדים",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} מבקש את האישור שלך",
-		"allowAlways": "אפשר תמיד",
-		"thisOnce": "רק הפעם",
-		"no": "לא",
 		"allowedAlways": "מאושר מעכשיו",
 		"allowedOnce": "מאושר הפעם",
 		"declined": "נדחה",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "האפליקציה הגיעה מהחנות. היא יכולה לעשות רק מה שתאשרו.",
 		"ownHint": "יצרתם את האפליקציה כאן, לכן היא יכולה לעשות מה שהיא מבקשת.",
 		"notAnswered": "ללא תשובה"
+	},
+	"decision": {
+		"allowOnce": "לאשר פעם אחת",
+		"alwaysAllow": "לאשר תמיד",
+		"decline": "לדחות",
+		"risk": "סיכון"
 	}
 }

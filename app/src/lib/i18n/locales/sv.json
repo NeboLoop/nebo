@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {Förnyas i dag} one {Förnyas i morgon} other {Förnyas om # dagar}}",
 		"workIncluded": "Vardagligt arbete ingår",
-		"needsOkay": "{name} behöver ditt godkännande.",
-		"approve": "Ja, kör",
-		"decline": "Inte den här gången",
 		"openChat": "Öppna chatt",
 		"runs": "Körningar",
 		"employees": "Medarbetare",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} väntar på ditt OK",
-		"allowAlways": "Tillåt alltid",
-		"thisOnce": "Bara den här gången",
-		"no": "Nej",
 		"allowedAlways": "Tillåtet från och med nu",
 		"allowedOnce": "Tillåtet den här gången",
 		"declined": "Nekat",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "Appen kommer från marketplace. Den får bara göra det du tillåter.",
 		"ownHint": "Du gjorde appen här, så den får göra det den ber om.",
 		"notAnswered": "Inte besvarad"
+	},
+	"decision": {
+		"allowOnce": "Tillåt en gång",
+		"alwaysAllow": "Tillåt alltid",
+		"decline": "Avböj",
+		"risk": "Risk"
 	}
 }

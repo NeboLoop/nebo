@@ -2677,7 +2677,7 @@
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
     {#if shownAsks.length > 0}
-    <ComposerAsk asks={shownAsks} {onasksubmit} ondismiss={closeAsks} onvoice={async () => { await closeAsks(); composerRef?.startVoice(); }} />
+    <ComposerAsk asks={shownAsks} {onasksubmit} ondismiss={closeAsks} onvoice={async () => { await closeAsks(); composerRef?.startVoice(); }} asker={agentId ? { id: agentId, name: agentName } : null} onstop={isLoading ? onstop : undefined} />
     {:else if composerAsks.length > 0}
       <button type="button" class="ask-waiting-chip" onclick={() => (closedAsks = new Set())}>
         {$t('chat.askWaiting', { values: { count: composerAsks.length } })}

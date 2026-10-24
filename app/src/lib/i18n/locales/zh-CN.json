@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {今天续订} other {# 天后续订}}",
 		"workIncluded": "日常工作已包含在内",
-		"needsOkay": "{name} 需要你的批准。",
-		"approve": "可以，继续",
-		"decline": "这次先不要",
 		"openChat": "打开对话",
 		"runs": "运行",
 		"employees": "员工",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} 需要你的同意",
-		"allowAlways": "始终允许",
-		"thisOnce": "仅此一次",
-		"no": "不",
 		"allowedAlways": "从现在起允许",
 		"allowedOnce": "本次已允许",
 		"declined": "已拒绝",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "这个应用来自应用市场，只能做你允许的事。",
 		"ownHint": "这个应用是在这里创建的，所以可以做它请求的事。",
 		"notAnswered": "未回答"
+	},
+	"decision": {
+		"allowOnce": "允许一次",
+		"alwaysAllow": "始终允许",
+		"decline": "拒绝",
+		"risk": "风险"
 	}
 }

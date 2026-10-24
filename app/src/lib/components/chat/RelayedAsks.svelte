@@ -59,7 +59,7 @@
       {#if permission}
         <PermissionAskCard ask={permission} via="chat" />
       {:else}
-        <AskWidget requestId={ask.id} prompt={ask.question} widgets={relayedCard(ask)} onSubmit={answer} />
+        <AskWidget requestId={ask.id} prompt={ask.question} widgets={relayedCard(ask)} onSubmit={answer} asker={{ id: ask.agentId, name: ask.employee }} />
       {/if}
       <button type="button" class="relay-item-link" onclick={() => goto(askPath(ask))}>
         {$t('chat.relayViewIn', { values: { name: ask.employee } })}

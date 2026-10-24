@@ -152,9 +152,6 @@
 		"planUnknown": "Nebo",
 		"renewsIn": "{days, plural, =0 {Diperbaharui hari ini} =1 {Diperbaharui esok} other {Diperbaharui dalam # hari}}",
 		"workIncluded": "Kerja harian disertakan",
-		"needsOkay": "{name} perlukan kelulusan anda.",
-		"approve": "Ya, teruskan",
-		"decline": "Bukan kali ini",
 		"openChat": "Buka sembang",
 		"runs": "Larian",
 		"employees": "Pekerja",
@@ -3320,9 +3317,6 @@
 	},
 	"permissionAsk": {
 		"title": "{name} perlukan kelulusan anda",
-		"allowAlways": "Sentiasa benarkan",
-		"thisOnce": "Kali ini sahaja",
-		"no": "Tidak",
 		"allowedAlways": "Dibenarkan mulai sekarang",
 		"allowedOnce": "Dibenarkan kali ini",
 		"declined": "Ditolak",
@@ -4628,5 +4622,11 @@
 		"sectionHint": "Aplikasi ini dari marketplace. Ia hanya boleh buat apa yang anda benarkan.",
 		"ownHint": "Anda membina aplikasi ini di sini, jadi ia boleh buat apa yang dimintanya.",
 		"notAnswered": "Belum dijawab"
+	},
+	"decision": {
+		"allowOnce": "Benarkan sekali",
+		"alwaysAllow": "Sentiasa benarkan",
+		"decline": "Tolak",
+		"risk": "Risiko"
 	}
 }

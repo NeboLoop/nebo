@@ -1055,35 +1055,6 @@
 .ask-question {
   @apply mb-2 text-sm font-medium [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0;
 }
-/* The choices: one list, a label in bold with what it means under it in
-   smaller gray, a line between each, the chosen ones marked. */
-.ask-options {
-  @apply flex flex-col rounded-lg border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden;
-}
-.ask-option {
-  @apply flex w-full items-center gap-3 px-3 py-2 text-start cursor-pointer bg-transparent border-0 hover:bg-base-200;
-}
-.ask-option-on {
-  background-color: color-mix(in srgb, var(--color-primary) 10%, var(--color-base-100));
-}
-.ask-option-text {
-  @apply flex min-w-0 flex-1 flex-col;
-}
-.ask-option-label {
-  @apply text-sm font-semibold text-base-content;
-}
-.ask-option-description {
-  @apply text-xs text-base-content/70;
-}
-.ask-option-mark {
-  @apply flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-base-content/30 text-primary-content;
-}
-.ask-option-mark-multi {
-  @apply rounded;
-}
-.ask-option-on .ask-option-mark {
-  @apply border-primary bg-primary;
-}
 .ask-other-input {
   @apply mt-2 w-full;
 }
@@ -1158,9 +1129,6 @@
 .ask-receipt-mark-none {
   @apply w-3.5 h-3.5 shrink-0;
 }
-.permission-ask-card {
-  @apply flex flex-col gap-1.5;
-}
 .permission-ask-title {
   @apply m-0 text-sm font-semibold;
 }
@@ -1176,38 +1144,11 @@
 .permission-ask-label {
   @apply font-medium text-base-content/70;
 }
-.permission-ask-details {
-  @apply flex flex-col gap-1;
-}
-.permission-ask-detail-label {
-  @apply shrink-0;
-}
 .permission-ask-detail-value {
   @apply min-w-0 text-sm font-medium whitespace-pre-line break-words text-start;
 }
-.permission-ask-covers {
-  @apply m-0 text-xs text-base-content/70;
-}
-.permission-ask-command-line {
-  @apply cursor-pointer list-none truncate font-mono text-xs text-base-content/70;
-}
-.permission-ask-command-line::-webkit-details-marker {
-  display: none;
-}
-.permission-ask-command[open] .permission-ask-command-line {
-  @apply whitespace-pre-wrap break-all;
-}
-.permission-ask-actions {
-  @apply flex flex-wrap gap-2 pt-1;
-}
 .permission-ask-settled {
   @apply flex;
-}
-.permission-ask-error {
-  @apply m-0 text-xs text-error;
-}
-.approval-ask-facts {
-  @apply rounded-lg bg-base-100 divide-y divide-base-content/5;
 }
 .approval-ask-fact {
   @apply flex items-center justify-between gap-4 px-3 py-1.5;
@@ -1217,12 +1158,6 @@
 }
 .approval-ask-fact-value {
   @apply text-sm font-medium text-end break-all;
-}
-.approval-ask-more {
-  @apply text-xs text-base-content/70 cursor-pointer select-none;
-}
-.approval-ask-detail {
-  @apply m-0 mt-1 rounded-lg bg-base-100 p-2 font-mono text-xs break-all;
 }
 .ask-rise {
   animation: ask-rise 240ms ease-out both;
@@ -1241,6 +1176,121 @@
   .ask-rise {
     animation: none;
   }
+}
+
+/* The ONE decision card (DecisionCard): a question, a permission ask, an
+   approval, an install or a sign-in look the same everywhere. Centered: the
+   avatar or icon, one line with only its key words bold, the bold action,
+   the reason. Details fold behind "Show details" as label and value rows.
+   The answers are full-width stacked buttons in one order, filled first,
+   then outlined; Stop sits alone in the corner. */
+.decision-card {
+  @apply relative flex flex-col gap-3;
+}
+.decision-stop {
+  @apply btn btn-ghost btn-xs absolute top-2 end-2;
+}
+.decision-head {
+  @apply flex flex-col items-center gap-1.5 px-8 text-center;
+}
+.decision-icon {
+  @apply flex h-10 w-10 items-center justify-center rounded-xl bg-base-100 text-base-content;
+}
+.decision-line {
+  @apply m-0 text-sm text-base-content [&_b]:font-semibold [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0;
+}
+.decision-action {
+  @apply m-0 text-base font-semibold text-base-content break-words;
+}
+.decision-reason {
+  @apply m-0 text-sm text-base-content/70 whitespace-pre-line break-words;
+}
+.decision-prompt {
+  @apply text-center text-sm [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0;
+}
+.decision-details {
+  @apply flex flex-col gap-1;
+}
+.decision-details-toggle {
+  @apply cursor-pointer select-none list-none text-center text-xs font-medium text-base-content/70 hover:text-base-content [&::-webkit-details-marker]:hidden;
+}
+.decision-rows {
+  @apply m-0 mt-1 rounded-lg bg-base-100 divide-y divide-base-content/5;
+}
+.decision-row {
+  @apply flex items-start justify-between gap-4 px-3 py-1.5;
+}
+.decision-row-label {
+  @apply shrink-0 text-xs text-base-content/70;
+}
+.decision-row-value {
+  @apply m-0 min-w-0 text-sm font-medium text-end whitespace-pre-line break-words;
+}
+.decision-row-code {
+  @apply font-mono text-xs break-all;
+}
+.decision-choices {
+  @apply flex flex-col gap-2;
+}
+.decision-choice {
+  @apply btn h-auto min-h-10 w-full flex-nowrap justify-between rounded-xl px-4 py-2 text-start font-normal;
+}
+.decision-choice-filled {
+  @apply btn-primary;
+}
+.decision-choice-outlined {
+  @apply border-base-content/20 bg-base-100 text-base-content shadow-none hover:border-base-content/35 hover:bg-base-200;
+}
+.decision-choice-on {
+  @apply border-primary;
+  background-color: color-mix(in srgb, var(--color-primary) 10%, var(--color-base-100));
+}
+.decision-choice-text {
+  @apply flex min-w-0 flex-1 flex-col items-start gap-0.5;
+}
+.decision-choice-label {
+  @apply inline-flex items-center gap-1.5 text-sm font-semibold;
+}
+.decision-choice-description {
+  @apply text-xs opacity-80;
+}
+.decision-choice-badge {
+  @apply rounded-full border border-current px-1.5 text-[10px] font-medium opacity-80;
+}
+.decision-choice-mark {
+  @apply h-4 w-4 shrink-0 text-primary;
+}
+.decision-choice-note {
+  @apply m-0 -mt-1 text-center text-xs text-base-content/70;
+}
+.decision-fields {
+  @apply flex flex-col gap-2;
+}
+.decision-list {
+  @apply m-0 flex list-none flex-col items-center gap-0.5 p-0 text-sm font-semibold;
+}
+.decision-list-item {
+  @apply flex items-center gap-1.5;
+}
+.decision-link {
+  @apply self-center cursor-pointer border-none bg-transparent p-0 text-xs font-medium text-primary hover:underline;
+}
+.decision-error {
+  @apply m-0 text-center text-xs text-error;
+}
+/* A blocking ask's card over the current screen, opened from its notice:
+   small, no backdrop, the close in its corner opposite Stop. */
+.ask-popover {
+  @apply fixed bottom-4 end-4 z-[101] w-80 max-w-[calc(100vw-2rem)] rounded-xl shadow-xl;
+}
+.ask-popover .ask-card {
+  @apply mb-0 max-w-none;
+}
+.ask-popover-close {
+  @apply btn btn-ghost btn-xs btn-circle absolute top-2 start-2 z-10;
+}
+.ask-popover-link {
+  @apply self-center cursor-pointer border-none bg-transparent p-0 text-xs text-base-content/70 hover:underline;
 }
 
 /* An item relayed to the assistant's chat from work the owner is not in:
@@ -1274,9 +1324,6 @@
 .inbox-card {
   @apply flex flex-col gap-2 rounded-2xl border border-base-300 bg-base-200/60 p-4;
 }
-.inbox-card-offer {
-  @apply border-primary/50 bg-base-100;
-}
 .inbox-card-meta {
   @apply flex min-w-0 items-center gap-2 text-xs text-base-content/70;
 }
@@ -1286,26 +1333,11 @@
 .inbox-card-body {
   @apply m-0 text-sm text-base-content/70;
 }
-.inbox-facts {
-  @apply m-0 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 rounded-xl bg-base-200/60 p-3 text-sm;
-}
-.inbox-facts dt {
-  @apply text-xs font-semibold uppercase tracking-wider text-base-content/50;
-}
-.inbox-facts dd {
-  @apply m-0 text-base-content;
-}
 .inbox-cant-undo {
   @apply m-0 text-xs font-medium text-warning;
 }
 .inbox-answered {
   @apply m-0 text-xs text-base-content/60;
-}
-.inbox-chip {
-  @apply cursor-pointer rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50;
-}
-.inbox-chip-quiet {
-  @apply border-base-content/15 bg-base-100 text-base-content/70 hover:bg-base-200;
 }
 .inbox-link {
   @apply inline-flex cursor-pointer items-center gap-1 rounded-full border border-transparent bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50;
