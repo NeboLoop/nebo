@@ -564,6 +564,72 @@ pub const DESTRUCTIVE_GIT_REFUSAL: &str = "This git command discards work (stash
      (delegate with isolation: \"worktree\"). If the owner truly wants history rewritten, \
      tell them the exact command and let them run it.";
 
+/// The one-line risk of a destructive command, for the owner's card: the
+/// first that fits, in this order (git's losses first, then removing
+/// files, then databases and infrastructure). Read from each command the
+/// script runs ([`subcommands`]), so a wrapped one counts; SQL is read
+/// from the text, wherever it sits. `None` for anything else.
+pub fn destructive_warning(cmd: &str) -> Option<types::permissions::DestructiveWarning> {
+    use types::permissions::DestructiveWarning as W;
+    static DROP: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\b(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)\b").expect("valid"));
+    static DELETE_ALL: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"(?i)\bDELETE\s+FROM\s+\w+[ \t]*(;|"|'|\n|$)"#).expect("valid"));
+    let subs = subcommands(cmd);
+    let words = |s: &Subcommand| -> Vec<String> { s.words.iter().map(|w| w.clone().unwrap_or_default()).collect() };
+    // Each git command: its verb and the words after it.
+    let gits: Vec<(String, Vec<String>)> = subs
+        .iter()
+        .filter_map(|s| {
+            let w = words(s);
+            let first = w.first()?;
+            if first != "git" && !first.ends_with("/git") {
+                return None;
+            }
+            let mut j = 1;
+            while j < w.len() && w[j].starts_with('-') {
+                j += if matches!(w[j].as_str(), "-C" | "-c" | "--git-dir" | "--work-tree") { 2 } else { 1 };
+            }
+            Some((w.get(j)?.clone(), w.get(j + 1..).unwrap_or_default().to_vec()))
+        })
+        .collect();
+    let git = |verb: &str, fits: &dyn Fn(&[String]) -> bool| gits.iter().any(|(v, a)| v == verb && fits(a));
+    let has = |a: &[String], f: &str| a.iter().any(|x| x == f);
+    let rms: Vec<Vec<String>> =
+        subs.iter().map(words).filter(|w| w.first().is_some_and(|p| p == "rm" || p.ends_with("/rm"))).collect();
+    let short = |a: &str, c: char| a.starts_with('-') && !a.starts_with("--") && a.contains(c);
+    let recursive = |w: &Vec<String>| w[1..].iter().any(|a| a == "--recursive" || short(a, 'r') || short(a, 'R'));
+    let forced = |w: &Vec<String>| w[1..].iter().any(|a| a == "--force" || short(a, 'f'));
+    let tool = |name: &str, verb: &str| subs.iter().map(words).any(|w| w.first().is_some_and(|p| p == name) && w[1..].iter().find(|a| !a.starts_with('-')).is_some_and(|a| a == verb));
+    let checks: [(W, bool); 15] = [
+        (W::DiscardsUncommittedChanges, git("reset", &|a| has(a, "--hard"))),
+        (
+            W::OverwritesRemoteHistory,
+            git("push", &|a| a.iter().any(|x| x == "-f" || x == "--force" || x.starts_with("--force-with-lease") || (x.starts_with('+') && x.len() > 1))),
+        ),
+        (
+            W::DeletesUntrackedFiles,
+            git("clean", &|a| {
+                !a.iter().any(|x| x == "--dry-run" || (x.starts_with('-') && !x.starts_with("--") && x.contains('n')))
+                    && a.iter().any(|x| x.starts_with('-') && !x.starts_with("--") && x.contains('f'))
+            }),
+        ),
+        (W::DiscardsWorkingTreeChanges, git("checkout", &|a| a.iter().filter(|x| *x != "--").eq(["."].iter())) || git("restore", &|a| a.iter().filter(|x| *x != "--").eq(["."].iter()))),
+        (W::RemovesStashedChanges, git("stash", &|a| a.first().is_some_and(|x| x == "drop" || x == "clear"))),
+        (W::ForceDeletesBranch, git("branch", &|a| has(a, "-D") || (has(a, "--delete") && has(a, "--force")))),
+        (W::SkipsSafetyHooks, ["commit", "push", "merge"].iter().any(|v| git(v, &|a| has(a, "--no-verify")))),
+        (W::RewritesLastCommit, git("commit", &|a| has(a, "--amend"))),
+        (W::RecursivelyForceRemovesFiles, rms.iter().any(|w| recursive(w) && forced(w))),
+        (W::RecursivelyRemovesFiles, rms.iter().any(recursive)),
+        (W::ForceRemovesFiles, rms.iter().any(forced)),
+        (W::DropsDatabaseObjects, DROP.is_match(cmd)),
+        (W::DeletesAllRows, DELETE_ALL.is_match(cmd)),
+        (W::DeletesKubernetesResources, tool("kubectl", "delete")),
+        (W::DestroysInfrastructure, tool("terraform", "destroy")),
+    ];
+    checks.into_iter().find(|(_, fits)| *fits).map(|(w, _)| w)
+}
+
 /// Files a shell command writes outside the supervised edit path: `sed -i`
 /// targets, `tee` targets, and `>`/`>>` redirections. `sed -i` is refused
 /// (the edit action exists for that, and what the owner previews there is
@@ -1158,6 +1224,33 @@ mod tests {
             assert!(is_never_removed(path), "{path}");
         }
         assert!(!is_never_removed("C:/Users/me/x") && !is_never_removed("C:/Program Files/App"));
+    }
+
+    /// The card's one-line risk follows the command, however it is
+    /// wrapped; what isn't destructive has none.
+    #[test]
+    fn a_destructive_commands_risk_is_named() {
+        use types::permissions::DestructiveWarning as W;
+        assert_eq!(destructive_warning("rm -rf build"), Some(W::RecursivelyForceRemovesFiles));
+        assert_eq!(destructive_warning("rm -fr build"), Some(W::RecursivelyForceRemovesFiles));
+        assert_eq!(destructive_warning("rm -r build"), Some(W::RecursivelyRemovesFiles));
+        assert_eq!(destructive_warning("rm -f a"), Some(W::ForceRemovesFiles));
+        assert_eq!(destructive_warning("bash -c 'git reset --hard'"), Some(W::DiscardsUncommittedChanges));
+        assert_eq!(destructive_warning("git push -f"), Some(W::OverwritesRemoteHistory));
+        assert_eq!(destructive_warning("git clean -fd"), Some(W::DeletesUntrackedFiles));
+        assert_eq!(destructive_warning("git clean -nfd"), None);
+        assert_eq!(destructive_warning("git checkout -- ."), Some(W::DiscardsWorkingTreeChanges));
+        assert_eq!(destructive_warning("git stash drop"), Some(W::RemovesStashedChanges));
+        assert_eq!(destructive_warning("git branch -D x"), Some(W::ForceDeletesBranch));
+        assert_eq!(destructive_warning("git commit --no-verify -m x"), Some(W::SkipsSafetyHooks));
+        assert_eq!(destructive_warning("git commit --amend"), Some(W::RewritesLastCommit));
+        assert_eq!(destructive_warning("psql -c 'DROP TABLE users'"), Some(W::DropsDatabaseObjects));
+        assert_eq!(destructive_warning("sqlite3 a.db 'DELETE FROM users;'"), Some(W::DeletesAllRows));
+        assert_eq!(destructive_warning("kubectl delete pod x"), Some(W::DeletesKubernetesResources));
+        assert_eq!(destructive_warning("terraform destroy"), Some(W::DestroysInfrastructure));
+        assert_eq!(destructive_warning("ls -la"), None);
+        assert_eq!(destructive_warning("echo rm -rf x"), None);
+        assert_eq!(destructive_warning("/bin/rm -rf build"), Some(W::RecursivelyForceRemovesFiles));
     }
 
     /// The 2026-09-29 incident, word for word: a scheduled run removed the

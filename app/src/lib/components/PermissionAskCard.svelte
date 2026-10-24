@@ -28,6 +28,15 @@
   const details = $derived(shown.details);
   const sendCheck = $derived(shown.kind === 'send_check');
   const title = $derived($t(sendCheck ? 'permissionAsk.sendCheckTitle' : 'permissionAsk.title', { values: { name: shown.employee } }));
+  /** What about it needs the owner, in his language: the bot's key and
+   *  values, its English line when it sends none (an older bot). */
+  const reason = $derived(
+    shown.reasonKey
+      ? [$t(shown.reasonKey, { values: shown.reasonValues, default: shown.reason }), shown.warningKey ? $t(shown.warningKey) : '']
+          .filter(Boolean)
+          .join(' ')
+      : shown.reason
+  );
   /** How a settled ask ended, as its receipt's lead. */
   const receipt = $derived(
     shown.status === 'answered'
@@ -94,7 +103,7 @@
   {#if shown.statedReason}
     <p class="permission-ask-why"><span class="permission-ask-label">{$t('permissionAsk.saidBy', { values: { name: shown.employee } })}</span> {shown.statedReason}</p>
   {/if}
-  <p class="permission-ask-reason">{shown.reason}</p>
+  <p class="permission-ask-reason">{reason}</p>
   {#if details.length}
     <details class="permission-ask-details">
       <summary class="approval-ask-more">{$t('permissionAsk.showDetails')}</summary>

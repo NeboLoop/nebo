@@ -62,7 +62,8 @@ pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Ru
     if owner_allowed && !whole_work {
         return None;
     }
-    Some(AskCase::RemovesFolders { targets: outside, whole_work })
+    let command = cx.input.get("command").and_then(|c| c.as_str()).unwrap_or_default();
+    Some(AskCase::RemovesFolders { targets: outside, whole_work, warning: tools::policy::destructive_warning(command) })
 }
 
 /// The run's own work: where a removal goes ahead.
