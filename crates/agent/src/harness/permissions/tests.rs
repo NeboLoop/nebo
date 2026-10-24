@@ -1381,3 +1381,61 @@ async fn a_protected_folder_in_the_project_always_asks() {
         }
     }
 }
+
+/// Review dl1055b C: in place in Full Access, a protected folder is never
+/// removed unasked however it is reached: by another case (`.GIT`), deep
+/// in the project, inside the tree a removal takes (a nested repository's
+/// `.git` under `vendor`), or through a link to it. What else is in the
+/// project goes ahead, as the reference does in its accepting modes (the
+/// owner, 10-23: "Do what Claude does here"); what git ignores is not in
+/// the change's snapshot.
+#[tokio::test]
+async fn a_protected_folder_is_never_removed_unasked_however_it_is_reached() {
+    let cases: &[(&str, &str, bool)] = &[
+        ("dotgit", "rm -rf .git", true),
+        ("dotgit-case", "rm -rf .GIT", true),
+        ("deep-dotgit", "rm -rf vendor/lib/.git", true),
+        ("parent-of-nested-repo", "rm -rf vendor", true),
+        ("ignored-uploads", "rm -rf uploads", false),
+        ("nebo-worktrees", "rm -rf .nebo/worktrees", true),
+        ("link-to-dotgit", "rm -rf gitlink/", true),
+    ];
+    for (name, cmd, asks) in cases {
+        let (_d, store) = store();
+        put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+        put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+        let reg = registry(&store, vec![]).await;
+        reg.register_defaults().await;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("site");
+        std::fs::create_dir_all(project.join(".git/objects")).unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(project.join("vendor/lib/.git")).unwrap();
+        std::fs::write(project.join("vendor/lib/.git/HEAD"), "unpushed\n").unwrap();
+        std::fs::create_dir_all(project.join("uploads")).unwrap();
+        std::fs::write(project.join(".gitignore"), "uploads/\n").unwrap();
+        std::fs::write(project.join("uploads/client-contract.pdf"), "the owner's only copy").unwrap();
+        std::fs::create_dir_all(project.join(".nebo/worktrees/h-1")).unwrap();
+        std::fs::write(project.join(".nebo/worktrees/h-1/work.txt"), "helper").unwrap();
+        std::os::unix::fs::symlink(project.join(".git"), project.join("gitlink")).unwrap();
+        let c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+        let root = project.to_string_lossy().into_owned();
+        store
+            .create_verification(
+                &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+                1,
+            )
+            .unwrap();
+        let r = reg.execute(&c, "run_command", json!({ "command": format!("cd '{}' && {cmd}", project.display()), "description": "Remove" })).await;
+        let lost = [".git/HEAD", "vendor/lib/.git/HEAD", "uploads/client-contract.pdf", ".nebo/worktrees/h-1/work.txt"]
+            .iter()
+            .filter(|p| !project.join(p).exists())
+            .copied()
+            .collect::<Vec<_>>();
+        if *asks {
+            assert!(r.parked_ask.is_some() && lost.is_empty(), "{name}: asked={} lost={lost:?}: {}", r.parked_ask.is_some(), r.content);
+        } else {
+            assert!(r.parked_ask.is_none() && lost == ["uploads/client-contract.pdf"], "{name}: goes ahead: lost={lost:?}: {}", r.content);
+        }
+    }
+}

@@ -1701,8 +1701,8 @@ async fn adopt_worktree(copy: &Path, id: &str) -> Adopted {
 }
 
 /// An old copy of a folder that was no repository: removed when it is
-/// identical to its project (every file's bytes and every link's target,
-/// nothing more and nothing less; Nebo's own folders in the project's
+/// identical to its project (every file's bytes and whether it may be run,
+/// every link's target, nothing more and nothing less; Nebo's own folders in the project's
 /// `.nebo` aside), and otherwise left exactly where it is. It is never
 /// moved: in the project's folder a later `git clean -fdx` would take it.
 fn settle_folder_copy(copy: &Path, project: &Path) -> Adopted {
@@ -1724,8 +1724,8 @@ fn settle_folder_copy(copy: &Path, project: &Path) -> Adopted {
 }
 
 /// Every file and link under `dir`, relative to `base` ('/'-separated):
-/// a file with its bytes' fingerprint, a link with its target as written
-/// (never followed).
+/// a file with its bytes' fingerprint and whether it may be run, a link
+/// with its target as written (never followed).
 fn entries_under(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
         let path = entry.path();
@@ -1738,7 +1738,14 @@ fn entries_under(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Re
             entries_under(base, &path, out)?;
         } else if kind.is_file() {
             let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            out.push((rel, format!("file:{:016x}", tools::checkpoint::fingerprint(&bytes))));
+            #[cfg(unix)]
+            let runs = {
+                use std::os::unix::fs::PermissionsExt;
+                entry.metadata().map_err(|e| e.to_string())?.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let runs = false;
+            out.push((rel, format!("file:{:016x}:{}", tools::checkpoint::fingerprint(&bytes), if runs { "x" } else { "-" })));
         } else {
             return Err(format!("{} is neither a file, a folder nor a link", path.display()));
         }
@@ -3138,6 +3145,89 @@ mod tests {
             std::fs::write(r.path().join(".nebo/verify/v-1/change.patch"), "+y\n").unwrap();
             let change = shadow.diff(&base, &shadow.snapshot().await.unwrap()).await.unwrap();
             assert_eq!(change.paths(), [".nebo/hooks.yaml"], "the snapshot holds his file and none of Nebo's");
+        }))
+    }
+
+    fn dl_row(store: &db::Store, id: &str, root: &Path, copy: &Path) {
+        let state = serde_json::json!({"Copy": {"task_id": id, "root": root, "path": copy, "snapshot": {}, "skipped": [], "pending": []}});
+        store.create_verification(&db::NewVerification { id, session_key: "agent:dev:web", project_root: &root.to_string_lossy(), work_dir: &copy.to_string_lossy(), isolation: "copy", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() }, 1).unwrap();
+    }
+
+    /// Review dl1055b A: the old folder copy is kept where it is, and the
+    /// owner's `git clean -ffdx` in the (now git) project never reaches it,
+    /// at this start or the next.
+    #[test]
+    fn an_old_folder_copy_survives_any_git_clean_in_its_project() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            let copy = old.join("letters").join("v-dlcopy");
+            std::fs::create_dir_all(copy.join("src")).unwrap();
+            std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+            std::fs::write(copy.join("b.txt"), "b1, the unlanded work\n").unwrap();
+            for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                git(f.path(), &args).await.unwrap();
+            }
+            git(f.path(), &["add", "-A"]).await.unwrap();
+            git(f.path(), &["commit", "-q", "-m", "base"]).await.unwrap();
+            dl_row(&store, "v-dlcopy", f.path(), &copy);
+            adopt_old_copies(&store).await;
+            git(f.path(), &["clean", "-ffdx"]).await.unwrap();
+            assert_eq!(std::fs::read_to_string(copy.join("b.txt")).unwrap(), "b1, the unlanded work\n");
+            adopt_old_copies(&store).await;
+            assert!(copy.join("b.txt").exists(), "kept at a second boot");
+        }))
+    }
+
+    /// Review dl1055b B: a copy that differs from its project only in a
+    /// link's target, or only in a file's executable bit, holds work: it is
+    /// never removed as identical.
+    #[test]
+    fn a_link_target_or_an_executable_bit_is_work_to_keep() {
+        use std::os::unix::fs::PermissionsExt;
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            std::fs::write(f.path().join("run.sh"), "echo hi\n").unwrap();
+            std::os::unix::fs::symlink("b.txt", f.path().join("current")).unwrap();
+            let make = |id: &str| {
+                let copy = old.join("letters").join(id);
+                std::fs::create_dir_all(copy.join("src")).unwrap();
+                std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+                std::fs::write(copy.join("b.txt"), "b0\n").unwrap();
+                std::fs::write(copy.join("run.sh"), "echo hi\n").unwrap();
+                copy
+            };
+            let link = make("v-dltarget");
+            std::os::unix::fs::symlink("src/a.txt", link.join("current")).unwrap();
+            let mode = make("v-dlmode");
+            std::os::unix::fs::symlink("b.txt", mode.join("current")).unwrap();
+            std::fs::set_permissions(mode.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            dl_row(&store, "v-dltarget", f.path(), &link);
+            dl_row(&store, "v-dlmode", f.path(), &mode);
+            assert_eq!(adopt_old_copies(&store).await, (2, 0));
+            assert!(link.exists(), "a copy whose only change is a link's target is kept");
+            assert!(mode.exists(), "a copy whose only change is run.sh made executable is kept");
+        }))
+    }
+
+    /// Review dl1055b D: the owner's `.nebo/hooks.yaml` is seen by git, and
+    /// none of Nebo's own folders beside it are.
+    #[test]
+    fn only_nebos_own_folders_in_nebo_are_hidden_from_git() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            nebo_dir(r.path()).unwrap();
+            std::fs::write(r.path().join(".nebo/hooks.yaml"), "post_tool: []\n").unwrap();
+            for own in NEBO_OWN {
+                std::fs::create_dir_all(r.path().join(".nebo").join(own)).unwrap();
+                std::fs::write(r.path().join(".nebo").join(own).join("x"), "nebo's\n").unwrap();
+            }
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            let staged = git(r.path(), &["diff", "--cached", "--name-only"]).await.unwrap();
+            assert_eq!(staged, ".nebo/hooks.yaml", "only the owner's file is staged");
         }))
     }
 }

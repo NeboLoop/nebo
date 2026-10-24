@@ -32,6 +32,39 @@ use super::{CheckCx, RuleSet};
 /// editors' and agents' own settings.
 pub const PROTECTED_DIRS: &[&str] = &[".git", ".nebo", ".vscode", ".idea", ".claude"];
 
+/// The most entries a removal's tree is walked through looking for a
+/// protected folder in it; a tree bigger than that asks.
+const MAX_WALK: usize = 50_000;
+
+/// Whether `name` is one of [`PROTECTED_DIRS`], whatever its case: macOS's
+/// and Windows' usual filesystems take `.GIT` for `.git`.
+fn protected(name: &std::ffi::OsStr) -> bool {
+    PROTECTED_DIRS.iter().any(|p| name.to_string_lossy().eq_ignore_ascii_case(p))
+}
+
+/// Whether the tree at `dir` holds a protected folder (a nested
+/// repository's `.git`, an editor's settings), walked without following
+/// links and stopping at the first; `true` too when it holds more than
+/// [`MAX_WALK`] entries, or can't be read: nothing then vouches for it.
+fn holds_protected(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { return d != dir || dir.exists() };
+        for entry in entries {
+            let Ok(entry) = entry else { return true };
+            seen += 1;
+            if seen > MAX_WALK || protected(&entry.file_name()) {
+                return true;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(entry.path());
+            }
+        }
+    }
+    false
+}
+
 /// The ask a call's tree removals raise, or `None` when every one is inside
 /// the run's own work (or it removes none). `decided` is the rule the call
 /// met: an allow the owner gave for this command ("Allow always" on its
@@ -117,10 +150,11 @@ impl Work {
             || self.made.iter().any(|f| real.starts_with(resolved(f)))
     }
 
-    /// Whether `folder` is, or is inside, a protected folder
-    /// ([`PROTECTED_DIRS`]): counted below the work folder that holds it (a
-    /// helper's copy sits in the project's `.nebo`, and what is in it is
-    /// its own), or along its whole path when no work folder does.
+    /// Whether `folder` is, is inside, or holds a protected folder
+    /// ([`PROTECTED_DIRS`], whatever its case): counted below the work folder
+    /// that holds it (a helper's copy sits in the project's `.nebo`, and what
+    /// is in it is its own), or along its whole path when no work folder
+    /// does; and anywhere in the tree it removes ([`holds_protected`]).
     fn guarded(&self, folder: &Path, follows: bool) -> bool {
         let real = if follows { resolved(folder) } else { placed(folder) };
         let below = self
@@ -133,7 +167,7 @@ impl Work {
             .max_by_key(|f| f.components().count())
             .and_then(|f| real.strip_prefix(&f).ok().map(Path::to_path_buf))
             .unwrap_or_else(|| real.clone());
-        below.components().any(|c| PROTECTED_DIRS.iter().any(|p| c.as_os_str() == *p))
+        below.components().any(|c| protected(c.as_os_str())) || (real.is_dir() && holds_protected(&real))
     }
 
     /// Whether `path` is a working copy or the project it copies, itself.
