@@ -3464,7 +3464,8 @@
 			"coworker": "İş arkadaşı",
 			"voice": "Ses",
 			"mcp": "Başka bir uygulama",
-			"local_api": "Bu bilgisayardaki bir program"
+			"local_api": "Bu bilgisayardaki bir program",
+			"view": "Etkileşimli sonuç"
 		},
 		"whyAllowed": "Bu neden izin verildi?",
 		"whyAsked": "Neden sordu?",
@@ -4707,6 +4708,17 @@
 			"notify": "{noun} bildirmek",
 			"otherAction": "{action} {noun}",
 			"useTool": "{name} kullanmak"
+		}
+	},
+	"mcpApp": {
+		"label": "{server} kaynaklı etkileşimli sonuç",
+		"unavailable": "Bu etkileşimli sonuç artık kullanılamıyor.",
+		"wantsFeatures": "{server} şunları kullanmak istiyor: {features}",
+		"featuresReason": "Etkileşimli sonuç bunu istiyor. Yalnızca izin verirseniz alır.",
+		"feature": {
+			"camera": "kamera",
+			"microphone": "mikrofon",
+			"geolocation": "konum"
 		}
 	}
 }

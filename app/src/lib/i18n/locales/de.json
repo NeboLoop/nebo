@@ -3464,7 +3464,8 @@
 			"coworker": "Kollege",
 			"voice": "Sprache",
 			"mcp": "Eine andere App",
-			"local_api": "Ein Programm auf diesem Computer"
+			"local_api": "Ein Programm auf diesem Computer",
+			"view": "Interaktives Ergebnis"
 		},
 		"whyAllowed": "Warum wurde das erlaubt?",
 		"whyAsked": "Warum hat er gefragt?",
@@ -4707,6 +4708,17 @@
 			"notify": "{noun} benachrichtigen",
 			"otherAction": "{action} {noun}",
 			"useTool": "{name} verwenden"
+		}
+	},
+	"mcpApp": {
+		"label": "Interaktives Ergebnis von {server}",
+		"unavailable": "Dieses interaktive Ergebnis ist nicht mehr verfügbar.",
+		"wantsFeatures": "{server} möchte deine {features} verwenden",
+		"featuresReason": "Das interaktive Ergebnis fragt danach. Es bekommt den Zugriff nur, wenn du ihn erlaubst.",
+		"feature": {
+			"camera": "Kamera",
+			"microphone": "Mikrofon",
+			"geolocation": "Standort"
 		}
 	}
 }

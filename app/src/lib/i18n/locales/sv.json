@@ -3464,7 +3464,8 @@
 			"coworker": "Kollega",
 			"voice": "Röst",
 			"mcp": "En annan app",
-			"local_api": "Ett program på den här datorn"
+			"local_api": "Ett program på den här datorn",
+			"view": "Interaktivt resultat"
 		},
 		"whyAllowed": "Varför tilläts detta?",
 		"whyAsked": "Varför frågade den?",
@@ -4707,6 +4708,17 @@
 			"notify": "meddela {noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "använda {name}"
+		}
+	},
+	"mcpApp": {
+		"label": "Interaktivt resultat från {server}",
+		"unavailable": "Det här interaktiva resultatet är inte längre tillgängligt.",
+		"wantsFeatures": "{server} vill använda din {features}",
+		"featuresReason": "Det interaktiva resultatet ber om detta. Det får det bara om du tillåter det.",
+		"feature": {
+			"camera": "kamera",
+			"microphone": "mikrofon",
+			"geolocation": "plats"
 		}
 	}
 }

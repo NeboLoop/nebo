@@ -3464,7 +3464,8 @@
 			"coworker": "Đồng nghiệp",
 			"voice": "Giọng nói",
 			"mcp": "Ứng dụng khác",
-			"local_api": "Một chương trình trên máy tính này"
+			"local_api": "Một chương trình trên máy tính này",
+			"view": "Kết quả tương tác"
 		},
 		"whyAllowed": "Vì sao việc này được cho phép?",
 		"whyAsked": "Vì sao nó hỏi?",
@@ -4707,6 +4708,17 @@
 			"notify": "thông báo {noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "dùng {name}"
+		}
+	},
+	"mcpApp": {
+		"label": "Kết quả tương tác từ {server}",
+		"unavailable": "Kết quả tương tác này không còn khả dụng.",
+		"wantsFeatures": "{server} muốn dùng {features} của bạn",
+		"featuresReason": "Kết quả tương tác đang yêu cầu điều này. Nó chỉ nhận được nếu bạn cho phép.",
+		"feature": {
+			"camera": "máy ảnh",
+			"microphone": "micrô",
+			"geolocation": "vị trí"
 		}
 	}
 }

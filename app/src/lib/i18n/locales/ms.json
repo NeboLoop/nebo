@@ -3464,7 +3464,8 @@
 			"coworker": "Rakan sekerja",
 			"voice": "Suara",
 			"mcp": "Apl lain",
-			"local_api": "Program pada komputer ini"
+			"local_api": "Program pada komputer ini",
+			"view": "Hasil interaktif"
 		},
 		"whyAllowed": "Kenapa ini dibenarkan?",
 		"whyAsked": "Kenapa ia bertanya?",
@@ -4707,6 +4708,17 @@
 			"notify": "memaklumkan {noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "menggunakan {name}"
+		}
+	},
+	"mcpApp": {
+		"label": "Hasil interaktif daripada {server}",
+		"unavailable": "Hasil interaktif ini tidak lagi tersedia.",
+		"wantsFeatures": "{server} mahu menggunakan {features} anda",
+		"featuresReason": "Hasil interaktif ini memintanya. Ia hanya mendapatkannya jika anda membenarkan.",
+		"feature": {
+			"camera": "kamera",
+			"microphone": "mikrofon",
+			"geolocation": "lokasi"
 		}
 	}
 }

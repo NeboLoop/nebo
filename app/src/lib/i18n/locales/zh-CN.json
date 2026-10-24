@@ -3464,7 +3464,8 @@
 			"coworker": "同事",
 			"voice": "语音",
 			"mcp": "其他应用",
-			"local_api": "本机上的程序"
+			"local_api": "本机上的程序",
+			"view": "交互式结果"
 		},
 		"whyAllowed": "为什么允许？",
 		"whyAsked": "为什么会询问？",
@@ -4707,6 +4708,17 @@
 			"notify": "通知 {noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "使用 {name}"
+		}
+	},
+	"mcpApp": {
+		"label": "来自 {server} 的交互式结果",
+		"unavailable": "此交互式结果已不再可用。",
+		"wantsFeatures": "{server} 想使用你的{features}",
+		"featuresReason": "交互式结果请求此权限。只有你允许后它才能获得。",
+		"feature": {
+			"camera": "摄像头",
+			"microphone": "麦克风",
+			"geolocation": "位置"
 		}
 	}
 }

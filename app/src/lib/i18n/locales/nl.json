@@ -3464,7 +3464,8 @@
 			"coworker": "Collega",
 			"voice": "Spraak",
 			"mcp": "Een andere app",
-			"local_api": "Een programma op deze computer"
+			"local_api": "Een programma op deze computer",
+			"view": "Interactief resultaat"
 		},
 		"whyAllowed": "Waarom was dit toegestaan?",
 		"whyAsked": "Waarom vroeg hij het?",
@@ -4707,6 +4708,17 @@
 			"notify": "{noun} melden",
 			"otherAction": "{action} {noun}",
 			"useTool": "{name} gebruiken"
+		}
+	},
+	"mcpApp": {
+		"label": "Interactief resultaat van {server}",
+		"unavailable": "Dit interactieve resultaat is niet meer beschikbaar.",
+		"wantsFeatures": "{server} wil je {features} gebruiken",
+		"featuresReason": "Het interactieve resultaat vraagt hierom. Het krijgt het alleen als je het toestaat.",
+		"feature": {
+			"camera": "camera",
+			"microphone": "microfoon",
+			"geolocation": "locatie"
 		}
 	}
 }

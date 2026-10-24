@@ -3464,7 +3464,8 @@
 			"coworker": "同事",
 			"voice": "語音",
 			"mcp": "其他應用程式",
-			"local_api": "此電腦上的程式"
+			"local_api": "此電腦上的程式",
+			"view": "互動式結果"
 		},
 		"whyAllowed": "為什麼允許？",
 		"whyAsked": "為什麼會詢問？",
@@ -4707,6 +4708,17 @@
 			"notify": "通知 {noun}",
 			"otherAction": "{action} {noun}",
 			"useTool": "使用 {name}"
+		}
+	},
+	"mcpApp": {
+		"label": "來自 {server} 的互動式結果",
+		"unavailable": "此互動式結果已無法使用。",
+		"wantsFeatures": "{server} 想使用你的{features}",
+		"featuresReason": "互動式結果要求此權限。只有你允許後它才能取得。",
+		"feature": {
+			"camera": "相機",
+			"microphone": "麥克風",
+			"geolocation": "位置"
 		}
 	}
 }

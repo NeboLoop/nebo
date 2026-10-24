@@ -16,7 +16,7 @@
   import type { ActivityRow } from '$lib/api/nebo';
 
   const PAGE = 50;
-  const doors = ['chat', 'helper', 'workflow', 'schedule', 'heartbeat', 'coworker', 'voice', 'mcp', 'local_api'];
+  const doors = ['chat', 'helper', 'workflow', 'schedule', 'heartbeat', 'coworker', 'voice', 'mcp', 'local_api', 'view'];
   const decisions = ['allow', 'ask', 'deny'];
 
   let employees = $state<{ id: string; name: string }[]>([]);
