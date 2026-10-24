@@ -10867,7 +10867,11 @@ mod tests {
     /// The reviewer's step waits until the test lets it answer: it says when
     /// it is in flight.
     fn held_reviewer(reviewing: Arc<tokio::sync::Notify>, go: Arc<tokio::sync::Notify>) -> Step {
-        Step::During(Box::new(verdict(CLEAN)), Box::pin(async move {
+        held_verdict(CLEAN, reviewing, go)
+    }
+
+    fn held_verdict(json: &str, reviewing: Arc<tokio::sync::Notify>, go: Arc<tokio::sync::Notify>) -> Step {
+        Step::During(Box::new(verdict(json)), Box::pin(async move {
             reviewing.notify_one();
             go.notified().await;
         }))
@@ -10968,6 +10972,86 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b):\n    return a + b\n", "the new code landed");
                 let marked = model.calls().into_iter().any(|c| texts(&c).iter().any(|t| t.contains("you changed it since, so what follows is about that earlier version")));
                 assert!(marked, "the round's result says it is about the earlier version");
+            })
+        })
+    }
+
+    /// The owner's card, answered only on a turn that is still running, as
+    /// a real card is (`ToolContext::ask_user` gives up on a stopped turn).
+    struct LiveTurnAnswers(Arc<Mutex<Vec<String>>>);
+
+    impl tools::registry::DynTool for LiveTurnAnswers {
+        fn name(&self) -> &str {
+            "ask_owner"
+        }
+        fn description(&self) -> String {
+            "asks the owner".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                if ctx.cancel_token.is_cancelled() {
+                    return tools::ToolResult::error("No app is connected to show the question.");
+                }
+                self.0.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                tools::ToolResult::ok(serde_json::json!({"picked": "cents"}).to_string())
+            })
+        }
+    }
+
+    /// After "send now" the round's reviewer finds a call that is the
+    /// owner's while no turn is there to ask on: the question waits for the
+    /// turn that answers him, is put to him on it, and the loop carries out
+    /// his answer and lands.
+    #[test]
+    fn a_question_from_a_round_that_went_on_is_asked_on_the_turn_that_joins_it() {
+        let _one = SEND_NOW.lock().unwrap_or_else(|p| p.into_inner());
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let decision = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let (reviewing, go) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    held_verdict(decision, reviewing.clone(), go.clone()),
+                    Step::Say("It's written; the review is still running."),
+                    Step::Say("Totals round to cents, as you decided."),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(LiveTurnAnswers(asked.clone()))]).await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let first = owner("Make total() add a and b");
+                let stop = first.cancel.clone();
+                let mut handle = h.start_turn(first).await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(20), reviewing.notified()).await.expect("the reviewer is in flight");
+                run_turn_queued(&h, sent("How is it going?", "m-1")).await;
+                crate::harness::verify::engine::detach_rounds(KEY);
+                stop.cancel();
+                while handle.events.recv().await.is_some() {}
+                // The reviewer answers with no turn there to ask on.
+                go.notify_one();
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                assert!(asked.lock().unwrap().is_empty(), "nobody to ask yet: the question waits");
+
+                run_turn(&h, answering_turn()).await;
+                assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars"], "asked on the turn that joined");
+                let v = the_verification(&h);
+                assert_eq!(v.state, "verified", "his answer was carried out and it landed: {v:?}");
+                assert!(!v.landed_ref.is_empty());
             })
         })
     }

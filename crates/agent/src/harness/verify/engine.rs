@@ -186,9 +186,15 @@ struct InFlight {
     result: futures::future::Shared<futures::future::BoxFuture<'static, (Step, Option<Work>, Shared)>>,
     /// Stops the round's checks and reviewers.
     stop: CancellationToken,
-    /// Carries what the round says on the stream of the turn that started
-    /// it; cut when that turn stops to hear the owner, so its stream ends.
+    /// The round's loop state: the tool context it asks the owner and runs
+    /// its checks with is the one of the turn it reports to ([`attach`]).
+    shared: Arc<Mutex<Shared>>,
+    /// Carries what the round says on the stream of the turn it reports to;
+    /// cut when that turn stops to hear the owner, so its stream ends.
     relay: tokio::task::AbortHandle,
+    /// Told when a turn joins the round: a question it asked meanwhile is
+    /// put to the owner on that turn.
+    joined: Arc<tokio::sync::Notify>,
     /// Set by the owner's "send now": the turn's stop leaves the round
     /// running.
     detached: Arc<std::sync::atomic::AtomicBool>,
@@ -200,6 +206,26 @@ static IN_FLIGHT: std::sync::LazyLock<Mutex<std::collections::HashMap<String, In
 
 fn in_flight() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, InFlight>> {
     IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Point a round's loop state at the turn `ctx` is of: its tool context,
+/// whose stream the round speaks on through a relay. Returns the relay, cut
+/// when that turn stops to hear the owner.
+fn attach(shared: &Mutex<Shared>, ctx: Option<tools::ToolContext>) -> tokio::task::AbortHandle {
+    let mut ctx = ctx;
+    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<ai::StreamEvent>(64);
+    let stream = ctx.as_mut().and_then(|c| c.stream_tx.replace(relay_tx));
+    shared.lock().unwrap_or_else(|p| p.into_inner()).tool_ctx = ctx;
+    tokio::spawn(async move {
+        while let Some(event) = relay_rx.recv().await {
+            if let Some(stream) = &stream
+                && stream.send(event).await.is_err()
+            {
+                break;
+            }
+        }
+    })
+    .abort_handle()
 }
 
 /// The owner sent a message queued on `session_key` now: the rounds its
@@ -714,25 +740,16 @@ impl VerifyCheck {
         let id = work.id.clone();
         let (result, stop, detached, relay) = {
             let mut flights = in_flight();
+            let ctx = self.verify.shared().tool_ctx.clone();
+            let joining = flights.contains_key(&id);
             let flight = flights.entry(id.clone()).or_insert_with(|| {
                 let stop = CancellationToken::new();
-                // The round speaks on this turn's stream through a relay the
-                // turn can cut, and keeps its loop state in a copy merged
-                // back when it is joined.
-                let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<ai::StreamEvent>(64);
-                let mut kept = self.verify.shared().clone();
-                let stream = kept.tool_ctx.as_mut().and_then(|c| c.stream_tx.replace(relay_tx));
-                let relay = tokio::spawn(async move {
-                    while let Some(event) = relay_rx.recv().await {
-                        if let Some(stream) = &stream
-                            && stream.send(event).await.is_err()
-                        {
-                            break;
-                        }
-                    }
-                })
-                .abort_handle();
-                let verify = Verify { shared: Arc::new(Mutex::new(kept)), ..self.verify.clone() };
+                // The round keeps its loop state in a copy merged back when
+                // it is joined, and speaks on this turn's stream through a
+                // relay the turn can cut.
+                let shared = Arc::new(Mutex::new(self.verify.shared().clone()));
+                let relay = attach(&shared, ctx.clone());
+                let verify = Verify { shared: shared.clone(), ..self.verify.clone() };
                 let me = VerifyCheck { cancel: stop.clone(), verify, ..self.clone() };
                 let (notes, id) = (notes.to_string(), id.clone());
                 let task = tokio::spawn(async move {
@@ -747,9 +764,23 @@ impl VerifyCheck {
                         (Step::Finished, None, Shared::default())
                     })
                 }));
-                InFlight { session_key: self.session_key.clone(), result, stop, relay, detached: Default::default() }
+                InFlight {
+                    session_key: self.session_key.clone(),
+                    result,
+                    stop,
+                    shared,
+                    relay,
+                    joined: Default::default(),
+                    detached: Default::default(),
+                }
             });
-            // This turn is the one it reports to now.
+            // This turn is the one it reports to now: its questions and
+            // checks go through this turn.
+            if joining {
+                flight.relay.abort();
+                flight.relay = attach(&flight.shared, ctx);
+                flight.joined.notify_one();
+            }
             flight.detached.store(false, std::sync::atomic::Ordering::SeqCst);
             (flight.result.clone(), flight.stop.clone(), flight.detached.clone(), flight.relay.clone())
         };
@@ -861,11 +892,19 @@ impl VerifyCheck {
         if let Some(o) = call.as_object_mut() {
             o.remove("purpose");
         }
-        let result = self
-            .harness
-            .tools
-            .execute(&self.tool_ctx(), "ask_owner", call)
-            .await;
+        // A round that went on past the turn that started it (the owner's
+        // "send now") asks on the turn that joins it: until one does, the
+        // question waits, and the owner's Stop ends the wait.
+        let joined = in_flight().get(id).map(|f| f.joined.clone());
+        let mut ctx = self.tool_ctx();
+        while let Some(joined) = joined.as_ref().filter(|_| ctx.cancel_token.is_cancelled()) {
+            tokio::select! {
+                _ = joined.notified() => {}
+                _ = self.cancel.cancelled() => break,
+            }
+            ctx = self.tool_ctx();
+        }
+        let result = self.harness.tools.execute(&ctx, "ask_owner", call).await;
         let _ = store.set_verification_pending_ask(id, None);
         if let Some(v) = store.get_verification(id).ok().flatten() {
             let _ =
