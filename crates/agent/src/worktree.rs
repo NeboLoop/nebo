@@ -1579,6 +1579,8 @@ pub async fn cleanup_stale(roots: &[PathBuf], cutoff_secs: u64) -> Vec<PathBuf> 
 /// and one that differs stays exactly where it is. Either way a kept
 /// copy's row says where it is (`kept_in_copy`). A copy whose work can't
 /// be told is kept where it is. The folders they were in go once empty.
+/// A check of an old copy still live (waiting on the owner's answer) ends
+/// as stopped, its question withdrawn: the loop never takes one up again.
 /// Run at boot, before a turn reads the rows. Returns how many it kept
 /// and removed.
 pub async fn adopt_old_copies(store: &db::Store) -> (usize, usize) {
@@ -1639,6 +1641,34 @@ pub async fn adopt_old_copies(store: &db::Store) -> (usize, usize) {
             );
             kept += 1;
         }
+    }
+    // The loop works in place now and never takes an old copy's check up
+    // again: one still live (paused on a question for the owner, say) would
+    // show as waiting on him forever, with a question nothing asks. It ends
+    // as stopped, its question withdrawn, its row saying where its copy is.
+    for v in rows.iter().filter(|v| v.work_kind == "isolated" && db::VERIFICATION_LIVE.contains(&v.state.as_str())) {
+        let Some(now) = store.get_verification(&v.id).ok().flatten() else { continue };
+        let reason = match types::Why::read(&now.reason) {
+            Some(why) if why.code == "kept_in_copy" => now.reason.clone(),
+            _ => types::Why::new("restarted").text(),
+        };
+        let _ = store.set_verification_pending_ask(&now.id, None);
+        let _ = store.set_verification_state(
+            &now.id,
+            &db::VerificationState {
+                state: "stopped",
+                reason: &reason,
+                rounds: now.rounds,
+                open_blockers: now.open_blockers,
+                open_majors: now.open_majors,
+                open_minors: now.open_minors,
+                open: now.open.clone(),
+                deferred: now.deferred.clone(),
+                summary: &now.summary,
+            },
+            chrono::Utc::now().timestamp(),
+        );
+        crate::harness::verify::work::Work::clean_up_reviewers(Path::new(&now.project_root), &now.id);
     }
     // The folders the copies were in, once nothing is left in them.
     for project in std::fs::read_dir(&old_root).into_iter().flatten().flatten() {
@@ -3057,6 +3087,44 @@ mod tests {
             assert!(!rows[1].1.exists() && !unchanged.exists() && !rows[0].1.exists(), "the empty ones went, and the worktree with work moved");
             // Run again: nothing is left to do.
             assert_eq!(adopt_old_copies(&store).await, (0, 0));
+        }))
+    }
+
+    /// Live 2026-10-24: a check of an old copy was paused on a reviewer's
+    /// question when Nebo updated; its copy was moved beside the project,
+    /// but the row stayed paused with the question. The loop never takes an
+    /// old copy's check up again, so the phone said "Waiting on you" with
+    /// nothing to answer. A live one ends as stopped, its question
+    /// withdrawn and its copy's place kept, at the next start too.
+    #[test]
+    fn an_old_copys_check_left_waiting_on_the_owner_ends_with_its_question() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let kept = home.join("site/.nebo/worktrees/v-oldask");
+            std::fs::create_dir_all(&kept).unwrap();
+            let reason = types::Why::new("kept_in_copy").with("path", kept.to_string_lossy().into_owned()).text();
+            store
+                .create_verification(
+                    &db::NewVerification {
+                        id: "v-oldask",
+                        session_key: "agent:dev:web",
+                        project_root: &home.join("site").to_string_lossy(),
+                        work_dir: &kept.to_string_lossy(),
+                        isolation: "worktree",
+                        work_kind: "isolated",
+                        ..Default::default()
+                    },
+                    1,
+                )
+                .unwrap();
+            let ask = serde_json::json!({"question": "Match by code or city?", "options": ["Code", "City"], "purpose": {"kind": "decision", "title": "Match"}});
+            store.set_verification_pending_ask("v-oldask", Some(&ask)).unwrap();
+            store.set_verification_state("v-oldask", &db::VerificationState { state: "paused", reason: &reason, ..Default::default() }, 2).unwrap();
+            assert_eq!(adopt_old_copies(&store).await, (0, 0), "its copy was moved at an earlier start");
+            let row = store.get_verification("v-oldask").unwrap().unwrap();
+            assert_eq!((row.state.as_str(), row.pending_ask.clone()), ("stopped", None), "{row:?}");
+            assert_eq!(row.reason, reason, "its row still says where its copy is");
+            assert!(kept.is_dir(), "the work is kept");
         }))
     }
 

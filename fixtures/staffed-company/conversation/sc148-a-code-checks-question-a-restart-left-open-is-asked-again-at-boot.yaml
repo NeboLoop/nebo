@@ -1,0 +1,7 @@
+id: sc148-a-code-checks-question-a-restart-left-open-is-asked-again-at-boot
+name: "SC148 — A code check's question a restart left open is asked again at boot"
+description: |
+  A code check paused on a question for the owner when the process ended: its card died with that process and only the question on its row was left. At boot its conversation is woken and the check's end check puts the question to him again: parked on the run, and in Needs you with its choices. His Stop then ends the wait.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_code_checks_question_a_restart_left_open_is_asked_again_at_boot
+conversation: []

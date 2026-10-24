@@ -125,3 +125,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc145-a-timer-whose-turn-the-owner-stops-is-closed-and-never-asked-again.yaml
   - ../fixtures/staffed-company/conversation/sc146-a-timer-waiting-on-the-owner-outlives-compact-and-closes-after-a-day.yaml
   - ../fixtures/staffed-company/conversation/sc147-a-timer-answered-just-before-a-restart-is-pointed-at-and-never-asked-again.yaml
+  - ../fixtures/staffed-company/conversation/sc148-a-code-checks-question-a-restart-left-open-is-asked-again-at-boot.yaml

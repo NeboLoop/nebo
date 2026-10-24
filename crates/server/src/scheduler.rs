@@ -81,6 +81,10 @@ pub fn spawn(
             n => info!(count = n, "asks left waiting by the last process withdrawn"),
         }
 
+        // Code checks paused on a question for the owner: their card died
+        // with the last process, and the conversation asks it again now.
+        ask_verify_questions_again(&state);
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -693,6 +697,36 @@ pub(crate) async fn follow_up_after_restart(state: &AppState, booted: i64) {
             (None, Some(at)) if at < booted => settle(state, &f, &closed).await,
             (None, Some(_)) => {}
         }
+    }
+}
+
+/// Code checks the last process left paused on a question for the owner:
+/// the card lived only in that process's turn, and the question waits on the
+/// row (`pending_ask`), asked again by the conversation's next end check
+/// (`verify::engine`). Each such conversation is woken on the wake rail, so
+/// that end check puts the question to him again on its card, in Needs you
+/// and on the phone, without waiting for his next message. A helper's check
+/// is its parent's to take up: its session ended with the process.
+pub(crate) fn ask_verify_questions_again(state: &AppState) {
+    let rows = state
+        .store
+        .list_verifications(&db::VerificationQuery { live: true, ..Default::default() })
+        .unwrap_or_default();
+    let mut woken = std::collections::HashSet::new();
+    for v in rows.iter().filter(|v| v.state == "paused") {
+        let Some(question) = v.pending_ask.as_ref().and_then(|a| a["question"].as_str()) else { continue };
+        if types::keyparser::split_helper_key(&v.session_key).is_some() || !woken.insert(v.session_key.as_str()) {
+            continue;
+        }
+        info!(verification = %v.id, session = %v.session_key, "scheduler: a code check's question died with the last process; its conversation asks it again");
+        let text = format!(
+            "Nebo restarted while the code check of your work in {} waited on the owner's answer to its question \"{}\". \
+             When you end this reply, the check asks him again on its card. Don't ask it yourself and don't start other \
+             work: say in one short line that the check is waiting on his answer.",
+            v.project_root,
+            question.trim()
+        );
+        crate::wake::enqueue(state, &v.session_key, agent::harness::delegation::notify::WAKE_KIND, &text, &[], 0);
     }
 }
 
