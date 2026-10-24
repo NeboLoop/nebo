@@ -554,7 +554,17 @@
 		"runStopped": "Interrotto",
 		"noteMore": "Mostra tutto",
 		"noteLess": "Mostra meno",
-		"notSignedIn": "{name} deve aver effettuato l'accesso a NeboAI per rispondere."
+		"notSignedIn": "{name} deve aver effettuato l'accesso a NeboAI per rispondere.",
+		"stop": {
+			"stepLimit": "Fermato dopo {steps} passaggi, il massimo per questa esecuzione. Chiedimi di continuare e riprenderò da lì.",
+			"spendLimit": "Fermato: questa esecuzione ha raggiunto il suo limite di spesa ({spent} su {cap}).",
+			"appHalted": "Fermato: un'app ha chiesto di fermare questo lavoro.",
+			"appHaltedBecause": "Fermato: un'app ha chiesto di fermare questo lavoro ({reason}).",
+			"stuck": "Mi sono fermato qui: un passaggio è fallito allo stesso modo otto volte di fila, quindi non lo ripeto. Dimmi come vuoi procedere o chiedimi di provare in un altro modo.",
+			"loop": "Mi sono fermato qui: continuavo a ripetere gli stessi passaggi ottenendo gli stessi risultati, quindi andare avanti non porterebbe a nulla. Dimmi come vuoi procedere o chiedimi di provare in un altro modo.",
+			"contextStalled": "Mi sono fermato qui: il materiale su cui lavoro è troppo grande per gestirlo in una volta. Ho riassunto i miei appunti due volte e stavo per rileggere le stesse cose senza andare avanti. Chiedimi di continuare con una parte più piccola (un file, una pagina o una sezione alla volta) e riprenderò da lì.",
+			"stalled": "Fermato: non è successo nulla per {minutes} minuti (nessun testo di risposta e nessuna attività degli strumenti), quindi l'esecuzione è stata chiusa invece di restare bloccata. Chiedi di nuovo per continuare."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Rispondi...",

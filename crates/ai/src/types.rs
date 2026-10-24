@@ -187,6 +187,25 @@ impl StreamEvent {
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
     }
 
+    /// A ControlNotice Nebo itself words, in the owner's language: the
+    /// message key his apps word it by (`chat.stop.*`) and the values it
+    /// fills in. Its text stays the English fallback, which the model,
+    /// outside channels and the logs read.
+    pub fn with_notice_key(mut self, key: &str, values: serde_json::Value) -> Self {
+        self.widgets = Some(serde_json::json!({ "noticeKey": key, "noticeValues": values }));
+        self
+    }
+
+    /// The message key and values a ControlNotice is worded by
+    /// ([`StreamEvent::with_notice_key`]).
+    pub fn notice_key(&self) -> Option<(String, serde_json::Value)> {
+        if self.event_type != StreamEventType::ControlNotice {
+            return None;
+        }
+        let w = self.widgets.as_ref()?;
+        Some((w["noticeKey"].as_str()?.to_string(), w["noticeValues"].clone()))
+    }
+
     /// The ControlNotice that ends a helper's turn on a decision only the
     /// owner can make: `text` is what the helper was told, `question` goes
     /// back to the conversation that started it ([`StreamEvent::owner_question`]).

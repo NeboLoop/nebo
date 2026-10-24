@@ -2466,10 +2466,13 @@ async fn step_limit(cx: &TurnContext, st: &TurnState) -> TurnExit {
     let steps = cx.max_steps.map_or(st.step, |max| st.step.min(max));
     let _ = cx
         .tx
-        .send(StreamEvent::control_notice(
-            format!("Stopped after {steps} steps, the most this run takes. Ask me to continue and I'll pick it up."),
-            "max_steps",
-        ))
+        .send(
+            StreamEvent::control_notice(
+                format!("Stopped after {steps} steps, the most this run takes. Ask me to continue and I'll pick it up."),
+                "max_steps",
+            )
+            .with_notice_key("chat.stop.stepLimit", serde_json::json!({ "steps": steps })),
+        )
         .await;
     TurnExit::MaxSteps { steps }
 }
@@ -2488,14 +2491,17 @@ async fn budget_reached(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
     warn!(session_id = %cx.session_id, spent, cap = cx.spend_cap_microcents, "spending limit reached");
     let _ = cx
         .tx
-        .send(StreamEvent::control_notice(
-            format!(
-                "Stopped: this run reached its spending limit (${:.2} of ${:.2}).",
-                spent as f64 / PER_DOLLAR,
-                cx.spend_cap_microcents as f64 / PER_DOLLAR
-            ),
-            "spend_cap_reached",
-        ))
+        .send({
+            let (spent, cap) = (
+                format!("${:.2}", spent as f64 / PER_DOLLAR),
+                format!("${:.2}", cx.spend_cap_microcents as f64 / PER_DOLLAR),
+            );
+            StreamEvent::control_notice(
+                format!("Stopped: this run reached its spending limit ({spent} of {cap})."),
+                "spend_cap_reached",
+            )
+            .with_notice_key("chat.stop.spendLimit", serde_json::json!({ "spent": spent, "cap": cap }))
+        })
         .await;
     Some(TurnExit::BudgetReached)
 }
@@ -2516,12 +2522,15 @@ async fn app_halted(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
     let reason =
         turn_end::app_halt(&h.hooks, &cx.session_id, st.step + 1, &st.round.called_tools, has_active_task).await?;
     info!(session_id = %cx.session_id, step = st.step + 1, reason = %reason, "an app halted the turn");
+    // The app's reason is its own words, shown as it gave them.
     let notice = if reason.is_empty() {
-        "Stopped: an app asked for this work to stop.".to_string()
+        StreamEvent::control_notice("Stopped: an app asked for this work to stop.", "app_halted")
+            .with_notice_key("chat.stop.appHalted", serde_json::json!({}))
     } else {
-        format!("Stopped: an app asked for this work to stop ({reason}).")
+        StreamEvent::control_notice(format!("Stopped: an app asked for this work to stop ({reason})."), "app_halted")
+            .with_notice_key("chat.stop.appHaltedBecause", serde_json::json!({ "reason": &reason }))
     };
-    let _ = cx.tx.send(StreamEvent::control_notice(notice, "app_halted")).await;
+    let _ = cx.tx.send(notice).await;
     Some(TurnExit::AppHalted { reason })
 }
 
@@ -2859,7 +2868,10 @@ async fn stalled(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
         checkpoints = st.checkpoints_since_progress,
         "the conversation keeps filling up with no progress: ending the turn"
     );
-    let _ = cx.tx.send(StreamEvent::control_notice(CONTEXT_STALLED, "context_stalled")).await;
+    let _ = cx
+        .tx
+        .send(StreamEvent::control_notice(CONTEXT_STALLED, "context_stalled").with_notice_key("chat.stop.contextStalled", serde_json::json!({})))
+        .await;
     Some(TurnExit::ContextStalled)
 }
 
@@ -7749,6 +7761,70 @@ mod tests {
         assert!(results[0].contains("Next page: from=\""), "page 1 ends with its cursor");
         assert!(results[1].contains("match {\"status\":\"open\"}") && results[1].ends_with("End of the list."), "{}", results[1]);
         assert!(results.iter().all(|r| r.len() <= tools::step_data::PAGE_MAX_CHARS + 300), "every page within the bound");
+    }
+
+    /// Every stop Nebo words itself carries the key the owner's apps word it
+    /// by in his language (`chat.stop.*`), and its English is the apps'
+    /// English for that key: the fallback says what the key says.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_harness_stops_are_worded_by_keys_the_apps_hold() {
+        let en: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/src/lib/i18n/locales/en.json")).unwrap(),
+        )
+        .unwrap();
+        let worded = |key: &str, values: &serde_json::Value| {
+            let mut text = en["chat"]["stop"][key.trim_start_matches("chat.stop.")].as_str().unwrap_or_else(|| panic!("{key}")).to_string();
+            for (name, value) in values.as_object().into_iter().flatten() {
+                text = text.replace(&format!("{{{name}}}"), &value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()));
+            }
+            text
+        };
+        for (english, key) in [
+            (tool_round::STUCK_NOTICE, "chat.stop.stuck"),
+            (tool_round::LOOP_NOTICE, "chat.stop.loop"),
+            (CONTEXT_STALLED, "chat.stop.contextStalled"),
+        ] {
+            assert_eq!(worded(key, &serde_json::json!({})), english, "{key}");
+        }
+        let (key, values) = crate::guardrails::stall_notice_key();
+        assert_eq!(worded(key, &values), crate::guardrails::stall_notice());
+
+        // The loop stop, live: its notice carries its key.
+        let model = Scripted::new((0..40).map(|_| Step::Call("echo", serde_json::json!({ "n": 1 }))).collect());
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Read the page")).await;
+        let notice = events.iter().find(|e| e.event_type == ai::StreamEventType::ControlNotice).expect("the stop");
+        let (key, values) = notice.notice_key().expect("its key");
+        assert_eq!((key.as_str(), worded(&key, &values)), ("chat.stop.loop", notice.text.clone()));
+
+        // The step limit and the spending limit, with their values.
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({"n": 1})), Step::Say("Read one page.")]);
+        let h = harness(&model).await;
+        let mut req = owner("Read the pages");
+        req.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            advertised_tools: ["echo".to_string()].into(),
+            max_steps: 1,
+            ..Default::default()
+        }));
+        let events = run_turn(&h, req).await;
+        let notice = events.iter().find(|e| e.event_type == ai::StreamEventType::ControlNotice).expect("the stop");
+        let (key, values) = notice.notice_key().expect("its key");
+        assert_eq!((key.as_str(), worded(&key, &values)), ("chat.stop.stepLimit", notice.text.clone()));
+
+        let model = Scripted::new(vec![Step::Paid(Box::new(Step::Call("echo", serde_json::json!({}))), 50_000)]);
+        let h = harness(&model).await;
+        let mut req = owner("Do the thing");
+        req.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            advertised_tools: ["echo".to_string()].into(),
+            spend_cap_microcents: 1_000_000,
+            ..Default::default()
+        }));
+        let events = run_turn(&h, req).await;
+        let notice = events.iter().find(|e| e.event_type == ai::StreamEventType::ControlNotice).expect("the stop");
+        let (key, values) = notice.notice_key().expect("its key");
+        assert_eq!((key.as_str(), worded(&key, &values)), ("chat.stop.spendLimit", notice.text.clone()));
     }
 
     /// Owner, 2026-10-24: work kept stopping at 100 steps. An employee's

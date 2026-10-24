@@ -665,6 +665,9 @@ pub(crate) async fn run_tool_round(
     // this batch and surface to the user, instead of feeding it back for the
     // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
     let mut terminal_error: Option<(String, Option<types::OwnerNeed>, Option<types::OwnerQuestion>)> = None;
+    // The message key the owner's apps word a stop of the harness's own by
+    // (`chat.stop.*`); a tool's own terminal words have none.
+    let mut terminal_key: Option<&'static str> = None;
     // Lightweight snapshots for the background tool summary generator.
     let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
@@ -713,7 +716,10 @@ pub(crate) async fn run_tool_round(
                 warn!(session_id, tool = %tc.name, times, "the same call failed the same way again: the run stops");
                 result.content.push_str("\n\n");
                 result.content.push_str(STUCK_NOTE);
-                terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None, None));
+                if terminal_error.is_none() {
+                    terminal_error = Some((STUCK_NOTICE.to_string(), None, None));
+                    terminal_key = Some("chat.stop.stuck");
+                }
             }
         }
         if let Some(t) = target
@@ -744,6 +750,7 @@ pub(crate) async fn run_tool_round(
         let asks = result.question.is_some() && terminal_error.as_ref().is_none_or(|(_, _, q)| q.is_none());
         if result.terminal && (terminal_error.is_none() || asks) {
             terminal_error = Some((result.content.clone(), result.need.clone(), result.question.clone()));
+            terminal_key = None;
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
@@ -787,7 +794,10 @@ pub(crate) async fn run_tool_round(
     // A run going in circles stops, attended or not ([`LOOP_ROUNDS`]).
     if failures.round(&round_outcomes, waited) {
         warn!(session_id, iteration, "every call of the last rounds came back as before: the run stops");
-        terminal_error.get_or_insert_with(|| (LOOP_NOTICE.to_string(), None, None));
+        if terminal_error.is_none() {
+            terminal_error = Some((LOOP_NOTICE.to_string(), None, None));
+            terminal_key = Some("chat.stop.loop");
+        }
     }
 
     // A workflow step parked on the owner: the run suspends with the
@@ -828,7 +838,11 @@ pub(crate) async fn run_tool_round(
             return RoundOutcome::OwnerQuestion;
         }
         warn!(session_id, iteration, "terminal tool error — ending run");
-        let _ = tx.send(StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need)).await;
+        let mut notice = StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need);
+        if let Some(key) = terminal_key {
+            notice = notice.with_notice_key(key, serde_json::json!({}));
+        }
+        let _ = tx.send(notice).await;
         return RoundOutcome::Terminal;
     }
 

@@ -554,7 +554,17 @@
 		"runStopped": "Durduruldu",
 		"noteMore": "Tümünü göster",
 		"noteLess": "Daha az göster",
-		"notSignedIn": "{name} yanıt verebilmek için NeboAI'da oturum açmış olmalı."
+		"notSignedIn": "{name} yanıt verebilmek için NeboAI'da oturum açmış olmalı.",
+		"stop": {
+			"stepLimit": "Bu çalışmanın en fazla atabileceği adım olan {steps} adımdan sonra durdu. Devam etmemi isterseniz kaldığım yerden sürdürürüm.",
+			"spendLimit": "Durdu: bu çalışma harcama sınırına ulaştı ({spent} / {cap}).",
+			"appHalted": "Durdu: bir uygulama bu işin durdurulmasını istedi.",
+			"appHaltedBecause": "Durdu: bir uygulama bu işin durdurulmasını istedi ({reason}).",
+			"stuck": "Burada durdum: bir adım üst üste sekiz kez aynı şekilde başarısız oldu, bu yüzden tekrarlamıyorum. Nasıl devam etmek istediğinizi söyleyin ya da başka bir yol denememi isteyin.",
+			"loop": "Burada durdum: aynı adımları tekrarlayıp aynı sonuçları alıyordum, devam etmek bir yere götürmezdi. Nasıl devam etmek istediğinizi söyleyin ya da başka bir yol denememi isteyin.",
+			"contextStalled": "Burada durdum: üzerinde çalıştığım içerik tek seferde ele alınamayacak kadar büyük. Notlarımı iki kez özetledim ve ilerlemeden aynı şeyleri yeniden okumak üzereydim. Daha küçük bir parçayla (her seferinde bir dosya, bir sayfa ya da bir bölüm) devam etmemi isteyin, oradan sürdüreyim.",
+			"stalled": "Durdu: {minutes} dakika boyunca hiçbir şey olmadı (yanıt metni ve araç etkinliği yok), bu yüzden çalışma askıda bırakılmak yerine sonlandırıldı. Devam etmek için yeniden isteyin."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Yanıtla...",

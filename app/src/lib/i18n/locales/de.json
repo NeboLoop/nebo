@@ -554,7 +554,17 @@
 		"runStopped": "Angehalten",
 		"noteMore": "Alles anzeigen",
 		"noteLess": "Weniger anzeigen",
-		"notSignedIn": "{name} muss bei NeboAI angemeldet sein, um zu antworten."
+		"notSignedIn": "{name} muss bei NeboAI angemeldet sein, um zu antworten.",
+		"stop": {
+			"stepLimit": "Nach {steps} Schritten gestoppt, dem Maximum für diesen Lauf. Bitte mich weiterzumachen, dann mache ich dort weiter.",
+			"spendLimit": "Gestoppt: Dieser Lauf hat sein Ausgabenlimit erreicht ({spent} von {cap}).",
+			"appHalted": "Gestoppt: Eine App hat darum gebeten, diese Arbeit zu beenden.",
+			"appHaltedBecause": "Gestoppt: Eine App hat darum gebeten, diese Arbeit zu beenden ({reason}).",
+			"stuck": "Ich habe hier aufgehört: Ein Schritt ist achtmal hintereinander auf dieselbe Weise gescheitert, deshalb wiederhole ich ihn nicht. Sag mir, wie es weitergehen soll, oder bitte mich, es anders zu versuchen.",
+			"loop": "Ich habe hier aufgehört: Ich habe immer wieder dieselben Schritte gemacht und dieselben Ergebnisse bekommen, weitermachen würde nichts bringen. Sag mir, wie es weitergehen soll, oder bitte mich, es anders zu versuchen.",
+			"contextStalled": "Ich habe hier aufgehört: Das Material, mit dem ich arbeite, ist zu groß, um es auf einmal zu erfassen. Ich habe meine Notizen zweimal zusammengefasst und wollte dieselben Dinge erneut lesen, ohne weiterzukommen. Bitte mich, mit einem kleineren Teil weiterzumachen (eine Datei, eine Seite oder ein Abschnitt nach dem anderen), dann mache ich dort weiter.",
+			"stalled": "Gestoppt: {minutes} Minuten lang ist nichts passiert (kein Antworttext und keine Tool-Aktivität), deshalb wurde der Lauf beendet, statt ihn hängen zu lassen. Frag erneut, um weiterzumachen."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Antworten...",

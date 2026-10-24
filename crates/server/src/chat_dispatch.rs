@@ -998,7 +998,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 let notice = agent::guardrails::stall_notice();
                                 tracing::warn!(session_id = %sid, "run stalled: no event for {}s", agent::guardrails::RUN_IDLE_LIMIT.as_secs());
                                 control_stop = Some((agent::guardrails::STALLED.to_string(), notice.clone()));
-                                hub.broadcast("chat_error", ws_payload!("error": &notice,));
+                                let (key, values) = agent::guardrails::stall_notice_key();
+                                hub.broadcast("chat_error", ws_payload!("error": &notice, "notice_key": key, "notice_values": values,));
                                 _run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                                 cancel_token.cancel();
                                 break;
@@ -1027,13 +1028,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 if reason == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN {
                                     continue;
                                 }
-                                hub.broadcast(
-                                    "chat_error",
-                                    ws_payload!(
-                                        "error": &event.text,
-                                        "stop_reason": &reason,
-                                    ),
+                                let mut payload = ws_payload!(
+                                    "error": &event.text,
+                                    "stop_reason": &reason,
                                 );
+                                // A stop Nebo words itself: the key the
+                                // apps word it by in the owner's language.
+                                if let Some((key, values)) = event.notice_key() {
+                                    payload["notice_key"] = serde_json::json!(key);
+                                    payload["notice_values"] = values;
+                                }
+                                hub.broadcast("chat_error", payload);
                                 continue;
                             }
                             if let Some(separator) = reply_stream.push(&event.text) {
@@ -2032,10 +2037,11 @@ pub async fn run_chat_events(
                         agent::guardrails::Next::Stalled => {
                             _run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                             if tx
-                                .send(ai::StreamEvent::control_notice(
-                                    agent::guardrails::stall_notice(),
-                                    agent::guardrails::STALLED,
-                                ))
+                                .send({
+                                    let (key, values) = agent::guardrails::stall_notice_key();
+                                    ai::StreamEvent::control_notice(agent::guardrails::stall_notice(), agent::guardrails::STALLED)
+                                        .with_notice_key(key, values)
+                                })
                                 .await
                                 .is_err()
                             {

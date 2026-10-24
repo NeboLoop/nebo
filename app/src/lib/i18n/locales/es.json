@@ -554,7 +554,17 @@
 		"runStopped": "Detenido",
 		"noteMore": "Ver todo",
 		"noteLess": "Ver menos",
-		"notSignedIn": "{name} necesita haber iniciado sesión en NeboAI para responder."
+		"notSignedIn": "{name} necesita haber iniciado sesión en NeboAI para responder.",
+		"stop": {
+			"stepLimit": "Detenido después de {steps} pasos, el máximo de esta ejecución. Pídeme que continúe y retomaré desde ahí.",
+			"spendLimit": "Detenido: esta ejecución alcanzó su límite de gasto ({spent} de {cap}).",
+			"appHalted": "Detenido: una app pidió que se detuviera este trabajo.",
+			"appHaltedBecause": "Detenido: una app pidió que se detuviera este trabajo ({reason}).",
+			"stuck": "Me detuve aquí: un paso falló de la misma forma ocho veces seguidas, así que no lo repito. Dime cómo quieres seguir o pídeme que lo intente de otra manera.",
+			"loop": "Me detuve aquí: seguía repitiendo los mismos pasos y obteniendo los mismos resultados, así que continuar no llevaría a ninguna parte. Dime cómo quieres seguir o pídeme que lo intente de otra manera.",
+			"contextStalled": "Me detuve aquí: el material con el que trabajo es demasiado grande para abarcarlo de una vez. Resumí mis notas dos veces e iba a leer lo mismo de nuevo sin avanzar. Pídeme que siga con una parte más pequeña (un archivo, una página o una sección a la vez) y retomaré desde ahí.",
+			"stalled": "Detenido: no pasó nada durante {minutes} minutos (ni texto de respuesta ni actividad de herramientas), así que la ejecución se terminó en lugar de quedarse colgada. Vuelve a pedirlo para continuar."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Responder...",
