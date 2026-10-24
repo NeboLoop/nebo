@@ -15,6 +15,12 @@ pub const RUN_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(1
 
 /// The owner-facing line for a stalled run. States what was observed and what
 /// was done; never guesses at a cause.
+/// The stall notice's message key and values, for the owner's apps
+/// (`chat.stop.stalled`); [`stall_notice`] is its English.
+pub fn stall_notice_key() -> (&'static str, serde_json::Value) {
+    ("chat.stop.stalled", serde_json::json!({ "minutes": RUN_IDLE_LIMIT.as_secs() / 60 }))
+}
+
 pub fn stall_notice() -> String {
     format!(
         "Stopped: nothing happened for {} minutes (no reply text and no tool activity), \

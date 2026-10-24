@@ -554,7 +554,17 @@
 		"runStopped": "Đã dừng",
 		"noteMore": "Xem tất cả",
 		"noteLess": "Thu gọn",
-		"notSignedIn": "{name} cần đăng nhập NeboAI để trả lời."
+		"notSignedIn": "{name} cần đăng nhập NeboAI để trả lời.",
+		"stop": {
+			"stepLimit": "Đã dừng sau {steps} bước, mức tối đa của lần chạy này. Hãy bảo tôi tiếp tục và tôi sẽ làm tiếp từ đây.",
+			"spendLimit": "Đã dừng: lần chạy này đã chạm hạn mức chi tiêu ({spent} trên {cap}).",
+			"appHalted": "Đã dừng: một ứng dụng yêu cầu dừng công việc này.",
+			"appHaltedBecause": "Đã dừng: một ứng dụng yêu cầu dừng công việc này ({reason}).",
+			"stuck": "Tôi dừng ở đây: một bước liên tục thất bại theo cùng một cách tám lần liền, nên tôi không lặp lại nữa. Hãy cho tôi biết bạn muốn tiếp tục thế nào, hoặc bảo tôi thử cách khác.",
+			"loop": "Tôi dừng ở đây: tôi cứ lặp lại các bước giống nhau và nhận cùng kết quả, nên tiếp tục cũng không đi đến đâu. Hãy cho tôi biết bạn muốn tiếp tục thế nào, hoặc bảo tôi thử cách khác.",
+			"contextStalled": "Tôi dừng ở đây: tài liệu tôi đang xử lý quá lớn để giữ cùng lúc. Tôi đã tóm tắt ghi chú hai lần và sắp đọc lại cùng nội dung mà không tiến thêm. Hãy bảo tôi tiếp tục với phần nhỏ hơn (mỗi lần một tệp, một trang hoặc một mục) và tôi sẽ làm tiếp từ đó.",
+			"stalled": "Đã dừng: không có gì xảy ra trong {minutes} phút (không có văn bản trả lời và không có hoạt động công cụ), nên lần chạy đã được kết thúc thay vì để treo. Hãy yêu cầu lại để tiếp tục."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Trả lời...",

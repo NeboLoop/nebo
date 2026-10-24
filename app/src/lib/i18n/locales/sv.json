@@ -554,7 +554,17 @@
 		"runStopped": "Stoppad",
 		"noteMore": "Visa allt",
 		"noteLess": "Visa mindre",
-		"notSignedIn": "{name} behöver vara inloggad på NeboAI för att kunna svara."
+		"notSignedIn": "{name} behöver vara inloggad på NeboAI för att kunna svara.",
+		"stop": {
+			"stepLimit": "Stoppade efter {steps} steg, det mesta den här körningen tar. Be mig fortsätta så tar jag upp det igen.",
+			"spendLimit": "Stoppade: den här körningen nådde sin utgiftsgräns ({spent} av {cap}).",
+			"appHalted": "Stoppade: en app bad om att det här arbetet skulle stoppas.",
+			"appHaltedBecause": "Stoppade: en app bad om att det här arbetet skulle stoppas ({reason}).",
+			"stuck": "Jag stannade här: ett steg misslyckades på samma sätt åtta gånger i rad, så jag upprepar det inte. Säg hur du vill fortsätta, eller be mig försöka på ett annat sätt.",
+			"loop": "Jag stannade här: jag fortsatte upprepa samma steg och fick samma resultat, så att fortsätta skulle inte leda någonstans. Säg hur du vill fortsätta, eller be mig försöka på ett annat sätt.",
+			"contextStalled": "Jag stannade här: materialet jag arbetar med är för stort för att hålla på en gång. Jag sammanfattade mina anteckningar två gånger och skulle läsa samma saker igen utan att komma längre. Be mig fortsätta med en mindre del (en fil, en sida eller ett avsnitt i taget) så tar jag upp det därifrån.",
+			"stalled": "Stoppade: ingenting hände på {minutes} minuter (ingen svarstext och ingen verktygsaktivitet), så körningen avslutades i stället för att bli hängande. Fråga igen för att fortsätta."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Svara...",

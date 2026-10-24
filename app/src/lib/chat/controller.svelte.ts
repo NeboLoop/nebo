@@ -727,7 +727,13 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
-    const content = data.error || get(t)('common.errorOccurred');
+    // A stop Nebo words itself carries the key its line is worded by in the
+    // owner's language; the bot's English is the fallback.
+    const noticeKey = typeof data.notice_key === 'string' && data.notice_key ? data.notice_key : undefined;
+    const noticeValues = data.notice_values && typeof data.notice_values === 'object' ? data.notice_values : undefined;
+    const content = noticeKey
+      ? get(t)(noticeKey, { values: noticeValues, default: data.error || get(t)('common.errorOccurred') })
+      : data.error || get(t)('common.errorOccurred');
     const reason = typeof data.stop_reason === 'string' && data.stop_reason ? data.stop_reason : undefined;
     // A typed stop (`NOT_SIGNED_IN`, `BALANCE_RESERVED`) is worded once, in
     // the thread: no banner over it.

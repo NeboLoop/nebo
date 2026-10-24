@@ -554,7 +554,17 @@
 		"runStopped": "Parado",
 		"noteMore": "Mostrar tudo",
 		"noteLess": "Mostrar menos",
-		"notSignedIn": "{name} precisa de ter sessão iniciada no NeboAI para responder."
+		"notSignedIn": "{name} precisa de ter sessão iniciada no NeboAI para responder.",
+		"stop": {
+			"stepLimit": "Parado após {steps} passos, o máximo desta execução. Peça-me para continuar e retomo a partir daí.",
+			"spendLimit": "Parado: esta execução atingiu o seu limite de gastos ({spent} de {cap}).",
+			"appHalted": "Parado: uma app pediu que este trabalho parasse.",
+			"appHaltedBecause": "Parado: uma app pediu que este trabalho parasse ({reason}).",
+			"stuck": "Parei aqui: um passo falhou da mesma forma oito vezes seguidas, por isso não o repito. Diga-me como quer continuar ou peça-me para tentar de outra forma.",
+			"loop": "Parei aqui: continuava a repetir os mesmos passos com os mesmos resultados, por isso continuar não levaria a lado nenhum. Diga-me como quer continuar ou peça-me para tentar de outra forma.",
+			"contextStalled": "Parei aqui: o material com que estou a trabalhar é grande demais para abarcar de uma só vez. Resumi as minhas notas duas vezes e ia ler as mesmas coisas outra vez sem avançar. Peça-me para continuar com uma parte mais pequena (um ficheiro, uma página ou uma secção de cada vez) e retomo a partir daí.",
+			"stalled": "Parado: nada aconteceu durante {minutes} minutos (sem texto de resposta nem atividade de ferramentas), por isso a execução foi terminada em vez de ficar pendurada. Peça de novo para continuar."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Responder...",

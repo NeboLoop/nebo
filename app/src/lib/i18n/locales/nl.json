@@ -554,7 +554,17 @@
 		"runStopped": "Gestopt",
 		"noteMore": "Alles tonen",
 		"noteLess": "Minder tonen",
-		"notSignedIn": "{name} moet bij NeboAI zijn ingelogd om te antwoorden."
+		"notSignedIn": "{name} moet bij NeboAI zijn ingelogd om te antwoorden.",
+		"stop": {
+			"stepLimit": "Gestopt na {steps} stappen, het maximum voor deze run. Vraag me om door te gaan en ik pak het weer op.",
+			"spendLimit": "Gestopt: deze run heeft zijn bestedingslimiet bereikt ({spent} van {cap}).",
+			"appHalted": "Gestopt: een app vroeg om dit werk te stoppen.",
+			"appHaltedBecause": "Gestopt: een app vroeg om dit werk te stoppen ({reason}).",
+			"stuck": "Ik ben hier gestopt: een stap mislukte acht keer achter elkaar op dezelfde manier, dus ik herhaal hem niet. Zeg hoe je verder wilt, of vraag me het anders te proberen.",
+			"loop": "Ik ben hier gestopt: ik bleef dezelfde stappen herhalen met dezelfde resultaten, dus doorgaan zou niets opleveren. Zeg hoe je verder wilt, of vraag me het anders te proberen.",
+			"contextStalled": "Ik ben hier gestopt: het materiaal waarmee ik werk is te groot om in één keer te overzien. Ik heb mijn aantekeningen twee keer samengevat en stond op het punt hetzelfde opnieuw te lezen zonder verder te komen. Vraag me om door te gaan met een kleiner stuk (één bestand, één pagina of één sectie tegelijk) en ik pak het weer op.",
+			"stalled": "Gestopt: er gebeurde {minutes} minuten niets (geen antwoordtekst en geen toolactiviteit), dus de run is beëindigd in plaats van te blijven hangen. Vraag het opnieuw om door te gaan."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Antwoord...",

@@ -554,7 +554,17 @@
 		"runStopped": "Arrêté",
 		"noteMore": "Tout afficher",
 		"noteLess": "Afficher moins",
-		"notSignedIn": "{name} doit être connecté à NeboAI pour répondre."
+		"notSignedIn": "{name} doit être connecté à NeboAI pour répondre.",
+		"stop": {
+			"stepLimit": "Arrêté après {steps} étapes, le maximum pour cette exécution. Demandez-moi de continuer et je reprendrai.",
+			"spendLimit": "Arrêté : cette exécution a atteint sa limite de dépenses ({spent} sur {cap}).",
+			"appHalted": "Arrêté : une app a demandé l'arrêt de ce travail.",
+			"appHaltedBecause": "Arrêté : une app a demandé l'arrêt de ce travail ({reason}).",
+			"stuck": "Je me suis arrêté ici : une étape a échoué de la même façon huit fois de suite, je ne la répète donc pas. Dites-moi comment continuer, ou demandez-moi d'essayer autrement.",
+			"loop": "Je me suis arrêté ici : je répétais les mêmes étapes et obtenais les mêmes résultats, continuer ne mènerait nulle part. Dites-moi comment continuer, ou demandez-moi d'essayer autrement.",
+			"contextStalled": "Je me suis arrêté ici : le contenu sur lequel je travaille est trop volumineux pour être traité d'un coup. J'ai résumé mes notes deux fois et j'allais relire les mêmes choses sans avancer. Demandez-moi de continuer avec une partie plus petite (un fichier, une page ou une section à la fois) et je reprendrai.",
+			"stalled": "Arrêté : rien ne s'est passé pendant {minutes} minutes (ni texte de réponse ni activité d'outil), l'exécution a donc été terminée au lieu de rester bloquée. Redemandez pour continuer."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Répondre...",

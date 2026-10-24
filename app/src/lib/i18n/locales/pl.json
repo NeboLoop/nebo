@@ -554,7 +554,17 @@
 		"runStopped": "Zatrzymano",
 		"noteMore": "Pokaż wszystko",
 		"noteLess": "Pokaż mniej",
-		"notSignedIn": "{name} musi być zalogowany w NeboAI, aby odpowiedzieć."
+		"notSignedIn": "{name} musi być zalogowany w NeboAI, aby odpowiedzieć.",
+		"stop": {
+			"stepLimit": "Zatrzymano po {steps} krokach, maksimum dla tego uruchomienia. Poproś, żebym kontynuował, a podejmę pracę od tego miejsca.",
+			"spendLimit": "Zatrzymano: to uruchomienie osiągnęło swój limit wydatków ({spent} z {cap}).",
+			"appHalted": "Zatrzymano: aplikacja poprosiła o przerwanie tej pracy.",
+			"appHaltedBecause": "Zatrzymano: aplikacja poprosiła o przerwanie tej pracy ({reason}).",
+			"stuck": "Zatrzymałem się tutaj: jeden krok osiem razy z rzędu zawiódł w ten sam sposób, więc go nie powtarzam. Powiedz, jak chcesz kontynuować, albo poproś, żebym spróbował inaczej.",
+			"loop": "Zatrzymałem się tutaj: powtarzałem te same kroki i dostawałem te same wyniki, więc dalsza praca nic by nie dała. Powiedz, jak chcesz kontynuować, albo poproś, żebym spróbował inaczej.",
+			"contextStalled": "Zatrzymałem się tutaj: materiał, z którym pracuję, jest zbyt duży, by objąć go naraz. Dwa razy podsumowałem notatki i miałem znowu czytać to samo, nie posuwając się dalej. Poproś, żebym kontynuował z mniejszą częścią (jeden plik, jedna strona lub jedna sekcja naraz), a podejmę pracę od tego miejsca.",
+			"stalled": "Zatrzymano: przez {minutes} min nic się nie działo (brak tekstu odpowiedzi i aktywności narzędzi), więc uruchomienie zakończono, zamiast zostawić je zawieszone. Poproś ponownie, aby kontynuować."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Odpowiedz...",

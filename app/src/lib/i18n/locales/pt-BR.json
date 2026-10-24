@@ -554,7 +554,17 @@
 		"runStopped": "Parado",
 		"noteMore": "Mostrar tudo",
 		"noteLess": "Mostrar menos",
-		"notSignedIn": "{name} precisa estar conectado ao NeboAI para responder."
+		"notSignedIn": "{name} precisa estar conectado ao NeboAI para responder.",
+		"stop": {
+			"stepLimit": "Parado depois de {steps} passos, o máximo desta execução. Peça para eu continuar e eu retomo de onde parei.",
+			"spendLimit": "Parado: esta execução atingiu seu limite de gastos ({spent} de {cap}).",
+			"appHalted": "Parado: um app pediu que este trabalho parasse.",
+			"appHaltedBecause": "Parado: um app pediu que este trabalho parasse ({reason}).",
+			"stuck": "Parei aqui: um passo falhou do mesmo jeito oito vezes seguidas, então não vou repeti-lo. Me diga como quer continuar ou peça para eu tentar de outro jeito.",
+			"loop": "Parei aqui: eu continuava repetindo os mesmos passos e obtendo os mesmos resultados, então continuar não levaria a nada. Me diga como quer continuar ou peça para eu tentar de outro jeito.",
+			"contextStalled": "Parei aqui: o material com que estou trabalhando é grande demais para abranger de uma vez. Resumi minhas anotações duas vezes e ia ler as mesmas coisas de novo sem avançar. Peça para eu continuar com uma parte menor (um arquivo, uma página ou uma seção por vez) e eu retomo dali.",
+			"stalled": "Parado: nada aconteceu por {minutes} minutos (nenhum texto de resposta e nenhuma atividade de ferramentas), então a execução foi encerrada em vez de ficar travada. Peça de novo para continuar."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Responder...",

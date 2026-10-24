@@ -554,7 +554,17 @@
 		"runStopped": "Stopped",
 		"noteMore": "Show all",
 		"noteLess": "Show less",
-		"notSignedIn": "{name} needs to be signed in to NeboAI to answer."
+		"notSignedIn": "{name} needs to be signed in to NeboAI to answer.",
+		"stop": {
+			"stepLimit": "Stopped after {steps} steps, the most this run takes. Ask me to continue and I'll pick it up.",
+			"spendLimit": "Stopped: this run reached its spending limit ({spent} of {cap}).",
+			"appHalted": "Stopped: an app asked for this work to stop.",
+			"appHaltedBecause": "Stopped: an app asked for this work to stop ({reason}).",
+			"stuck": "I stopped here: one step kept failing the same way, eight times in a row, so I'm not repeating it. Tell me how you'd like to go on, or ask me to try it a different way.",
+			"loop": "I stopped here: I kept repeating the same steps and getting the same results, so going on wouldn't get anywhere. Tell me how you'd like to go on, or ask me to try it a different way.",
+			"contextStalled": "I stopped here: the material I'm working from is too large to hold in one go. I summarized my notes twice and was about to read the same things again without getting further. Ask me to carry on with a smaller piece (one file, one page or one section at a time) and I'll pick it up from there.",
+			"stalled": "Stopped: nothing happened for {minutes} minutes (no reply text and no tool activity), so the run was ended instead of left hanging. Ask again to continue."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Reply...",

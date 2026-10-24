@@ -554,7 +554,17 @@
 		"runStopped": "Berhenti",
 		"noteMore": "Tampilkan semua",
 		"noteLess": "Tampilkan lebih sedikit",
-		"notSignedIn": "{name} perlu masuk ke NeboAI untuk menjawab."
+		"notSignedIn": "{name} perlu masuk ke NeboAI untuk menjawab.",
+		"stop": {
+			"stepLimit": "Berhenti setelah {steps} langkah, batas maksimal run ini. Minta saya melanjutkan dan saya akan meneruskannya dari sini.",
+			"spendLimit": "Berhenti: run ini mencapai batas pengeluarannya ({spent} dari {cap}).",
+			"appHalted": "Berhenti: sebuah aplikasi meminta pekerjaan ini dihentikan.",
+			"appHaltedBecause": "Berhenti: sebuah aplikasi meminta pekerjaan ini dihentikan ({reason}).",
+			"stuck": "Saya berhenti di sini: satu langkah terus gagal dengan cara yang sama delapan kali berturut-turut, jadi saya tidak mengulanginya. Beri tahu saya bagaimana Anda ingin melanjutkan, atau minta saya mencoba cara lain.",
+			"loop": "Saya berhenti di sini: saya terus mengulang langkah yang sama dan mendapatkan hasil yang sama, jadi melanjutkan tidak akan membawa ke mana pun. Beri tahu saya bagaimana Anda ingin melanjutkan, atau minta saya mencoba cara lain.",
+			"contextStalled": "Saya berhenti di sini: materi yang saya kerjakan terlalu besar untuk ditampung sekaligus. Saya sudah merangkum catatan dua kali dan hampir membaca hal yang sama lagi tanpa kemajuan. Minta saya melanjutkan dengan bagian yang lebih kecil (satu file, satu halaman, atau satu bagian setiap kali) dan saya akan meneruskannya dari sana.",
+			"stalled": "Berhenti: tidak terjadi apa pun selama {minutes} menit (tidak ada teks balasan dan tidak ada aktivitas alat), jadi run diakhiri alih-alih dibiarkan menggantung. Minta lagi untuk melanjutkan."
+		}
 	},
 	"chatInput": {
 		"placeholder": "Balas...",
