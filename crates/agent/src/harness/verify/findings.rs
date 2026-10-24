@@ -1,7 +1,7 @@
 //! What a reviewer reports, and when the loop has stopped making progress.
 //!
-//! A reviewer's final answer is data (`turn_end::AnswerShapeCheck` holds it
-//! to [`answer_schema`]): ranked findings, each with its evidence, a repro
+//! A reviewer's verdict is data, returned through the answer tool whose
+//! input schema is [`answer_schema`] (`turn_end::ANSWER_TOOL`): ranked findings, each with its evidence, a repro
 //! and a fix; the checks it made that held; and, from the second round on,
 //! what became of each earlier finding. A finding that is the owner's call
 //! (a product or business decision, not a defect) says so, with at least two
@@ -256,7 +256,9 @@ pub fn settle(findings: &mut [Finding], answered: &[Finding]) {
     }
 }
 
-/// The JSON schema a reviewer's final answer must match.
+/// The schema of a reviewer's verdict: the answer tool's input. Its words
+/// ride every request of the review, so the verdict's rules hold however the
+/// review's conversation is compacted.
 pub fn answer_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -264,15 +266,24 @@ pub fn answer_schema() -> serde_json::Value {
         "properties": {
             "findings": {
                 "type": "array",
+                "description": "What you showed is wrong, each with evidence and a repro. Empty when nothing you tried broke it.",
                 "items": {
                     "type": "object",
                     "required": ["severity", "title", "evidence", "repro", "impact", "fix"],
                     "properties": {
-                        "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
-                        "kind": { "type": "string", "enum": ["defect", "decision"] },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["blocker", "major", "minor"],
+                            "description": "blocker: wrong results, lost or corrupted data, a security hole, money wrong, or the build or tests fail. major: a real defect or regression someone will hit. minor: worth fixing, harmless meanwhile."
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["defect", "decision"],
+                            "description": "decision: only a product or business choice that is the owner's to make (what to offer, charge, promise or call something), with at least two choices in options and the one you recommend in recommended. Anything broken, missing or wrong with a clear fix is a defect."
+                        },
                         "title": { "type": "string" },
-                        "evidence": { "type": "string" },
-                        "repro": { "type": "string" },
+                        "evidence": { "type": "string", "description": "path:line" },
+                        "repro": { "type": "string", "description": "Steps or worked numbers that show it." },
                         "impact": { "type": "string" },
                         "fix": { "type": "string" },
                         "options": { "type": "array", "items": { "type": "string" } },
@@ -282,6 +293,7 @@ pub fn answer_schema() -> serde_json::Value {
             },
             "verified_ok": {
                 "type": "array",
+                "description": "The checks you made that held. At least one when findings is empty.",
                 "items": {
                     "type": "object",
                     "required": ["checked"],
@@ -290,6 +302,7 @@ pub fn answer_schema() -> serde_json::Value {
             },
             "prior": {
                 "type": "array",
+                "description": "In a later round: what became of each earlier finding.",
                 "items": {
                     "type": "object",
                     "required": ["id", "state"],

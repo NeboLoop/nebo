@@ -1184,11 +1184,12 @@ pub(crate) async fn prepare(
         .or_else(|| h.store.get_agent(&req.seat.agent_id).ok().flatten().map(|a| a.name))
         .unwrap_or_else(|| "Nebo".to_string());
     let role = match &req.mode {
-        TurnMode::Helper { parent_session_key, kind, .. } => {
+        TurnMode::Helper { parent_session_key, kind, answer, .. } => {
             prompt::Role::Helper {
                 parent: parent_name(h, parent_session_key).await,
                 kind: *kind,
                 can_ask: req.seat.tool_allowlist.as_ref().is_none_or(|tools| tools.contains("ask_owner")),
+                answers: answer.is_some(),
             }
         }
         _ => prompt::Role::Employee,
@@ -1470,8 +1471,10 @@ pub(crate) async fn prepare(
     if tools::store_app::is_store_app(req.delivery.platform.as_deref()) {
         st.reminders.add(&TurnEvent::RunBriefing(tools::store_app::GUIDANCE.to_string()));
     }
+    // A data helper with no other tools still has its answer tool.
+    let answers = matches!(req.mode, TurnMode::Helper { answer: Some(_), .. });
     if let Some(notice) = seat::restricted_run_notice(
-        req.seat.tool_allowlist.as_ref().is_some_and(|wl| wl.is_empty()),
+        !answers && req.seat.tool_allowlist.as_ref().is_some_and(|wl| wl.is_empty()),
         req.seat.tool_allowlist.as_ref(),
         req.seat.tool_denial_hint.as_deref(),
     ) {
@@ -3109,7 +3112,8 @@ async fn tool_round(
         cx.trace("tool_summary"),
     )
     .await;
-    None
+    // A data helper's answer was received: it is the turn's result.
+    results.answered.then_some(TurnExit::Answered)
 }
 
 /// The turn starts building: its next steps reach Janus as the `build`
@@ -10555,6 +10559,11 @@ mod tests {
         }
     }
 
+    /// A reviewer's verdict, returned the one way: its answer tool call.
+    fn verdict(json: &str) -> Step {
+        Step::Call(crate::harness::turn_end::ANSWER_TOOL, serde_json::from_str(json).expect("a verdict is JSON"))
+    }
+
     const ONE_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "title": "The total ignores b", "evidence": "total.py:1", "repro": "a=1, b=2 gives 1", "impact": "Every invoice total is wrong", "fix": "Add b"}], "verified_ok": [{"checked": "the module imports"}]}"#;
     const CLEAN_WITH_THE_FIX: &str = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}], "prior": [{"id": "r1-correctness-1", "state": "fixed"}]}"#;
 
@@ -10585,12 +10594,12 @@ mod tests {
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
                     Step::Say("Done: total() returns the total."),
                     // Round 1: one reviewer (correctness), one blocker.
-                    Step::Say(ONE_BLOCKER),
+                    verdict(ONE_BLOCKER),
                     // The same builder fixes it, in its copy, and answers again.
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Fixed r1-correctness-1: b is added."),
                     // Round 2 reviews the fix.
-                    Step::Say(CLEAN_WITH_THE_FIX),
+                    verdict(CLEAN_WITH_THE_FIX),
                     // The builder reports.
                     Step::Say("Built total(); the review caught that b was ignored and I fixed it. Verified and landed."),
                 ]);
@@ -10635,6 +10644,426 @@ mod tests {
                 assert!(fix_step.messages.iter().any(|m| m.content.contains("The total ignores b")));
             })
         })
+    }
+
+    /// The one verification of the session, as its row stands.
+    fn the_verification(h: &Harness) -> db::Verification {
+        let rows = h.store.list_verifications(&db::VerificationQuery { session_key: Some(KEY), ..Default::default() }).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        rows.into_iter().next().unwrap()
+    }
+
+    /// Whether the request is a reviewer's (its brief is its first words).
+    fn is_reviewer(c: &ChatRequest) -> bool {
+        c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))
+    }
+
+    /// A clean verdict.
+    const CLEAN: &str = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#;
+
+    /// Owner's live run 2026-10-23 (`v-a093e377fe97`): three reviewers ended
+    /// in prose and the loop closed "review incomplete". A reviewer that
+    /// answers in words is sent back to its answer tool, which carries the
+    /// verdict, and the round completes.
+    #[test]
+    fn a_reviewer_that_answers_in_prose_is_driven_to_its_answer_tool() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say("I checked the change and it looks correct: total() adds a and b."),
+                    verdict(CLEAN),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
+                let reviewer: Vec<ChatRequest> = model.calls().into_iter().filter(is_reviewer).collect();
+                assert_eq!(reviewer.len(), 2, "one reviewer, sent back once");
+                let sent_back = texts(&reviewer[1]).join("\n");
+                assert!(sent_back.contains("Your answer hasn't been returned") && sent_back.contains("call structured_output"), "{sent_back}");
+                let tool = reviewer[0].tools.iter().find(|t| t.name == crate::harness::turn_end::ANSWER_TOOL).expect("the reviewer has its answer tool");
+                assert_eq!(tool.input_schema, crate::harness::verify::findings::answer_schema(), "its schema is the verdict's");
+            })
+        })
+    }
+
+    /// The owner's live run: a reviewer's conversation was compacted mid
+    /// review. The answer tool, its description and the reviewer's role ride
+    /// every request, so the request after the checkpoint still says how
+    /// the verdict is returned, and it is.
+    #[test]
+    fn a_reviewer_whose_context_is_compacted_still_returns_its_verdict() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Overflow,
+                    verdict(CLEAN),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
+                let after = model
+                    .calls()
+                    .into_iter()
+                    .find(|c| texts(c).first().is_some_and(|t| t.starts_with(compact::checkpoint::BOUNDARY_LEAD)))
+                    .expect("the reviewer's request after the checkpoint");
+                let heard = texts(&after).join("\n");
+                assert!(heard.contains("reads only the answer you return with structured_output"), "the reviewer's role is told again: {heard}");
+                let tool = after.tools.iter().find(|t| t.name == crate::harness::turn_end::ANSWER_TOOL).expect("the answer tool rides the request");
+                assert!(tool.description.contains("words you write are never read"), "{}", tool.description);
+            })
+        })
+    }
+
+    /// How many times the security reviewer was asked: its first run fails.
+    static SECURITY_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// Each reviewer of a round with two lenses: correctness answers clean;
+    /// security's first run fails for good, its second answers clean.
+    fn security_fails_once(req: &ChatRequest) -> Step {
+        let security = req.messages.iter().any(|m| m.content.contains(crate::harness::verify::lenses::Lens::Security.charter()));
+        if security && SECURITY_RUNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Step::Fails;
+        }
+        verdict(CLEAN)
+    }
+
+    /// A lens that could not finish runs again, alone and fresh, in the
+    /// same round; the lens that finished is not asked again, and the
+    /// round completes clean.
+    #[test]
+    fn one_failed_lens_runs_again_alone_in_the_same_round() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b, token): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Reacting(security_fails_once),
+                    Step::Reacting(security_fails_once),
+                    Step::Reacting(security_fails_once),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "one round: {v:?}");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].lenses, serde_json::json!(["correctness", "security"]));
+                assert_eq!(rounds[0].detail["reviewers"], serde_json::json!({"correctness": "clean", "security": "clean"}));
+                let reviewers: Vec<ChatRequest> = model.calls().into_iter().filter(is_reviewer).collect();
+                let of = |lens: crate::harness::verify::lenses::Lens| reviewers.iter().filter(|c| c.messages.iter().any(|m| m.content.contains(lens.charter()))).count();
+                assert_eq!(of(crate::harness::verify::lenses::Lens::Correctness), 1, "the lens that finished runs once");
+                assert_eq!(of(crate::harness::verify::lenses::Lens::Security), 2, "the failed lens runs again");
+            })
+        })
+    }
+
+    const TWO_MAJORS_TWO_MINORS: &str = r#"{"findings": [
+        {"severity": "major", "title": "The total ignores b", "evidence": "total.py:1", "repro": "a=1, b=2 gives 1", "impact": "wrong totals", "fix": "Add b"},
+        {"severity": "major", "title": "Negative totals pass", "evidence": "total.py:1", "repro": "a=-1, b=-2", "impact": "refunds go wrong", "fix": "Reject negatives"},
+        {"severity": "minor", "title": "No docstring", "evidence": "total.py:1", "repro": "help(total)", "impact": "unclear", "fix": "Add a docstring"},
+        {"severity": "minor", "title": "Parameter names are terse", "evidence": "total.py:1", "repro": "read it", "impact": "unclear", "fix": "Name them amount_a and amount_b"}
+    ], "verified_ok": [{"checked": "the module imports"}]}"#;
+    const ALL_FOUR_FIXED: &str = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}], "prior": [
+        {"id": "r1-correctness-1", "state": "fixed"}, {"id": "r1-correctness-2", "state": "fixed"},
+        {"id": "r1-correctness-3", "state": "fixed"}, {"id": "r1-correctness-4", "state": "fixed"}
+    ]}"#;
+
+    /// A full loop with two majors (and two minors): every open finding
+    /// reaches the builder in full (id, severity, title, evidence and fix:
+    /// the owner's live run told "four findings, two blocking" and showed
+    /// two, and the builder went looking on disk), it fixes them, round 2 is
+    /// clean, and the work lands.
+    #[test]
+    fn two_majors_go_to_the_builder_in_full_are_fixed_and_round_two_lands() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
+                    Step::Say("Done."),
+                    verdict(TWO_MAJORS_TWO_MINORS),
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(amount_a, amount_b):\n    \"\"\"The sum.\"\"\"\n    return amount_a + amount_b\n"})),
+                    Step::Say("r1-correctness-1: fixed\nr1-correctness-2: fixed\nr1-correctness-3: fixed\nr1-correctness-4: fixed"),
+                    verdict(ALL_FOUR_FIXED),
+                    Step::Say("Built total(); the review caught four things and I fixed them. Landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "{v:?}");
+                assert!(!v.landed_ref.is_empty(), "it landed");
+                assert!(std::fs::read_to_string(project.path().join("total.py")).unwrap().contains("return amount_a + amount_b"));
+                let calls = model.calls();
+                let told = calls[3].messages.iter().rev().find(|m| m.content.contains("Independent reviewers")).expect("the builder's findings");
+                for (id, severity, title, fix) in [
+                    ("r1-correctness-1", "major", "The total ignores b", "Add b"),
+                    ("r1-correctness-2", "major", "Negative totals pass", "Reject negatives"),
+                    ("r1-correctness-3", "minor", "No docstring", "Add a docstring"),
+                    ("r1-correctness-4", "minor", "Parameter names are terse", "Name them amount_a and amount_b"),
+                ] {
+                    assert!(told.content.contains(&format!("- {id} [{severity}] {title}: total.py:1")), "{id} in full: {}", told.content);
+                    assert!(told.content.contains(&format!("Fix: {fix}")), "{id}'s fix: {}", told.content);
+                }
+                assert!(told.content.contains("never stop to report or to wait for the owner"), "{}", told.content);
+                let report = calls.last().unwrap().messages.iter().rev().find(|m| m.content.contains("The checking is done")).expect("the report brief");
+                assert!(report.content.contains("your change landed"), "after landing it reports what landed: {}", report.content);
+                assert!(!report.content.contains("must review"), "{}", report.content);
+            })
+        })
+    }
+
+    /// The owner's real case: round 1's reviewer never returned its verdict
+    /// (prose to the end of its turn). The loop doesn't close: the reviewer
+    /// runs again, finds a major, the builder fixes it, round 2 is clean,
+    /// and the work lands.
+    #[test]
+    fn an_incomplete_first_round_goes_on_instead_of_closing() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let prose = "The change looks mostly fine but I would double-check the total.";
+                let mut script = vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
+                    Step::Say("Done."),
+                ];
+                // The first reviewer answers in words, sent back the most
+                // times a turn sends it back, and ends without a verdict.
+                script.extend((0..=crate::harness::turn_end::ANSWER_RETRIES).map(|_| Step::Say(prose)));
+                script.extend([
+                    verdict(ONE_BLOCKER),
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("r1-correctness-1: fixed: b is added."),
+                    verdict(CLEAN_WITH_THE_FIX),
+                    Step::Say("Verified and landed."),
+                ]);
+                let model = Scripted::new(script);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "it went on and landed: {v:?}");
+                assert!(!v.landed_ref.is_empty());
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].findings[0]["id"], "r1-correctness-1", "the second run's verdict is round 1's");
+            })
+        })
+    }
+
+    /// The reviewer's step waits until the test lets it answer: it says when
+    /// it is in flight.
+    fn held_reviewer(reviewing: Arc<tokio::sync::Notify>, go: Arc<tokio::sync::Notify>) -> Step {
+        held_verdict(CLEAN, reviewing, go)
+    }
+
+    fn held_verdict(json: &str, reviewing: Arc<tokio::sync::Notify>, go: Arc<tokio::sync::Notify>) -> Step {
+        Step::During(Box::new(verdict(json)), Box::pin(async move {
+            reviewing.notify_one();
+            go.notified().await;
+        }))
+    }
+
+    /// The owner sends a queued message now while the round's reviewer is
+    /// in flight: the turn stops to hear him, the round goes on (the check
+    /// never pauses), and the turn that answers him joins it: the round
+    /// completes clean and the work lands, with no second round.
+    #[test]
+    fn send_now_during_a_review_keeps_the_reviewers_running_and_the_round_completes() {
+        // Rounds in flight are the process's, by session: one test at a time.
+        let _one = SEND_NOW.lock().unwrap_or_else(|p| p.into_inner());
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let (reviewing, go) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    held_reviewer(reviewing.clone(), go.clone()),
+                    Step::Say("It's written; the review is still running."),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                let first = owner("Make total() add a and b");
+                let stop = first.cancel.clone();
+                let mut handle = h.start_turn(first).await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(20), reviewing.notified()).await.expect("the reviewer is in flight");
+                run_turn_queued(&h, sent("How is it going?", "m-1")).await;
+                assert!(h.has_queued(KEY), "his message waits behind the check");
+
+                // "Send now": only the reply stops.
+                assert_eq!(crate::harness::verify::engine::detach_rounds(KEY), 1, "the round goes on");
+                stop.cancel();
+                let mut events = Vec::new();
+                while let Some(e) = handle.events.recv().await {
+                    events.push(e);
+                }
+                assert_eq!(exit_of(&events), "cancelled");
+                assert_eq!(the_verification(&h).state, "running", "never paused: its round is still running");
+
+                go.notify_one();
+                let answered = run_turn(&h, answering_turn()).await;
+                assert_eq!(exit_of(&answered), "text_response");
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "the same round completed: {v:?}");
+                assert!(!v.landed_ref.is_empty());
+                assert_eq!(h.store.verification_rounds(&v.id).unwrap()[0].detail["reviewers"]["correctness"], "clean");
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n");
+                let heard = model.calls().into_iter().any(|c| texts(&c).iter().any(|t| t.contains("How is it going?")));
+                assert!(heard, "the builder heard him");
+            })
+        })
+    }
+
+    /// After "send now" the builder changes the code while the round's
+    /// reviewer still reads the version it started on: the round finishes on
+    /// that snapshot, comes back marked as about the earlier version, and the
+    /// loop runs another round on the new code before anything lands.
+    #[test]
+    fn a_code_change_after_send_now_leads_to_another_round() {
+        // Rounds in flight are the process's, by session: one test at a time.
+        let _one = SEND_NOW.lock().unwrap_or_else(|p| p.into_inner());
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let (reviewing, go) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+                let release = go.clone();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    held_reviewer(reviewing.clone(), go.clone()),
+                    // The turn that answers him changes the code, and only
+                    // then does the reviewer answer.
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b):\n    return a + b\n"})),
+                    Step::During(Box::new(Step::Say("Reformatted it as you asked.")), Box::pin(async move { release.notify_one() })),
+                    Step::Say("Looked over the change."),
+                    verdict(CLEAN),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = verifying_harness(&model).await;
+                let first = owner("Make total() add a and b");
+                let stop = first.cancel.clone();
+                let mut handle = h.start_turn(first).await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(20), reviewing.notified()).await.expect("the reviewer is in flight");
+                run_turn_queued(&h, sent("Put the return on its own line.", "m-1")).await;
+                crate::harness::verify::engine::detach_rounds(KEY);
+                stop.cancel();
+                while handle.events.recv().await.is_some() {}
+
+                run_turn(&h, answering_turn()).await;
+                let v = the_verification(&h);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "another round on the new code: {v:?}");
+                assert!(!v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b):\n    return a + b\n", "the new code landed");
+                let marked = model.calls().into_iter().any(|c| texts(&c).iter().any(|t| t.contains("you changed it since, so what follows is about that earlier version")));
+                assert!(marked, "the round's result says it is about the earlier version");
+            })
+        })
+    }
+
+    /// The owner's card, answered only on a turn that is still running, as
+    /// a real card is (`ToolContext::ask_user` gives up on a stopped turn).
+    struct LiveTurnAnswers(Arc<Mutex<Vec<String>>>);
+
+    impl tools::registry::DynTool for LiveTurnAnswers {
+        fn name(&self) -> &str {
+            "ask_owner"
+        }
+        fn description(&self) -> String {
+            "asks the owner".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                if ctx.cancel_token.is_cancelled() {
+                    return tools::ToolResult::error("No app is connected to show the question.");
+                }
+                self.0.lock().unwrap().push(input["question"].as_str().unwrap_or("").to_string());
+                tools::ToolResult::ok(serde_json::json!({"picked": "cents"}).to_string())
+            })
+        }
+    }
+
+    /// After "send now" the round's reviewer finds a call that is the
+    /// owner's while no turn is there to ask on: the question waits for the
+    /// turn that answers him, is put to him on it, and the loop carries out
+    /// his answer and lands.
+    #[test]
+    fn a_question_from_a_round_that_went_on_is_asked_on_the_turn_that_joins_it() {
+        let _one = SEND_NOW.lock().unwrap_or_else(|p| p.into_inner());
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let decision = r#"{"findings": [{"severity": "major", "kind": "decision", "title": "Round totals to cents or to dollars", "evidence": "total.py:1", "repro": "1.005", "impact": "invoices differ", "fix": "pick one", "options": ["cents", "dollars"], "recommended": "cents"}], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#;
+                let (reviewing, go) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    held_verdict(decision, reviewing.clone(), go.clone()),
+                    Step::Say("It's written; the review is still running."),
+                    Step::Say("Totals round to cents, as you decided."),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(LiveTurnAnswers(asked.clone()))]).await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let first = owner("Make total() add a and b");
+                let stop = first.cancel.clone();
+                let mut handle = h.start_turn(first).await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(20), reviewing.notified()).await.expect("the reviewer is in flight");
+                run_turn_queued(&h, sent("How is it going?", "m-1")).await;
+                crate::harness::verify::engine::detach_rounds(KEY);
+                stop.cancel();
+                while handle.events.recv().await.is_some() {}
+                // The reviewer answers with no turn there to ask on.
+                go.notify_one();
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                assert!(asked.lock().unwrap().is_empty(), "nobody to ask yet: the question waits");
+
+                run_turn(&h, answering_turn()).await;
+                assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars"], "asked on the turn that joined");
+                let v = the_verification(&h);
+                assert_eq!(v.state, "verified", "his answer was carried out and it landed: {v:?}");
+                assert!(!v.landed_ref.is_empty());
+            })
+        })
+    }
+
+    /// The send-now tests share the session key the rounds in flight are
+    /// detached by.
+    static SEND_NOW: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Queue `req` behind the running turn (its handle ends at once).
+    async fn run_turn_queued(h: &Harness, req: TurnRequest) {
+        let mut handle = h.start_turn(req).await.expect("queued");
+        while handle.events.recv().await.is_some() {}
     }
 
     /// Work that changes no code costs nothing more: no copy, no reviewer,
@@ -10699,7 +11128,7 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                     Step::Say("Reviewed, but the project has no tests, so it isn't verified; it waits in its copy."),
                 ]);
                 let h = verifying_harness(&model).await;
@@ -10814,14 +11243,14 @@ mod tests {
                     Step::Say("Done: the score shows."),
                     // Round 1: correctness and what people see, both clean;
                     // the live load fails.
-                    Step::Say(CLEAN_PAGE),
-                    Step::Say(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
                     // The builder fixes what the live load reported.
                     Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p id=\"score\">0</p>"})),
                     Step::Say("Fixed the live check: no script reads an undefined score."),
                     // Round 2 reviews the fix; the live load passes.
-                    Step::Say(CLEAN_PAGE),
-                    Step::Say(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
                     Step::Say("The score shows; the live check caught a script error and I fixed it. Verified."),
                 ]);
                 let (h, calls, _) = app_harness(
@@ -10876,8 +11305,8 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p>0</p>"})),
                     Step::Say("Done."),
-                    Step::Say(CLEAN_PAGE),
-                    Step::Say(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
                     Step::Say("The score shows. Verified."),
                 ]);
                 let (h, _, ran) = app_harness(&model, &folder, vec![Some((true, "Live check of Scoreboard: passed."))]).await;
@@ -10905,8 +11334,8 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p>0</p>"})),
                     Step::Say("Done."),
-                    Step::Say(CLEAN_PAGE),
-                    Step::Say(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
                     Step::Say("Reviewed, but it could not be checked live."),
                 ]);
                 let (h, _, _) = app_harness(&model, &folder, vec![None]).await;
@@ -10974,7 +11403,7 @@ mod tests {
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "export const score = () => 0;\n"})),
                     Step::Call("deploy_command", serde_json::json!({"command": format!("cd {} && make deploy", repo.display())})),
                     Step::Say("Done: the score shows."),
-                    Step::Say(CLEAN_PAGE),
+                    verdict(CLEAN_PAGE),
                     Step::Say("The score shows; its deploy loaded clean. Verified."),
                 ]);
                 let calls = Arc::new(Mutex::new(Vec::new()));
@@ -11253,11 +11682,11 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(decision),
+                    verdict(decision),
                     Step::Say("Rounded to cents."),
-                    Step::Say(again),
+                    verdict(again),
                     Step::Say("Already rounded to cents."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
                     Step::Say("Verified and landed."),
                 ]);
                 let asked = Arc::new(Mutex::new(Vec::new()));
@@ -11290,11 +11719,11 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(decision),
+                    verdict(decision),
                     Step::Say("Rounded to cents."),
-                    Step::Say(bare),
+                    verdict(bare),
                     Step::Say("Already rounded to cents."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "cents everywhere"}]}"#),
                     Step::Say("Verified and landed."),
                 ]);
                 let asked = Arc::new(Mutex::new(Vec::new()));
@@ -11334,9 +11763,9 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(review),
+                    verdict(review),
                     Step::Say("Posted the form; rounded to dollars."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "the form posts"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "the form posts"}], "prior": [{"id": "r1-correctness-1", "state": "fixed"}]}"#),
                     Step::Say("Verified and landed."),
                 ]);
                 let asked = Arc::new(Mutex::new(Vec::new()));
@@ -11432,13 +11861,13 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Tried."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Tried again."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Used Decimal."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Stopped, not verified."),
                 ]);
                 let replies = vec![serde_json::json!({"own_words": "use Decimal for the total"}), serde_json::json!({"picked": "Stop here"})];
@@ -11472,15 +11901,15 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Tried."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Tried again."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Stopped, not verified."),
                     Step::Say("Nothing else."),
                     Step::Say("Used Decimal."),
-                    Step::Say(SAME_BLOCKER),
+                    verdict(SAME_BLOCKER),
                     Step::Say("Stopped, not verified."),
                 ]);
                 // The question as the row held it while it was asked: what a
@@ -11545,10 +11974,10 @@ mod tests {
                     Step::Say("Done."),
                 ];
                 for _ in 0..5 {
-                    steps.push(Step::Say(SAME_BLOCKER));
+                    steps.push(verdict(SAME_BLOCKER));
                     steps.push(Step::Say("Tried."));
                 }
-                steps.push(Step::Say(SAME_BLOCKER));
+                steps.push(verdict(SAME_BLOCKER));
                 steps.push(Step::Say("Stopped: it kept finding the same problem."));
                 let model = Scripted::new(steps);
                 let replies = vec![serde_json::json!({"picked": "Keep going"}); 4];
@@ -11576,12 +12005,12 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file.clone(), "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                     Step::Say("Not verified: no tests."),
                     // A later turn writes into the same project again.
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b + 0\n"})),
                     Step::Say("Tweaked."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "+ 0 changes nothing"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "+ 0 changes nothing"}]}"#),
                     Step::Say("Still not verified: no tests."),
                 ]);
                 let h = verifying_harness(&model).await;
@@ -11611,9 +12040,9 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file.clone(), "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                     Step::Say("I looked at the change in my copy."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "the comment is harmless"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "the comment is harmless"}]}"#),
                     Step::Say("Verified; your edits are still in the way."),
                 ]);
                 let owner_file = project.path().join("total.py");
@@ -11716,11 +12145,11 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
                     Step::Say("Done."),
-                    Step::Say(ONE_BLOCKER),
+                    verdict(ONE_BLOCKER),
                     Step::Say("r1-correctness-1: deferred: I'll do it later."),
-                    Step::Say(deferred),
+                    verdict(deferred),
                     Step::Say("r1-correctness-1: deferred: still later."),
-                    Step::Say(deferred),
+                    verdict(deferred),
                     Step::Say("It isn't verified: the total still ignores b."),
                 ]);
                 let h = verifying_harness(&model).await;
@@ -11750,9 +12179,9 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                     Step::Say("The formatter's change is fine."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "the comment changes nothing"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "the comment changes nothing"}]}"#),
                     Step::Say("Verified and landed."),
                 ]);
                 let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(RewritingChecks(Arc::new(Mutex::new(0))))]).await;
@@ -11775,7 +12204,7 @@ mod tests {
                 assert!(heard.contains(&format!("{}/round-1/project", scratch.display())), "the reviewer works in its own copy");
                 assert!(heard.contains(&format!("CARGO_TARGET_DIR={}/build;", scratch.display())), "and builds in the verification's one folder");
                 assert!(!heard.contains(&v.work_dir), "never the builder's copy");
-                assert!(calls[3].messages.iter().any(|m| m.content.contains("changed files in your working copy while this round ran")));
+                assert!(calls[3].messages.iter().any(|m| m.content.contains("Your working copy changed while this round ran")));
                 assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it landed");
             })
         })
@@ -11826,7 +12255,7 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                     Step::Say("Reviewed, but not verified: no tests."),
                     Step::Say("Sunny and 22."),
                 ]);
@@ -11859,7 +12288,7 @@ mod tests {
                     let model = Scripted::new(vec![
                         Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                         Step::Say("Done."),
-                        Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                        verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                         Step::Say("Not verified yet."),
                         Step::Say("Thanks."),
                     ]);
@@ -11894,7 +12323,7 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(r#"{"findings": [], "verified_ok": []}"#),
+                    verdict(r#"{"findings": [], "verified_ok": []}"#),
                     Step::Say("Not verified: the review didn't finish."),
                 ]);
                 let h = verifying_harness(&model).await;
@@ -11929,11 +12358,11 @@ mod tests {
                     let mut steps = vec![
                         Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                         Step::Say("Done."),
-                        Step::Say(clean),
+                        verdict(clean),
                         Step::Say("Looked it over."),
                     ];
                     if reviews == 2 {
-                        steps.push(Step::Say(clean));
+                        steps.push(verdict(clean));
                     }
                     steps.push(Step::Say("It is reviewed, but it can't land."));
                     let model = Scripted::new(steps);
@@ -11980,9 +12409,9 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
-                    Step::Say(clean),
+                    verdict(clean),
                     Step::Say("Looked it over."),
-                    Step::Say(clean),
+                    verdict(clean),
                     Step::Say("It is reviewed, but it can't land."),
                 ]);
                 let h = verifying_harness(&model).await;
@@ -12059,7 +12488,7 @@ mod tests {
                     } else {
                         steps.extend([
                             Step::Say("Carrying on: total() adds a and b."),
-                            Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#),
+                            verdict(r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#),
                             Step::Say("Verified and landed."),
                         ]);
                     }
@@ -12147,7 +12576,7 @@ mod tests {
                     Step::During(Box::new(Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"}))), says),
                     Step::Say("The old research is shut down."),
                     Step::Say("Done: total() now adds a and b."),
-                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#),
+                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#),
                     Step::Say("Verified and landed."),
                 ]);
                 let h = verifying_harness(&model).await;
@@ -12254,11 +12683,11 @@ mod tests {
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
                     Step::Say("Done."),
-                    Step::Say(ONE_BLOCKER),
+                    verdict(ONE_BLOCKER),
                     Step::Say("I think it's fine."),
-                    Step::Say(still),
+                    verdict(still),
                     Step::Say("Still fine, I think."),
-                    Step::Say(still),
+                    verdict(still),
                     Step::Say("It isn't verified: the review still finds the total ignores b."),
                 ]);
                 let h = verifying_harness(&model).await;

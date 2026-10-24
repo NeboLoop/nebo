@@ -227,7 +227,7 @@ pub struct Ask {
     pub kind: HelperKind,
     /// Its whole brief: it sees nothing else.
     pub prompt: String,
-    /// The shape its final answer must have.
+    /// The shape of its answer: the answer tool's input schema.
     pub schema: serde_json::Value,
     /// The only tools it may call; `None`: what its kind allows.
     pub tools: Option<Vec<String>>,
@@ -1346,11 +1346,11 @@ impl Helpers {
         Ok((task_id, receipt))
     }
 
-    /// One helper of background work (the research pipeline) whose final
-    /// answer is read as data: a turn on the one loop, under the work's own
-    /// seat (the caller's, as its helpers run), stopped with it. `schema` is
-    /// the answer's shape (the turn can't end on another,
-    /// `turn_end::AnswerShapeCheck`), `tools` the only tools it may call.
+    /// One helper of background work (the research pipeline) whose answer
+    /// is read as data: a turn on the one loop, under the work's own seat
+    /// (the caller's, as its helpers run), stopped with it. `schema` is the
+    /// answer's shape (the answer tool's input, `turn_end::ANSWER_TOOL`),
+    /// `tools` the only tools it may call besides that one.
     /// `node` names it under the work's session (`sa-<node>`, its browser
     /// tab too). Every event of its turn bumps `activity`. Returns the
     /// answer's JSON object.
@@ -1393,10 +1393,12 @@ impl Helpers {
         self.answer(&parent, ask, activity).await.value
     }
 
-    /// A helper whose final answer is read as data, for the turn or work
+    /// A helper whose answer is read as data, for the turn or work
     /// `parent`: a turn on the one loop under the parent's seat, stopped
-    /// with it, its answer held to `ask.schema` by the turn's end check
-    /// (`turn_end::AnswerShapeCheck`). Its session is the parent's
+    /// with it. It returns its answer by calling `turn_end::ANSWER_TOOL`,
+    /// whose input schema is `ask.schema`: a call that doesn't match is
+    /// refused for it to call again, and a helper that stops without one is
+    /// sent back to call it (`turn_end::AnswerCheck`). Its session is the parent's
     /// `sa-<node>`. The research pipeline's sub-agents and the verify loop's
     /// reviewers both come through here.
     pub async fn answer(self: &Arc<Self>, parent: &Parent<'_>, ask: Ask, activity: Option<Arc<std::sync::atomic::AtomicU64>>) -> Answered {
@@ -1450,12 +1452,9 @@ impl Helpers {
         } else if collected.cancelled {
             Err("stopped".into())
         } else {
-            let issues = super::turn_end::answer_issues(&ask.schema, &collected.final_message);
-            if issues.is_empty() {
-                super::turn_end::answer_object(&collected.final_message).ok_or_else(|| "it gave no answer".to_string())
-            } else {
-                Err(format!("its answer didn't match the schema: {}", issues.join("; ")))
-            }
+            collected.answer.ok_or_else(|| {
+                format!("it stopped without returning its answer through {}", super::turn_end::ANSWER_TOOL)
+            })
         };
         if ask.shown {
             self.emit(parent.session_key, ai::StreamEvent::subagent_complete(&task_id, ask.description.as_str(), value.is_ok()));
@@ -3036,6 +3035,19 @@ mod tests {
             let _ = self.events.send(StreamEvent::done()).await;
         }
 
+        /// Return a data helper's answer, as the turn's answer tool call
+        /// does: its result event carries the call and its input.
+        async fn return_answer(&self, answer: serde_json::Value) {
+            let call = ai::ToolCall { id: "call-answer".into(), name: crate::harness::turn_end::ANSWER_TOOL.into(), input: answer };
+            let result = StreamEvent {
+                event_type: ai::StreamEventType::ToolResult,
+                tool_call: Some(call),
+                ..StreamEvent::text("Your answer was received.")
+            };
+            let _ = self.events.send(result).await;
+            let _ = self.events.send(StreamEvent::done()).await;
+        }
+
         /// Answer as a turn that read untrusted content: its `Done` carries
         /// the run's provenance, as the turn driver sends it.
         async fn answer_having_read(&self, text: &str, taint: Vec<ProvenanceClass>) {
@@ -3860,14 +3872,14 @@ mod tests {
         assert_eq!(first.request.seat.agent_id, "bookkeeper", "the run's seat");
         assert_eq!(first.request.seat.tool_allowlist, Some(["search_web".to_string()].into_iter().collect()));
         assert!(matches!(&first.request.input, TurnInput::Platform { text } if text == "Refute claim verify-1."));
-        first.answer(r#"Checked. {"refuted": true}"#).await;
+        first.return_answer(serde_json::json!({"refuted": true})).await;
         let got = tokio::time::timeout(Duration::from_secs(5), answers.recv()).await.unwrap().unwrap();
         assert_eq!(got.unwrap(), serde_json::json!({"refuted": true}), "the answer comes back as data");
 
         let second = tokio::time::timeout(Duration::from_secs(5), rig.started.recv()).await.unwrap().unwrap();
         second.answer("I couldn't decide.").await;
         let got = tokio::time::timeout(Duration::from_secs(5), answers.recv()).await.unwrap().unwrap();
-        assert!(got.unwrap_err().contains("didn't match the schema"), "a shapeless answer is an error, not data");
+        assert!(got.unwrap_err().contains("without returning its answer"), "an answer in words is an error, not data");
     }
 
     /// Deep research is one of the caller's background helpers: the launch
@@ -4689,7 +4701,8 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(started.request.mode, TurnMode::Helper { kind: HelperKind::Review, answer: Some(_), .. }));
-        started.answer(r#"{"findings": []}"#).await;
+        let _ = started.events.send(StreamEvent::text("I looked and it seems fine.")).await;
+        started.return_answer(serde_json::json!({"findings": []})).await;
         let answered = tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
         assert_eq!(answered.value.unwrap(), serde_json::json!({"findings": []}));
         let shown = rig.ui.recv().await.unwrap();

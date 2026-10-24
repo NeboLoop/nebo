@@ -57,8 +57,9 @@ impl InstalledBy {
 }
 
 /// One structured sub-agent request for the deep-research harness: a helper of the research
-/// run that may call only the named `aux_tools` and whose final answer is one JSON object
-/// matching `schema` (see `agent::structured_agent::StructuredRunner`).
+/// run that may call only the named `aux_tools` and returns its answer, one JSON object
+/// matching `schema`, through the harness's answer tool (see
+/// `agent::structured_agent::StructuredRunner`).
 pub struct StructuredTask {
     pub system: String,
     pub task: String,

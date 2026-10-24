@@ -111,9 +111,9 @@ pub enum TurnEvent {
     MidTurnAnswered,
     /// The unmet workflow contract term (workflow mode only).
     WorkflowContract(String),
-    /// A helper whose answer is read as data answered in the wrong shape:
-    /// what's wrong with it.
-    AnswerShape(String),
+    /// A helper whose answer is read as data stopped without returning it
+    /// through the answer tool (`turn_end::AnswerCheck`).
+    AnswerNotReturned,
     /// The verify loop's word to the builder after a round: the findings to
     /// fix, a conflict to resolve, or what to report (`verify::engine`).
     Verify(String),
@@ -249,7 +249,7 @@ pub const NAMES: &[&str] = &[
     "mid_turn_message",
     "mid_turn_answered",
     "workflow_contract",
-    "answer_shape",
+    "answer_not_returned",
     "verify",
     "unsaved_memory",
     "unrun_command",
@@ -495,7 +495,14 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             "You answered the owner's message. Go on as it asks: carry on with the work, or stop and say where it stands.".to_string(),
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
-        TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
+        TurnEvent::AnswerNotReturned => (
+            "answer_not_returned",
+            format!(
+                "Your answer hasn't been returned: words you write are never read. When your work is done, call \
+                 {} with your whole answer as its input. Call it now if you are done.",
+                super::turn_end::ANSWER_TOOL
+            ),
+        ),
         TurnEvent::Verify(text) => ("verify", format!("{} {}", ai::REVIEW_NOTE, non_empty(text)?)),
         TurnEvent::UnsavedMemory(scope) => (
             "unsaved_memory",
@@ -1361,7 +1368,7 @@ mod tests {
             TurnEvent::StepLimit,
             TurnEvent::CutCall("write_file".into()),
             TurnEvent::WorkflowContract("call publish once".into()),
-            TurnEvent::AnswerShape("no JSON object".into()),
+            TurnEvent::AnswerNotReturned,
             TurnEvent::Verify("Independent reviewers found 1 blocker.".into()),
             TurnEvent::UnsavedMemory(crate::harness::memory_save::Scope::Private),
             TurnEvent::UnrunCommand,

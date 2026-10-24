@@ -83,6 +83,9 @@ pub(crate) async fn stop_session(
             Err(e) => warn!(session = %key, error = %e, "stop: what the conversation asked was not withdrawn"),
         }
         helpers.stop_session(Some(&key));
+        // The code check's rounds stop with it, joined by a turn or not:
+        // the check pauses for the turn that goes on.
+        agent::harness::verify::engine::stop_rounds(&key);
         running |= runs.cancel_by_session(&key).await;
         crate::handoff::stopped_into(store, &key);
         stopped.push(key);

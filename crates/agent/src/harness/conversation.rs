@@ -228,6 +228,12 @@ fn waiting_id(m: &ChatMessage) -> Option<String> {
     meta.get(MESSAGE_ID).and_then(|v| v.as_str()).filter(|id| !id.is_empty()).map(str::to_string)
 }
 
+/// Whether the conversation holds a message of the owner's queued behind
+/// running work that no step took in yet.
+pub(crate) fn has_waiting(sessions: &SessionManager, session_id: &str) -> bool {
+    sessions.get_messages_since_checkpoint(session_id).is_ok_and(|rows| rows.iter().any(|m| waiting_id(m).is_some()))
+}
+
 /// The owner's queued messages this step takes in, by the ids the client
 /// sent them under: each is marked taken in, so it is named once. One the
 /// owner withdrew since `conversation` was read is gone from it, and the

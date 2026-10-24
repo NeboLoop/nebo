@@ -657,11 +657,15 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     dispatch_chat(&state, &parsed, &client_id, platform.as_deref()).await;
                                 }
                                 "cancel" => {
-                                    let (_, session_id) =
-                                        apply_cancel(&state.store, &parsed["data"], &state.helpers, &state.run_registry).await;
-                                    state.hub.broadcast("chat_cancelled", serde_json::json!({
-                                        "session_id": session_id,
-                                    }));
+                                    let (outcome, session_id) =
+                                        apply_cancel(&state.store, &parsed["data"], &state.helpers, &state.run_registry, |key| state.harness.has_queued(key)).await;
+                                    // A message already taken in is being answered: the
+                                    // conversation is still working.
+                                    if outcome != CancelOutcome::AlreadyHeard {
+                                        state.hub.broadcast("chat_cancelled", serde_json::json!({
+                                            "session_id": session_id,
+                                        }));
+                                    }
                                 }
                                 "chat_withdraw" => {
                                     // The owner takes back a message queued behind running
@@ -1407,13 +1411,23 @@ enum CancelOutcome {
     /// already ended): nothing stops. Stopping everything is the explicit
     /// `cancel_all` message, never a miss.
     NothingLive,
+    /// "Send now": the owner pressed Stop with a message queued (or the
+    /// frame says `deliver`). Only the turn's reply stops, so a turn answers
+    /// him at once; the code check's rounds and the session's background
+    /// helpers go on.
+    SendNow,
+    /// "Send now" for a message a step already took in: it is being
+    /// answered, and nothing stops.
+    AlreadyHeard,
 }
 
 /// The cancel precedence chain: run_id > entity_id > the conversation the
-/// frame names. The conversation is resolved exactly as a "chat" frame's
-/// turn is (`turn_session_key`), so a Stop naming the same employee,
-/// session and channel as its send reaches the key that turn is registered
-/// under. Whatever stops, the helpers of that one session stop with it.
+/// frame names, where a press with a message queued (or a frame that says
+/// `deliver`) is "send now" and anything else is the Stop. The conversation
+/// is resolved exactly as a "chat" frame's turn is (`turn_session_key`), so
+/// a Stop naming the same employee, session and channel as its send reaches
+/// the key that turn is registered under. Whatever a Stop stops, the helpers
+/// of that one session stop with it; "send now" stops only the reply.
 /// Returns the outcome and the session key to echo in the `chat_cancelled`
 /// broadcast.
 async fn apply_cancel(
@@ -1421,6 +1435,7 @@ async fn apply_cancel(
     data: &serde_json::Value,
     helpers: &agent::harness::delegation::Helpers,
     registry: &crate::run_registry::RunRegistry,
+    has_queued: impl Fn(&str) -> bool,
 ) -> (CancelOutcome, String) {
     let frame = ChatPayload::parse(data);
     let session_key = turn_session_key(&frame.session_id, &frame.agent_id, &frame.channel);
@@ -1440,6 +1455,19 @@ async fn apply_cancel(
         let count = registry.cancel_by_entity(entity_id).await;
         info!(entity_id, count, "cancelled runs by entity_id");
         return (CancelOutcome::Entity { count }, session_key);
+    }
+    // The first press with a message queued means "send it now": the reply
+    // stops so a turn answers him at once, and nothing else does.
+    let queued = has_queued(&session_key);
+    if queued || data["deliver"].as_bool() == Some(true) {
+        if !queued {
+            info!(session = %session_key, "send now: the message was already taken in; nothing stopped");
+            return (CancelOutcome::AlreadyHeard, session_key);
+        }
+        let rounds = agent::harness::verify::engine::detach_rounds(&session_key);
+        registry.cancel_by_session(&session_key).await;
+        info!(session = %session_key, rounds, "send now: the reply stops, the code check goes on");
+        return (CancelOutcome::SendNow, session_key);
     }
     let outcome = if crate::chat_dispatch::stop_session(store, helpers, registry, &session_key).await {
         info!(session = %session_key, "cancelled the conversation's run");
@@ -2928,7 +2956,7 @@ mod cancel_precedence_tests {
             "entity_id": "a",
             "session_id": "agent:a:thread:c1",
         });
-        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::RunId);
         assert_eq!(session_id, "agent:a:main");
         assert!(ta.is_cancelled());
@@ -2948,7 +2976,7 @@ mod cancel_precedence_tests {
             "entity_id": "a",
             "session_id": "agent:a:main",
         });
-        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::RunIdMiss);
         assert!(!token.is_cancelled());
     }
@@ -2971,7 +2999,7 @@ mod cancel_precedence_tests {
             "entity_id": "x",
             "session_id": "agent:y:main",
         });
-        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::Entity { count: 2 });
         assert!(ta.is_cancelled());
         assert!(tb.is_cancelled());
@@ -2994,12 +3022,38 @@ mod cancel_precedence_tests {
         let _h3 = reg(&registry, "agent:b:thread:c2", "b", &other).await;
 
         let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" });
-        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::Session);
         assert_eq!(session_id, "agent:a:thread:c1");
         assert!(thread.is_cancelled());
         assert!(!web.is_cancelled());
         assert!(!other.is_cancelled());
+    }
+
+    /// The first press with a message queued is "send now": only the
+    /// conversation's reply stops (a turn answers him at once), the same
+    /// from the desktop, which says `deliver`, and the phone, which doesn't.
+    /// A `deliver` for a message a step already took in stops nothing.
+    #[tokio::test]
+    async fn a_press_with_a_message_queued_sends_it_now_and_stops_only_the_reply() {
+        for data in [
+            serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a", "deliver": true }),
+            serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" }),
+        ] {
+            let registry = RunRegistry::new();
+            let thread = CancellationToken::new();
+            let _h = reg(&registry, "agent:a:thread:c1", "a", &thread).await;
+            let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry, |key| key == "agent:a:thread:c1").await;
+            assert_eq!((outcome, session_id.as_str()), (CancelOutcome::SendNow, "agent:a:thread:c1"), "{data}");
+            assert!(thread.is_cancelled(), "the reply stops so a turn answers him: {data}");
+        }
+        let registry = RunRegistry::new();
+        let thread = CancellationToken::new();
+        let _h = reg(&registry, "agent:a:thread:c1", "a", &thread).await;
+        let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a", "deliver": true });
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
+        assert_eq!(outcome, CancelOutcome::AlreadyHeard);
+        assert!(!thread.is_cancelled(), "the turn is answering it: nothing stops");
     }
 
     /// A Stop sent before the phone knows its conversation's name carries
@@ -3018,7 +3072,7 @@ mod cancel_precedence_tests {
         let _h3 = reg(&registry, "agent:b:web", "b", &other).await;
 
         let data = serde_json::json!({ "agent_id": "a" });
-        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::Session);
         assert_eq!(session_id, "agent:a:web");
         assert!(mine.is_cancelled());
@@ -3026,7 +3080,7 @@ mod cancel_precedence_tests {
         assert!(!other.is_cancelled());
 
         let data = serde_json::json!({ "agent_id": "a", "channel": "help:mail" });
-        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::Session);
         assert!(help.is_cancelled());
         assert!(!other.is_cancelled());
@@ -3042,7 +3096,7 @@ mod cancel_precedence_tests {
         let _duty = reg(&registry, "agent:b:thread:c2", "b", &other).await;
 
         let data = serde_json::json!({ "session_id": "agent:a:thread:ended", "agent_id": "a" });
-        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry, |_| false).await;
         assert!(
             !other.is_cancelled(),
             "another employee's run keeps running"
@@ -3058,6 +3112,7 @@ mod cancel_precedence_tests {
             &serde_json::json!({ "session_id": "stale-key" }),
             &helpers(),
             &registry,
+            |_| false,
         )
         .await;
         assert_eq!(outcome, CancelOutcome::NothingLive);
@@ -3075,7 +3130,7 @@ mod cancel_precedence_tests {
         let theirs = helpers.session_token("agent:b:thread:c2").child_token();
 
         let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" });
-        let (outcome, _) = apply_cancel(&store(), &data, &helpers, &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers, &registry, |_| false).await;
         assert_eq!(outcome, CancelOutcome::NothingLive);
         assert!(
             mine.is_cancelled(),

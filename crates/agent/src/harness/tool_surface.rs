@@ -401,6 +401,11 @@ pub async fn surface(
     };
     let mut declared = declared(&all, &deferred, &loaded);
     declared.extend(triggered.iter().cloned());
+    // A helper whose caller reads its answer as data returns it through the
+    // answer tool, declared last so the rest of the list is every run's.
+    if let crate::harness::TurnMode::Helper { answer: Some(schema), .. } = seat.mode {
+        declared.push(crate::harness::turn_end::answer_tool(schema));
+    }
     // A workflow step lists nothing behind find_tools: all of its tools are
     // declared (above), and nothing else is its to load.
     let listed: Listing = offered

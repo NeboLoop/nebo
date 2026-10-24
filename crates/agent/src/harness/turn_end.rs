@@ -172,50 +172,63 @@ pub fn failed_deliveries<'a>(
     failed
 }
 
-/// Times the answer check sends a helper back before the turn ends as it
-/// is (the caller reads it and reports what's wrong).
-pub const ANSWER_SHAPE_RETRIES: u8 = 2;
+/// The tool a helper whose caller reads its answer as data returns that
+/// answer with: its input schema is the answer's schema, so the call is
+/// checked when it is made and a call that doesn't match is refused with
+/// what's wrong, for the helper to call again. A valid call ends the turn
+/// (`tool_round`), and its input is the answer (`delegation::collect`).
+pub const ANSWER_TOOL: &str = "structured_output";
 
-/// A helper whose caller reads its final answer as data: the answer must be
-/// one JSON object matching the schema, checked when the helper stops and
-/// sent back to it when it doesn't match. The answer is the turn's final
-/// text rather than a per-task tool, so the tool list stays the one list.
-pub struct AnswerShapeCheck(pub std::sync::Arc<serde_json::Value>);
+/// What the answer tool tells the model, in its description: it rides
+/// every request of the turn, so a compacted conversation still has it.
+const ANSWER_TOOL_DESCRIPTION: &str = "Return your answer. When your work is done, call this tool once with your \
+whole answer as its input, in the shape its schema gives. This call is the only answer your caller reads: words you \
+write are never read. If the call is refused, fix what it names and call it again.";
 
-/// The JSON object a final answer carries, if it carries one.
-pub fn answer_object(text: &str) -> Option<serde_json::Value> {
-    let json = crate::memory::extract_json_object_pub(text)?;
-    serde_json::from_str::<serde_json::Value>(&json).ok().filter(|v| v.is_object())
-}
-
-/// What's wrong with `answer` against `schema`; empty when it matches.
-pub fn answer_issues(schema: &serde_json::Value, answer: &str) -> Vec<String> {
-    let Some(value) = answer_object(answer) else {
-        return vec!["there is no JSON object in it".to_string()];
-    };
-    match a2ui_validation::validate(schema, &value, "answer") {
-        Ok(()) => Vec::new(),
-        Err(errors) => errors.iter().map(|e| format!("{}: {}", e.path, e.message)).collect(),
+/// The answer tool's definition for an answer of `schema`.
+pub fn answer_tool(schema: &serde_json::Value) -> ai::ToolDefinition {
+    ai::ToolDefinition {
+        name: ANSWER_TOOL.to_string(),
+        description: ANSWER_TOOL_DESCRIPTION.to_string(),
+        input_schema: schema.clone(),
     }
 }
 
+/// The answer tool's result for a call with `input`: accepted when it
+/// matches `schema`, else refused with what's wrong.
+pub fn answer_result(schema: &serde_json::Value, input: &serde_json::Value) -> tools::ToolResult {
+    match a2ui_validation::validate(schema, input, "answer") {
+        Ok(()) => tools::ToolResult::ok("Your answer was received."),
+        Err(errors) => tools::ToolResult::error(format!(
+            "Your answer doesn't match the schema, so it was not received:\n{}\nCall {ANSWER_TOOL} again with the \
+             corrected answer.",
+            errors.iter().map(|e| format!("- {}: {}", e.path, e.message)).collect::<Vec<_>>().join("\n")
+        )),
+    }
+}
+
+/// Times the answer check sends a helper back to call the answer tool
+/// before the turn ends without an answer (its caller reads that as a
+/// failure, and the verify loop runs the reviewer again).
+pub const ANSWER_RETRIES: u8 = 3;
+
+/// A helper whose caller reads its answer as data stopped without
+/// returning it through [`ANSWER_TOOL`]: it is sent back to call it.
+pub struct AnswerCheck;
+
 #[async_trait::async_trait]
-impl EndCheck for AnswerShapeCheck {
+impl EndCheck for AnswerCheck {
     fn name(&self) -> &'static str {
-        "answer_shape"
+        "answer"
     }
 
     async fn check(&self, end: &TurnEnd<'_>) -> EndVerdict {
-        let answer = end.transcript.iter().rev().find(|m| m.role == "assistant").map(|m| m.content.as_str()).unwrap_or("");
-        let issues = answer_issues(&self.0, answer);
-        if issues.is_empty() || end.checks_this_turn >= ANSWER_SHAPE_RETRIES {
+        // The registry holds this check alone for a data helper, so the
+        // turn's count of continued checks is this check's own.
+        if succeeded_tools(end.transcript).contains(ANSWER_TOOL) || end.checks_this_turn >= ANSWER_RETRIES {
             return EndVerdict::Stop;
         }
-        EndVerdict::Continue(TurnEvent::AnswerShape(format!(
-            "Your final answer must be one JSON object matching the schema you were given, and nothing else. It doesn't \
-             yet:\n{}\nAnswer again with the corrected object.",
-            issues.iter().map(|i| format!("- {i}")).collect::<Vec<_>>().join("\n")
-        )))
+        EndVerdict::Continue(TurnEvent::AnswerNotReturned)
     }
 }
 
@@ -315,7 +328,7 @@ pub fn registry(mode: &TurnMode, checks: EndChecks) -> Vec<Box<dyn EndCheck>> {
             .into_iter()
             .chain(checks.workflow_contract.map(|c| Box::new(WorkflowContractCheck(c)) as Box<dyn EndCheck>))
             .collect(),
-        TurnMode::Helper { answer: Some(schema), .. } => vec![Box::new(AnswerShapeCheck(schema.clone())) as Box<dyn EndCheck>],
+        TurnMode::Helper { answer: Some(_), .. } => vec![Box::new(AnswerCheck) as Box<dyn EndCheck>],
         TurnMode::Helper { kind: super::delegation::HelperKind::General, .. } => verify.into_iter().collect(),
         TurnMode::Helper { .. } | TurnMode::Fork(_) => Vec::new(),
     }
@@ -338,14 +351,23 @@ mod tests {
         ai::Message { role: "assistant".into(), content: text.into(), ..Default::default() }
     }
 
-    /// D13: a helper whose answer is read as data can't end on an answer in
-    /// the wrong shape: it is sent back with what's wrong, twice at most,
-    /// then ends as it is for its caller to report.
+    /// A helper whose answer is read as data returns it through the answer
+    /// tool, whose input is checked against the schema when it is called:
+    /// a call that doesn't match is refused with what's wrong. A helper that
+    /// stops without a received answer is sent back to call the tool, at
+    /// most [`ANSWER_RETRIES`] times.
     #[tokio::test]
-    async fn a_data_answer_must_match_its_schema() {
+    async fn a_data_answer_is_returned_through_the_answer_tool() {
         let schema = std::sync::Arc::new(serde_json::json!({
             "type": "object", "properties": { "refuted": { "type": "boolean" } }, "required": ["refuted"]
         }));
+        let tool = answer_tool(&schema);
+        assert_eq!((tool.name.as_str(), &tool.input_schema), (ANSWER_TOOL, schema.as_ref()), "the answer's schema is the tool's");
+        assert!(tool.description.contains("words you write are never read"), "{}", tool.description);
+        let mistyped = answer_result(&schema, &serde_json::json!({"refuted": "yes"}));
+        assert!(mistyped.is_error && mistyped.content.contains("refuted") && mistyped.content.contains("Call structured_output again"), "{}", mistyped.content);
+        assert!(!answer_result(&schema, &serde_json::json!({"refuted": false})).is_error);
+
         let helper = TurnMode::Helper {
             parent_session_key: "subagent:agent:a:web:h-1".into(),
             kind: crate::harness::delegation::HelperKind::General,
@@ -353,17 +375,17 @@ mod tests {
             answer: Some(schema),
         };
         let checks = registry(&helper, EndChecks::default());
-        assert_eq!(checks.len(), 1, "a data answer is checked");
-        let wrong = [said("It is probably false.")];
-        let EndVerdict::Continue(event) = checks[0].check(&end(&wrong, 1)).await else { panic!("sent back") };
+        assert_eq!(checks.iter().map(|c| c.name()).collect::<Vec<_>>(), ["answer"], "a data answer is checked, alone");
+        let prose = [said(r#"It is probably false. {"refuted": false}"#)];
+        let EndVerdict::Continue(event) = checks[0].check(&end(&prose, 1)).await else { panic!("sent back") };
         let text = attachment_for(&event).unwrap().text;
-        assert!(text.contains("one JSON object") && text.contains("there is no JSON object in it"), "{text}");
-        let mistyped = [said(r#"{"refuted": "yes"}"#)];
-        assert!(matches!(checks[0].check(&end(&mistyped, 2)).await, EndVerdict::Continue(_)), "a wrong type is sent back too");
-        let right = [said(r#"Done. {"refuted": false}"#)];
-        assert!(matches!(checks[0].check(&end(&right, 3)).await, EndVerdict::Stop));
-        let tired = TurnEnd { transcript: &wrong, step: 4, checks_this_turn: ANSWER_SHAPE_RETRIES };
-        assert!(matches!(checks[0].check(&tired).await, EndVerdict::Stop), "at most twice");
+        assert!(text.contains("call structured_output"), "an answer in words is never the answer: {text}");
+        let refused = [call("c1", ANSWER_TOOL), result("c1", true)];
+        assert!(matches!(checks[0].check(&end(&refused, 2)).await, EndVerdict::Continue(_)), "a refused call is no answer");
+        let received = [call("c1", ANSWER_TOOL), result("c1", true), call("c2", ANSWER_TOOL), result("c2", false)];
+        assert!(matches!(checks[0].check(&end(&received, 3)).await, EndVerdict::Stop));
+        let tired = TurnEnd { transcript: &prose, step: 4, checks_this_turn: ANSWER_RETRIES };
+        assert!(matches!(checks[0].check(&tired).await, EndVerdict::Stop), "sent back a bounded number of times");
     }
 
     fn call(id: &str, name: &str) -> ai::Message {

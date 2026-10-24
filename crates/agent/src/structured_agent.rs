@@ -3,7 +3,8 @@
 //! The deep-research pipeline (tools crate) drives its sub-agents through this trait so it
 //! never depends on the agent crate. Each sub-agent is a helper of the research run, a turn
 //! on the one loop (`Helpers::answer_as_data`): the harness's model call, tool round,
-//! permission check and stop token, with its answer's shape held by the turn's end check.
+//! permission check and stop token, returning its answer through the answer tool
+//! (`turn_end::ANSWER_TOOL`), checked against the answer's schema when it is called.
 //! There is no second model loop. The pipeline's deterministic fetches dispatch through the
 //! canonical [`tools::Registry::execute`] under the sub-agent's session, so each sub-agent
 //! owns its browser tab while siblings (`subagent:<run>:sa-<node>`) share the run's
@@ -56,15 +57,20 @@ impl StructuredRunner {
     }
 }
 
-/// What the sub-agent is told: its role, its task, and the shape its answer takes.
+/// What the sub-agent is told: its role, its task, and how it returns its answer (the
+/// answer tool, whose input schema is the answer's shape).
 fn brief(task: &StructuredTask) -> String {
     let mut text = format!("{}\n\n{}", task.system.trim(), task.task.trim());
     if let Some(turns) = task.max_tool_turns {
-        text.push_str(&format!("\n\nMake at most {turns} tool call{}.", if turns == 1 { "" } else { "s" }));
+        text.push_str(&format!(
+            "\n\nMake at most {turns} tool call{} before you return your answer.",
+            if turns == 1 { "" } else { "s" }
+        ));
     }
     text.push_str(&format!(
-        "\n\nYour final answer is read as data: one JSON object matching this schema, and nothing else.\n{}",
-        task.schema
+        "\n\nYour answer is read as data: when you are done, return it by calling {} with the whole answer as \
+         its input.",
+        crate::harness::turn_end::ANSWER_TOOL
     ));
     text
 }

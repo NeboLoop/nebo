@@ -401,6 +401,14 @@ impl Harness {
             .is_ok_and(|session_id| conversation::withdraw(&self.sessions, &self.store, &session_id, message_id))
     }
 
+    /// Whether the owner has a message queued behind running work on `key`
+    /// that no step took in yet.
+    pub fn has_queued(&self, key: &str) -> bool {
+        self.sessions
+            .resolve_session_id_by_key(key)
+            .is_ok_and(|session_id| conversation::has_waiting(&self.sessions, &session_id))
+    }
+
     /// Whether a turn is running on `key`.
     pub fn is_session_busy(&self, key: &str) -> bool {
         session_gate::session_is_busy(&self.active_turns, key)
@@ -519,10 +527,11 @@ pub enum TurnMode {
         parent_session_key: String,
         kind: delegation::HelperKind,
         depth: u8,
-        /// The JSON schema the helper's final answer must match, when its
-        /// caller reads the answer as data (a research pipeline's
-        /// sub-agent): the turn can't end on an answer that doesn't
-        /// (`turn_end::AnswerShapeCheck`).
+        /// The JSON schema of the helper's answer, when its caller reads the
+        /// answer as data (a research pipeline's sub-agent, a verify
+        /// reviewer): the helper returns it by calling the answer tool, whose
+        /// input schema it is (`turn_end::ANSWER_TOOL`), and is sent back to
+        /// call it when it stops without (`turn_end::AnswerCheck`).
         answer: Option<Arc<serde_json::Value>>,
     },
     /// A workflow activity. Boxed: the config is far larger than the other

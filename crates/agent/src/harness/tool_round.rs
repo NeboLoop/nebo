@@ -461,6 +461,9 @@ pub(crate) struct RoundResults {
     pub saved_memory: Option<String>,
     /// The deferred tools the round's results loaded, by name.
     pub loaded: Vec<String>,
+    /// A data helper's answer was received (`turn_end::ANSWER_TOOL`): the
+    /// turn ends on it.
+    pub answered: bool,
 }
 
 /// Run the model's tool calls: the exit primitive, then every call through
@@ -633,6 +636,8 @@ pub(crate) async fn run_tool_round(
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
     let mut saved_memory = None;
     let mut loaded = Vec::new();
+    let answers = matches!(cx.turn_mode, Some(crate::harness::TurnMode::Helper { answer: Some(_), .. }));
+    let mut answered = false;
     for (idx, entry) in results.into_iter().enumerate() {
         let Some((tc, mut result)) = entry else { continue };
         // The same call answered the same way again, with nothing changed
@@ -721,6 +726,7 @@ pub(crate) async fn run_tool_round(
             saved_memory = Some(result.content.clone());
         }
         loaded.extend(result.loads.iter().map(|d| d.name.clone()));
+        answered |= answers && !result.is_error && tc.name == crate::harness::turn_end::ANSWER_TOOL;
 
         let row = ToolResultRow {
             tool_call_id: tc.id.clone(),
@@ -787,6 +793,7 @@ pub(crate) async fn run_tool_round(
         summary_tool_results,
         saved_memory,
         loaded,
+        answered,
     })
 }
 
@@ -1190,6 +1197,17 @@ async fn run_call(
     let RunToolScope { tx, session_id, run_cwd, .. } = *scope;
     let _slot = pool.acquire_owned().await;
 
+    // A data helper's answer is the harness's own, never a registry tool:
+    // checked against its schema here, refused with what's wrong when it
+    // doesn't match (`turn_end::answer_result`).
+    if let Some(crate::harness::TurnMode::Helper { answer: Some(schema), .. }) = turn_mode
+        && tc.name == crate::harness::turn_end::ANSWER_TOOL
+    {
+        let result = crate::harness::turn_end::answer_result(schema, &tc.input);
+        send_settled(tx, &tc, &result).await;
+        return Ran { idx, tc, target: None, result, duration_ms: None, hook_noted: false };
+    }
+
     // tool.pre_execute filter hooks: may refuse the call, rewrite its
     // input, or attach a note that rides after the tool's own output.
     let mut refusal: Option<String> = None;
@@ -1270,22 +1288,7 @@ async fn run_call(
         None => None,
     };
     if let Some(result) = refused {
-        let _ = tx
-            .send(StreamEvent {
-                payload: None,
-                provenance: None,
-                event_type: StreamEventType::ToolResult,
-                text: result.content.clone(),
-                tool_call: Some(tc.clone()),
-                error: result.is_error.then(|| result.content.clone()),
-                usage: None,
-                rate_limit: None,
-                widgets: None,
-                provider_metadata: None,
-                stop_reason: None,
-                image_url: None,
-            })
-            .await;
+        send_settled(tx, &tc, &result).await;
         return Ran { idx, tc, target, result, duration_ms: None, hook_noted: false };
     }
 
@@ -1395,6 +1398,27 @@ async fn run_call(
         })
         .await;
     Ran { idx, tc, target, result, duration_ms: Some(duration_ms), hook_noted }
+}
+
+/// The result of a call settled before any tool ran (refused, already
+/// answered, or a data helper's answer), as the turn's stream carries it.
+async fn send_settled(tx: &mpsc::Sender<StreamEvent>, tc: &ai::ToolCall, result: &ToolResult) {
+    let _ = tx
+        .send(StreamEvent {
+            payload: None,
+            provenance: None,
+            event_type: StreamEventType::ToolResult,
+            text: result.content.clone(),
+            tool_call: Some(tc.clone()),
+            error: result.is_error.then(|| result.content.clone()),
+            usage: None,
+            rate_limit: None,
+            widgets: None,
+            provider_metadata: None,
+            stop_reason: None,
+            image_url: None,
+        })
+        .await;
 }
 
 /// The question the judgement is asked about a call as it will run, when
