@@ -130,6 +130,7 @@ pub fn command_paths(command: &str, cwd: Option<&str>) -> Vec<PathBuf> {
         .chain(&fx.overwrites)
         .chain(&fx.creates)
         .chain(&fx.removes_trees)
+        .chain(&fx.moves)
         .filter_map(|n| n.strip_prefix("file:"))
         .map(|p| resolve(p.strip_suffix("/*").unwrap_or(p)))
         .collect();

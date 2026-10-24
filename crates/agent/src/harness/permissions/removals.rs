@@ -11,6 +11,12 @@
 //!   every time: no "Allow always" covers it. So does a protected folder
 //!   anywhere in it ([`PROTECTED_DIRS`]: its git folder, Nebo's own, an
 //!   editor's or an agent's settings), however deep.
+//! - A removal in a project (or a copy of one) of a folder that isn't
+//!   there when the call is checked asks: what it will hold when the command reaches it (a
+//!   `.git` moved into it first) can't be known.
+//! - Moving or renaming a protected folder away (`CallEffects::moves`:
+//!   `mv .git junk/`) asks every time, with no "Allow always", as removing
+//!   it does. A move only running the command knows (`mv "$X" y`) asks.
 //!
 //! What goes ahead inside a project is gone for good when git ignores it:
 //! the change's snapshot (`verify::shadow`) holds only what the project
@@ -138,7 +144,7 @@ fn ignored_in(dir: &Path) -> Ignored {
 /// card, or a command rule of his own) covers a removal outside the work,
 /// never one of the work itself.
 pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Rule, Effect)>) -> Option<AskCase> {
-    if t.effects.removes_trees.is_empty() {
+    if t.effects.removes_trees.is_empty() && t.effects.moves.is_empty() {
         return None;
     }
     let work = Work::of(cx, rules, &t.effects.removes_trees);
@@ -160,7 +166,21 @@ pub fn asked(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, decided: Option<(&Ru
         if work.is_root(folder) || work.guarded(folder, follows) {
             whole_work = true;
             outside.push(target.clone());
-        } else if !work.holds(folder, contents, follows) {
+        } else if work.unknowable(folder) || !work.holds(folder, contents, follows) {
+            outside.push(target.clone());
+        }
+    }
+    for target in &t.effects.moves {
+        let Some(path) = target.strip_prefix("file:").map(Path::new) else {
+            outside.push(target.clone());
+            continue;
+        };
+        let (folder, contents) = match path.file_name() {
+            Some(name) if name == "*" => (path.parent().unwrap_or(path), true),
+            _ => (path, false),
+        };
+        if work.moves_protected(folder, contents) {
+            whole_work = true;
             outside.push(target.clone());
         }
     }
@@ -224,6 +244,22 @@ impl Work {
     /// does; and anywhere in the tree it removes ([`holds_protected`]).
     fn guarded(&self, folder: &Path, follows: bool) -> bool {
         let real = if follows { resolved(folder) } else { placed(folder) };
+        self.within_protected(&real) || (real.is_dir() && holds_protected(&real))
+    }
+
+    /// Whether moving `folder` (or what is in it, `contents`) away moves a
+    /// protected folder: it is or is inside one, or, for what is in it, one
+    /// is right in it. A link moves as the link.
+    fn moves_protected(&self, folder: &Path, contents: bool) -> bool {
+        let real = placed(folder);
+        self.within_protected(&real)
+            || (contents && std::fs::read_dir(&real).is_ok_and(|es| es.flatten().any(|e| protected(&e.file_name()))))
+    }
+
+    /// Whether the real path `real` is or is inside a protected folder,
+    /// counted below the work folder that holds it, or along its whole path
+    /// when none does.
+    fn within_protected(&self, real: &Path) -> bool {
         let below = self
             .inside
             .iter()
@@ -233,8 +269,15 @@ impl Work {
             .filter(|f| real.starts_with(f))
             .max_by_key(|f| f.components().count())
             .and_then(|f| real.strip_prefix(&f).ok().map(Path::to_path_buf))
-            .unwrap_or_else(|| real.clone());
-        below.components().any(|c| protected(c.as_os_str())) || (real.is_dir() && holds_protected(&real))
+            .unwrap_or_else(|| real.to_path_buf());
+        below.components().any(|c| protected(c.as_os_str()))
+    }
+
+    /// Whether `folder` is in a project or a copy of one and isn't there
+    /// yet: what it will hold when the command reaches it (a `.git` moved
+    /// or linked into it first) can't be known.
+    fn unknowable(&self, folder: &Path) -> bool {
+        std::fs::symlink_metadata(folder).is_err() && self.roots.iter().any(|r| placed(folder).starts_with(resolved(r)))
     }
 
     /// Whether `path` is a working copy or the project it copies, itself.
