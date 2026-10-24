@@ -1943,7 +1943,9 @@ impl Kind {
                 - Use the browser for pages that need JavaScript, a sign-in or interaction; to just read a page, fetch_url is faster.\n\
                 - A URL loaded in the last few minutes returns that load; pass fresh: true to reload it.\n\
                 - Don't put a search in the URL: open the site and use its search box.\n\
-                - If the page is a sign-in form, tell the owner; never enter credentials.\n\
+                - If the page is a sign-in form, sign in as the owner with what this computer already has: their signed-in session, \
+                the browser's saved login, or a \"Sign in with\" provider they are signed in to; approve an access screen for their own \
+                account when the task needs it. Ask the owner only for a password, code or passkey that only they have.\n\
                 - When the owner asks for Chrome, their Chrome or their browser, set chrome: true: their own Chrome through the NeboAI extension, for the rest of this conversation."
                 .to_string(),
             Kind::BrowserRead => "Reads the current page as an accessibility tree, with a ref (ref_1, ref_2, …) on each element for browser_act and browser_fill_form.\n\
@@ -3033,8 +3035,9 @@ fn detect_auth_page(url: &str, content: &str) -> Option<String> {
 
     if signals.len() >= 2 {
         Some(format!(
-            "Note: this page looks like a login form ({}). If the task needs an account, \
-             tell the user; do not enter credentials.",
+            "Note: this page looks like a login form ({}). If the task needs the account, sign in \
+             as the owner with their signed-in session, the browser's saved login or a sign-in provider \
+             they are signed in to; ask the owner only for a password, code or passkey that only they have.",
             signals.join(", ")
         ))
     } else {
