@@ -1,14 +1,14 @@
 //! Removing a folder or a tree of files (`CallEffects::removes_trees`):
 //! one rule, in every mode, Full Access and the owner's own chat included.
 //!
-//! - Inside the run's own work it goes ahead: inside the working copy this
-//!   conversation builds in, inside the job's folders and the copy an
-//!   isolated helper is fenced to, and a folder the employee made, whole or
-//!   in part.
+//! - Inside the run's own work it goes ahead: inside the project this
+//!   conversation's checked work is done in (or a helper's copy of it),
+//!   inside the job's folders and the copy an isolated helper is fenced to,
+//!   and a folder the employee made, whole or in part.
 //! - Anywhere else it asks. Nobody attending, its card goes to the owner's
 //!   Inbox, the step is refused and the run goes on.
-//! - A working copy or the project it copies, itself (or everything in
-//!   it), asks every time: no "Allow always" covers it.
+//! - That project or a copy of it, itself (or everything in it), asks
+//!   every time: no "Allow always" covers it.
 //! - A target only running the command knows (`rm -rf "$DIR"`) asks.
 //!
 //! The folders no command ever removes (the root and what is right under
@@ -81,18 +81,17 @@ impl Work {
         let mut inside = rules.folders();
         inside.extend(cx.grant.fence.iter().flatten().cloned());
         let mut roots: Vec<PathBuf> = cx.grant.fence.iter().flatten().cloned().collect();
-        // The copies this conversation's checked work is built in.
         let live = cx
             .store
             .list_verifications(&db::VerificationQuery { session_key: Some(&cx.ctx.session_key), live: true, ..Default::default() })
             .unwrap_or_default();
+        // The folder this conversation's checked work is done in: the
+        // project itself, or a helper's copy of it.
         for v in live.into_iter().filter(|v| !v.work_dir.is_empty()) {
-            let copy = PathBuf::from(&v.work_dir);
-            if PathBuf::from(&v.project_root) != copy {
-                inside.push(copy.clone());
-                roots.push(PathBuf::from(&v.project_root));
-            }
-            roots.push(copy);
+            let work_dir = PathBuf::from(&v.work_dir);
+            inside.push(work_dir.clone());
+            roots.push(PathBuf::from(&v.project_root));
+            roots.push(work_dir);
         }
         Work { inside, made: made_by_it(cx, targets), roots }
     }

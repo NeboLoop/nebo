@@ -1241,7 +1241,7 @@ async fn a_working_copy_is_its_own_inside_and_never_removed_whole() {
     let (root, work) = (project.to_string_lossy().into_owned(), copy.to_string_lossy().into_owned());
     store
         .create_verification(
-            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &work, isolation: "worktree", work_kind: "isolated", ..Default::default() },
+            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &work, isolation: "none", work_kind: "folder", ..Default::default() },
             1,
         )
         .unwrap();

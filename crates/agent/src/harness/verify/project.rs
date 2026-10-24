@@ -3,8 +3,8 @@
 //! A write is code work when its path is in a code folder ([`code_folder`]):
 //! - an app's own pages (the folders the caller passes in), wherever they
 //!   live, Nebo's data folder included;
-//! - one of Nebo's own working copies (`<data_dir>/worktrees/<project>/<id>`:
-//!   a helper's, or the verify loop's), which is the project it copies;
+//! - a helper's own working copy (`<repo>/.nebo/worktrees/<id>`), which is
+//!   the project it copies; nothing else in a project's Nebo folder is code;
 //! - a project: the nearest folder at or above the path that is a git
 //!   repository's root or holds a project manifest ([`MANIFESTS`]); a
 //!   manifest inside a repository is one of its packages, and the
@@ -57,11 +57,6 @@ impl Folder {
     }
 }
 
-/// Where Nebo keeps its working copies: `<data_dir>/worktrees`.
-pub fn copies_dir() -> Option<PathBuf> {
-    config::data_dir().ok().map(|d| d.join("worktrees"))
-}
-
 /// The code folder `path` is in, if any (see the module docs). `app_pages`
 /// are the page folders of the apps the caller may work on.
 pub fn code_folder(path: &Path, app_pages: &[PathBuf]) -> Option<Folder> {
@@ -69,15 +64,17 @@ pub fn code_folder(path: &Path, app_pages: &[PathBuf]) -> Option<Folder> {
     if let Some(pages) = app_pages.iter().find(|p| path.starts_with(p)) {
         return Some(Folder::AppPages(pages.clone()));
     }
-    if let Some(copies) = copies_dir()
-        && let Ok(rest) = path.strip_prefix(&copies)
-    {
-        // `<project>/<id>/...`: the copy is the two segments below.
-        let mut parts = rest.components();
-        let (Some(project), Some(id)) = (parts.next(), parts.next()) else {
-            return None;
+    // Inside a project's Nebo folder: a helper's copy
+    // (`.nebo/worktrees/<id>`) is that copy's work; anything else there (a
+    // reviewer's snapshot, the build folder) is never code work.
+    let parts: Vec<_> = path.components().collect();
+    if let Some(at) = parts.iter().position(|c| c.as_os_str() == crate::worktree::NEBO_DIR) {
+        return match (parts.get(at + 1), parts.get(at + 2)) {
+            (Some(w), Some(_id)) if w.as_os_str() == "worktrees" => {
+                Some(Folder::Copy(parts[..at + 3].iter().collect()))
+            }
+            _ => None,
         };
-        return Some(Folder::Copy(copies.join(project).join(id)));
     }
     project_root(&path).map(Folder::Project)
 }
@@ -170,18 +167,20 @@ mod tests {
             std::fs::create_dir_all(home.join("files")).unwrap();
             assert_eq!(code_folder(&home.join("files/notes.md"), &[]), None);
 
-            // A working copy is the project it copies.
-            let copy = home.join("worktrees/site/v-1");
+            // A helper's copy is the project it copies; nothing else in a
+            // project's Nebo folder (a reviewer's snapshot, the build
+            // folder) is code.
+            let site = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(site.path().join(".git")).unwrap();
+            let copy = site.path().join(".nebo/worktrees/h-1");
             std::fs::create_dir_all(copy.join("src")).unwrap();
-            assert_eq!(
-                code_folder(&copy.join("src/app.ts"), &[]),
-                Some(Folder::Copy(copy.clone()))
-            );
-            assert_eq!(
-                code_folder(&home.join("worktrees/site"), &[]),
-                None,
-                "the copies' own folder is no copy"
-            );
+            assert_eq!(code_folder(&copy.join("src/app.ts"), &[]), Some(Folder::Copy(copy.clone())));
+            assert_eq!(code_folder(&site.path().join(".nebo/worktrees"), &[]), None, "the copies' own folder is no copy");
+            let snapshot = site.path().join(".nebo/verify/v-1/round-1/project");
+            std::fs::create_dir_all(&snapshot).unwrap();
+            std::fs::write(snapshot.join("Cargo.toml"), "").unwrap();
+            assert_eq!(code_folder(&snapshot.join("src/lib.rs"), &[]), None, "a reviewer's snapshot");
+            assert_eq!(code_folder(&site.path().join(".nebo/build/debug/x"), &[]), None, "the build folder");
 
             // An app's pages, wherever they live.
             let pages = home.join("agents/flip/ui");

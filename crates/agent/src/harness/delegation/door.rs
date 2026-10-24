@@ -328,7 +328,31 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn recover(&self) -> Fut<'_, ()> {
         Box::pin(async move {
-            let swept = crate::worktree::cleanup_stale(crate::worktree::STALE_AFTER_SECS).await;
+            let store = self.harness.store.clone();
+            // The copies the verify loop made before it worked in place:
+            // kept beside their projects when they hold work, else removed.
+            let (moved, removed) = crate::worktree::adopt_old_copies(&store).await;
+            if moved + removed > 0 {
+                info!(moved, removed, "settled the verify loop's old working copies");
+            }
+            // The projects Nebo has worked on: where helpers' copies may be.
+            let mut roots: Vec<std::path::PathBuf> = store
+                .list_verifications(&db::VerificationQuery::default())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| std::path::PathBuf::from(v.project_root))
+                .collect();
+            roots.extend(
+                store
+                    .engine_runs_holding_copies(super::ROW_KIND)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(_, held)| serde_json::from_str::<serde_json::Value>(&held).ok())
+                    .filter_map(|held| held["iso"]["Git"]["root"].as_str().map(std::path::PathBuf::from)),
+            );
+            roots.sort();
+            roots.dedup();
+            let swept = crate::worktree::cleanup_stale(&roots, crate::worktree::STALE_AFTER_SECS).await;
             if !swept.is_empty() {
                 info!(count = swept.len(), "swept stale helper copies");
             }

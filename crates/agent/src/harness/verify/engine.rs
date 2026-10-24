@@ -50,7 +50,6 @@ use crate::harness::delegation::{Helpers, child::Parent};
 use crate::harness::events::TurnEvent;
 use crate::harness::turn_end::{EndCheck, EndVerdict, TurnEnd};
 use crate::harness::{Harness, SeatRequest};
-use crate::worktree::{self, MergeOutcome};
 
 /// How a turn that ended before its checking did leaves its verifications.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,15 +70,8 @@ pub enum Closed {
 /// What one turn's verify loop keeps between its rounds.
 #[derive(Default, Clone)]
 struct Shared {
-    /// Verifications whose owner chose to land them after committing their
-    /// own edits: edits still in the way then are said, not asked again.
-    after_owner: HashSet<String>,
     /// The builder ran tools of its own this turn ([`Verify::mark_acted`]).
     acted: bool,
-    /// Landings of each verification this turn that met a conflict the
-    /// builder had not resolved: a builder that never stages a resolution
-    /// stops the loop.
-    conflicts: std::collections::HashMap<String, usize>,
     /// The run's tool context as its last step had it: checks and the
     /// owner's cards go through the same door, under the same permissions.
     tool_ctx: Option<tools::ToolContext>,
@@ -133,35 +125,19 @@ pub struct Verify {
     shared: Arc<Mutex<Shared>>,
 }
 
-/// Landings in one turn that may meet the same unresolved conflict before
-/// the loop stops.
-const CONFLICT_TRIES: usize = 3;
-
 /// Times in one turn the owner may send a stalled verification on before
-/// the loop stops instead of asking again, as with [`CONFLICT_TRIES`].
-const STALL_GO_ONS: usize = CONFLICT_TRIES;
+/// the loop stops instead of asking again.
+const STALL_GO_ONS: usize = 3;
 
 impl Shared {
     /// Take in what a round run in a task of its own kept ([`InFlight`]).
     fn merge(&mut self, from: Shared) {
-        self.after_owner.extend(from.after_owner);
         self.reported.extend(from.reported);
         self.minors_offered.extend(from.minors_offered);
-        for (id, n) in from.conflicts {
-            let mine = self.conflicts.entry(id).or_default();
-            *mine = (*mine).max(n);
-        }
         for (id, n) in from.went_on {
             let mine = self.went_on.entry(id).or_default();
             *mine = (*mine).max(n);
         }
-    }
-
-    /// Count a landing of `id` that met a conflict; whether it is stuck.
-    fn stuck(&mut self, id: &str) -> bool {
-        let n = self.conflicts.entry(id.to_string()).or_default();
-        *n += 1;
-        *n >= CONFLICT_TRIES
     }
 
     /// Whether the owner already sent `id` on [`STALL_GO_ONS`] times this
@@ -285,18 +261,16 @@ impl Verify {
         self.shared().tool_ctx = Some(ctx);
     }
 
-    /// Point a call at the turn's copies, starting work where it first
-    /// changes a code folder (`TurnWork::route`).
-    pub async fn route(
+    /// Start the work a call begins where it first changes a code folder
+    /// (`TurnWork::work_on`).
+    pub async fn work_on(
         &self,
         store: &db::Store,
-        input: &mut serde_json::Value,
-        cwd: &mut Option<String>,
+        input: &serde_json::Value,
+        cwd: Option<&str>,
         changes: bool,
-    ) -> Result<super::work::Routed, String> {
-        self.work
-            .route(input, cwd, changes, &self.builder.starting(store))
-            .await
+    ) -> Result<super::work::Begun, String> {
+        self.work.work_on(input, cwd, changes, &self.builder.starting(store)).await
     }
 
     /// After a call ran, with what its routing watched
@@ -335,7 +309,7 @@ impl Verify {
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
-            Work::clean_up_reviewers(&v.id);
+            Work::clean_up_reviewers(std::path::Path::new(&v.project_root), &v.id);
             ended.push(v.id.clone());
         }
         ended
@@ -377,32 +351,19 @@ enum Purpose {
     /// findings), kept so his words after a restart go on top of the
     /// same brief.
     Stalled { open: usize, brief: String },
-    /// Reviewed, but no build or test could run.
-    NoChecks,
     /// Reviewers ran [`REVIEW_TRIES`] times and still could not finish.
     ReviewFailed,
-    /// The owner's own edits are in the way of landing verified work.
-    OwnerEdits,
 }
 
 const KEEP_GOING: &str = "Keep going";
-const LAND_ANYWAY: &str = "Land it anyway";
 const STOP_HERE: &str = "Stop here";
-const KEEP_IN_COPY: &str = "Keep it in its copy";
-const LAND_AFTER_MINE: &str = "Land it after I commit mine";
-const KEEP_MINE: &str = "Keep mine, don't land it";
-
 /// The message key a choice of the loop's is worded by in the owner's
 /// language (`verify.ask.*` in the apps); `None` for a reviewer's own
 /// choices, shown as written.
 fn choice_key(label: &str) -> Option<String> {
     let key = match label {
         KEEP_GOING => "keepGoing",
-        LAND_ANYWAY => "landAnyway",
         STOP_HERE => "stopHere",
-        KEEP_IN_COPY => "keepInCopy",
-        LAND_AFTER_MINE => "landAfterMine",
-        KEEP_MINE => "keepMine",
         _ => return None,
     };
     Some(format!("verify.ask.{key}"))
@@ -411,9 +372,8 @@ fn choice_key(label: &str) -> Option<String> {
 /// One of the loop's questions for the owner: its English words (the
 /// model, the logs, and the fallback), and the message keys and values his
 /// apps word its question and context by in his language (`verify.ask.*`,
-/// the card's `questionKey`, `questionValues`, `contextKey`,
-/// `contextValues`). A reviewer's call is asked in its own words and has
-/// none.
+/// the card's `questionKey` and `questionValues`). A reviewer's call is
+/// asked in its own words and has none.
 struct Question {
     text: String,
     words: serde_json::Value,
@@ -423,13 +383,6 @@ impl Question {
     /// A question of the loop's own, worded by `verify.ask.<key>`.
     fn keyed(key: &str, values: serde_json::Value, text: String) -> Self {
         Question { text, words: json!({ "questionKey": format!("verify.ask.{key}"), "questionValues": values }) }
-    }
-
-    /// Its context too is the loop's, worded by `verify.ask.<key>`.
-    fn with_context(mut self, key: &str, values: serde_json::Value) -> Self {
-        self.words["contextKey"] = json!(format!("verify.ask.{key}"));
-        self.words["contextValues"] = values;
-        self
     }
 
     /// A question in someone else's words (a reviewer's call).
@@ -465,13 +418,13 @@ impl Reply {
 
 /// The builder told what the owner said in his own words to a question of
 /// the loop's that offered choices: it does that, and the next round checks
-/// it. Nothing lands on words alone. `brief` is what the builder would be
+/// it. `brief` is what the builder would be
 /// told had he sent it on without words (a stalled loop's findings): his
 /// words go on top of it, never in place of it.
 fn owner_said(words: &str, brief: &str) -> String {
     let said = format!(
-        "The owner answered in his own words: \"{}\". Do what he says in your working copy, then end your reply; \
-         the next round checks it before anything lands.",
+        "The owner answered in his own words: \"{}\". Do what he says, then end your reply; the next round \
+         checks it.",
         words.trim()
     );
     if brief.trim().is_empty() {
@@ -480,8 +433,8 @@ fn owner_said(words: &str, brief: &str) -> String {
     format!("{}\n\n{said} Where his words and what is above differ, his words win.", brief.trim_end())
 }
 
-/// His own words to a question that offered choices (keep going, land it,
-/// keep his edits) are instructions, never a choice guessed from them: the
+/// His own words to a question that offered choices (keep going, stop
+/// here) are instructions, never a choice guessed from them: the
 /// builder does what he says and the work is checked again; to a stalled
 /// loop they go on top of its brief ([`owner_said`]). A call of his
 /// (`Decision`) is carried out as he put it, words or choice.
@@ -490,7 +443,6 @@ fn instruction(purpose: &Purpose, answer: Option<&Reply>) -> Option<String> {
         // His words to reviewers that could not finish send them on.
         (Purpose::Decision { .. } | Purpose::ReviewFailed, _) => None,
         (Purpose::Stalled { brief, .. }, Some(Reply::Words(words))) => Some(owner_said(words, brief)),
-        (_, Some(Reply::Words(words))) => Some(owner_said(words, "")),
         _ => None,
     }
 }
@@ -592,22 +544,20 @@ impl EndCheck for VerifyCheck {
 }
 
 /// What the builder is told once every verification of the turn is
-/// settled: report from the record. Landing is the loop's own step, so the
-/// brief never tells the builder the owner must review or merge the work:
-/// what landed is reported as landed, and what didn't says why from the
-/// record.
+/// settled: report from the record. The work is in the project's own files
+/// (a helper's, in its copy, which its parent lands), so the brief never
+/// tells the builder the owner must review or merge it.
 fn report_brief(settled: &[db::Verification], records: &[String]) -> String {
-    let all_landed = settled.iter().all(|v| !v.landed_ref.is_empty());
-    let lead = if all_landed {
-        "The checking is done and your change landed in the project. Now report to the owner in plain words what \
-         landed: what you built, and the commit it landed as; what each round of review caught and what you fixed; \
-         and what is verified (never more than the record below says)."
+    let in_copies = settled.iter().all(|v| v.work_kind == WorkKind::HelperCopy.as_str());
+    let lead = if in_copies {
+        "The checking is done. Now report in plain words: what you built; what each round of review caught and what \
+         you fixed; what is verified and what is not (never more than the record below says). Your changes are in \
+         your own copy, which the one who started you lands."
     } else {
         "The checking is done. Now report to the owner in plain words: what you built; what each round of review \
-         caught and what you fixed; what is verified and what is not (never more than the record below says); where \
-         the work is now (landed as a commit, or still in its copy and why, from the record); and any decision of \
-         theirs it still needs. Landing is the checking's own step: never tell the owner they must review or merge \
-         the work."
+         caught and what you fixed; what is verified and what is not (never more than the record below says); and any \
+         decision of theirs it still needs. Your changes are in the project's own files already: there is nothing \
+         for the owner to review or merge."
     };
     format!(
         "{lead} If the work deploys or releases, wait until it is live and check its health, logs and data before you \
@@ -677,8 +627,6 @@ fn record_for_report(store: &db::Store, v: &db::Verification) -> String {
                         .join(", ")
                 }
             )),
-            "catch_up" => out.push_str(&format!("\n- Caught up with the project: {}.", said(r))),
-            "land" => out.push_str(&format!("\n- Landing: {}.", said(r))),
             "live" => out.push_str(&format!("\n- Live check: {}.", said(r))),
             _ => {}
         }
@@ -692,16 +640,10 @@ fn record_for_report(store: &db::Store, v: &db::Verification) -> String {
             out.push_str(&finding_block(f).replace("\n", "\n  "));
         }
     }
-    if v.landed_ref.is_empty() {
-        out.push_str(&format!(
-            "\n- Not in the project yet: the work is in its copy at {}.",
-            v.work_dir
-        ));
+    if v.work_kind == WorkKind::HelperCopy.as_str() {
+        out.push_str(&format!("\n- In its own copy at {}, which the one who started it lands.", v.work_dir));
     } else {
-        out.push_str(&format!(
-            "\n- Landed in the project as one commit {}.",
-            &v.landed_ref[..v.landed_ref.len().min(10)]
-        ));
+        out.push_str(&format!("\n- In the project's own files at {}.", v.work_dir));
     }
     out
 }
@@ -741,7 +683,7 @@ fn findings_brief(
 ) -> String {
     let mut out = format!(
         "Independent reviewers checked your change to {project} (round {round}: {}). It isn't done yet. Fix every blocker \
-         and major below in your working copy; a blocker or major can't be deferred. For each minor, fix it or defer it \
+         and major below where it is; a blocker or major can't be deferred. For each minor, fix it or defer it \
          with a reason. End your reply with one line per finding: `<id>: fixed: what you changed`, `<id>: deferred: why` \
          (minors only), or `<id>: disputed: why it is not a defect` (and leave that code as it is). The next round's \
          reviewers check each line against the code, and it runs as soon as you end your reply: keep going, never \
@@ -862,11 +804,11 @@ impl VerifyCheck {
         })
     }
 
-    /// Make a round's folder for its reviewers: the copy of `head` and the
-    /// patch, under the verification's folder with the working copies.
-    /// Returns that folder.
+    /// Make a round's folder for its reviewers: the read-only copy of `head`
+    /// and the patch, in the verification's folder in the project's own
+    /// Nebo folder ([`Work::copies`]). Returns that folder.
     async fn review_folder(&self, id: &str, round: u32, reviewed: &ChangeSet, work: &Work, head: &Snapshot) -> Result<PathBuf, String> {
-        let scratch = Work::copies(id)?;
+        let scratch = Work::copies(&work.project_root, id)?;
         let round_dir = review::round_dir(&scratch, round);
         let _ = std::fs::remove_dir_all(&round_dir);
         std::fs::create_dir_all(&round_dir).map_err(|e| format!("create {}: {e}", round_dir.display()))?;
@@ -1002,7 +944,7 @@ impl VerifyCheck {
             self.store()
                 .set_verification_state(&v.id, &state_of(v, state, &reason), Self::now());
         // Its reviewers are done: their copies and shared build folder go.
-        Work::clean_up_reviewers(&v.id);
+        Work::clean_up_reviewers(std::path::Path::new(&v.project_root), &v.id);
     }
 
     /// One work's next step.
@@ -1051,25 +993,23 @@ impl VerifyCheck {
             // The answer does what it did when it was first asked; his own
             // words to a stalled loop go on top of the brief it was asked
             // with.
-            if let Some(Purpose::Stalled { open, brief }) = &purpose {
-                if let Some(step) = self.stalled(&mut work, &v, &question, context, *open, brief).await {
-                    return step;
+            match &purpose {
+                Some(Purpose::Stalled { open, brief }) => {
+                    if let Some(step) = self.stalled(&v, &question, context, *open, brief).await {
+                        return step;
+                    }
                 }
-            } else {
-                let answer = self
-                    .ask_owner(&v.id, &question, context, &opts, purpose.as_ref().unwrap_or(&Purpose::NoChecks))
-                    .await;
-                match &purpose {
-                    Some(p) => {
-                        if let Some(step) = self.answered(&mut work, &v, p, answer.as_ref()).await {
-                            return step;
-                        }
+                Some(p) => {
+                    let answer = self.ask_owner(&v.id, &question, context, &opts, p).await;
+                    if let Some(step) = self.answered(&v, p, answer.as_ref()).await {
+                        return step;
                     }
-                    None if answer.is_none() => {
-                        self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
-                        return Step::Finished;
-                    }
-                    None => {}
+                }
+                // A question this loop no longer asks: it waits on nothing.
+                None => {
+                    let _ = store.set_verification_pending_ask(&v.id, None);
+                    self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
+                    return Step::Finished;
                 }
             }
         }
@@ -1112,9 +1052,6 @@ impl VerifyCheck {
             .unwrap_or_default();
         if whole.is_empty() && v.rounds == 0 && v.deployed_apps.is_empty() {
             // Nothing changed after all: no verification to show.
-            if let Some(iso) = work.iso.as_mut() {
-                worktree::put_away(iso, "No changes").await;
-            }
             let _ = store.delete_verification(&v.id);
             work.clean_up();
             self.verify.work.remove(&v.id).await;
@@ -1285,14 +1222,12 @@ impl VerifyCheck {
             started_at: started,
             ..Default::default()
         };
-        // The plain-code step: the project's own build and tests, within
-        // the build folders' disk cap. An app's own check is its live load,
+        // The plain-code step: the project's own build and tests. An app's own check is its live load,
         // after the checks its `checks/` folder declares; each app the work
         // deployed into (kept on its row) has its live load among the
         // work's checks. The round's record says, as it goes, which checks
         // it runs and what each came to, then each reviewer's result as it
         // arrives: the owner watches the round, not a spinner.
-        super::work::cap_builds();
         let holds_reload =
             !tools::app_dev::withheld(&store, &self.agent_id).iter().any(|t| t == tools::app_dev::APP_RELOAD);
         let checks = match &own {
@@ -1361,8 +1296,8 @@ impl VerifyCheck {
         // The reviewers: fresh, one per lens, all at once, each reading the
         // round's copy of exactly what was snapshotted (a throwaway export
         // of `head`) and its patch, sharing the verification's one build
-        // folder, all with the working copies (`Work::copies`): nothing a reviewer runs can
-        // change the builder's copy, the one that lands. A round of checks
+        // folder, all in the project's Nebo folder (`Work::copies`): nothing a
+        // reviewer runs can change the builder's files. A round of checks
         // alone has none.
         let mut rerun_end: Option<RerunEnd> = None;
         let reviews: Vec<LensReview> = if lenses.is_empty() {
@@ -1449,7 +1384,7 @@ impl VerifyCheck {
                         ),
                     );
                     let purpose = Purpose::ReviewFailed;
-                    let answer = self.ask_owner(&v.id, &question, &why.join("\n"), &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+                    let answer = self.ask_owner(&v.id, &question, &why.join("\n"), &[KEEP_GOING, STOP_HERE], &purpose).await;
                     if !went_on(answer.as_ref()) {
                         rerun_end = Some(RerunEnd::Owner(answer));
                         break;
@@ -1484,7 +1419,7 @@ impl VerifyCheck {
         let drifted = match work.shadow.snapshot().await {
             Ok(now) if &now != head => Some(work.shadow.diff(head, &now).await.map(|c| c.stat()).unwrap_or_default()),
             Ok(_) => None,
-            Err(e) => Some(format!("the copy could not be read again: {e}")),
+            Err(e) => Some(format!("what changed could not be read again: {e}")),
         };
 
         // A reviewer that still couldn't finish after its runs again
@@ -1635,7 +1570,7 @@ impl VerifyCheck {
             match rerun_end {
                 Some(RerunEnd::SpendLimit) => self.finish(&after, "not_verified", Some(Why::new("spend_limit"))),
                 Some(RerunEnd::Owner(answer)) => {
-                    if let Some(step) = self.answered(work, &after, &Purpose::ReviewFailed, answer.as_ref()).await {
+                    if let Some(step) = self.answered(&after, &Purpose::ReviewFailed, answer.as_ref()).await {
                         return step.into();
                     }
                 }
@@ -1674,7 +1609,7 @@ impl VerifyCheck {
                     .map(|f| format!("- {} ({})", f.title, f.evidence))
                     .collect::<Vec<_>>()
                     .join("\n");
-                if let Some(step) = self.stalled(work, &after, &question, &context, blocking_now, &brief).await {
+                if let Some(step) = self.stalled(&after, &question, &context, blocking_now, &brief).await {
                     return step.into();
                 }
             }
@@ -1707,8 +1642,8 @@ impl VerifyCheck {
             // changes the checks made go back to the builder, and the next
             // round reviews them.
             return RoundEnd::Continue(format!(
-                "Your working copy changed while this round ran (the project's own checks, or your own edits), so \
-                 what was reviewed is not what is there now:\n{stat}\nLook at those changes in your copy, keep or undo them, and \
+                "Your files changed while this round ran (the project's own checks, or your own edits), so what was \
+                 reviewed is not what is there now:\n{stat}\nLook at those changes, keep or undo them, and \
                  end your reply; the next round reviews them."
             ));
         }
@@ -1718,21 +1653,7 @@ impl VerifyCheck {
         }
         if runs.is_empty() {
             // Reviewed, but no build or test could run: not verified.
-            let reason = Why::new("no_checks");
-            if work.kind == WorkKind::Isolated {
-                let project = work.project_root.display().to_string();
-                let question = Question::keyed(
-                    "noChecks",
-                    json!({ "project": project }),
-                    format!(
-                        "The change to {project} was reviewed, but the project has no build or tests that could run, so it \
-                         isn't verified. Land it anyway?"
-                    ),
-                );
-                let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
-                return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
-            }
-            self.finish(&after, "not_verified", Some(reason));
+            self.finish(&after, "not_verified", Some(Why::new("no_checks")));
             return RoundEnd::Finished;
         }
         RoundEnd::Clean
@@ -1740,180 +1661,14 @@ impl VerifyCheck {
 }
 
 impl VerifyCheck {
-    /// A clean round: the work is verified. A copy this loop made catches up
-    /// with the owner's project and lands; an app's pages are live where
-    /// they are (their live load passed in the round); a helper's copy waits
-    /// for its parent to land it.
-    async fn land(&self, mut work: Work, notes: &str) -> Step {
-        let store = self.store().clone();
-        let Some(v) = store.get_verification(&work.id).ok().flatten() else {
+    /// A clean round: the work is verified where it is (the project, an
+    /// app's pages, or a helper's copy, which its parent lands).
+    async fn land(&self, work: Work, _notes: &str) -> Step {
+        let Some(v) = self.store().get_verification(&work.id).ok().flatten() else {
             return Step::Gone;
         };
-        match work.kind {
-            WorkKind::Isolated => {}
-            WorkKind::AppPages | WorkKind::HelperCopy | WorkKind::Folder => {
-                self.finish(&v, "verified", None);
-                return Step::Finished;
-            }
-        }
-        self.land_reviewed(&mut work, &v, notes).await
-    }
-
-    /// Land a copy this loop made, through the one landing path
-    /// ([`worktree::land_one`]): exactly what was reviewed, compared by
-    /// content; caught up with the owner's project, reviewed again when
-    /// anything of it changed; re-tested; landed as one commit. A landing
-    /// that fails for want of review counts against progress.
-    async fn land_reviewed(&self, work: &mut Work, v: &db::Verification, notes: &str) -> Step {
-        let store = self.store().clone();
-        let Some(mut iso) = work.iso.clone() else {
-            self.finish(v, "verified", None);
-            return Step::Finished;
-        };
-        let round = next_step(&store, &v.id);
-        // Only what was reviewed and tested lands, byte for byte.
-        let reviewed = match (work.shadow.snapshot().await, work.last.clone()) {
-            (Ok(now), Some(last)) if now == last => match work.shadow.diff(&work.base, &last).await {
-                Ok(change) => work.shadow.contents(&last, &change.paths()).await.ok(),
-                Err(_) => None,
-            },
-            _ => None,
-        };
-        let Some(reviewed) = reviewed else {
-            return self
-                .no_progress(
-                    work,
-                    v,
-                    round,
-                    None,
-                    "Your working copy changed after it was reviewed, so it can't land as it is. End your reply; the \
-                     next round reviews what changed."
-                        .into(),
-                )
-                .await;
-        };
-        // A landing waiting for another one on the project says so in the
-        // verification's history; the owner's Stop ends the wait.
-        let waiting = {
-            let (store, id) = (store.clone(), v.id.clone());
-            std::sync::Arc::new(move || {
-                let _ = store.put_verification_round(&db::VerificationRound {
-                    verification_id: id.clone(),
-                    round: round + 1,
-                    kind: "land".into(),
-                    outcome: Why::new("waiting_to_land").text(),
-                    started_at: Self::now(),
-                    ..Default::default()
-                });
-            }) as std::sync::Arc<dyn Fn() + Send + Sync>
-        };
-        let landing = worktree::Landing { only: Some(reviewed), stop: self.cancel.clone(), waiting: Some(waiting) };
-        let message = landing_message(&v.spec);
-        let started = Self::now();
-        // Re-test in the copy as it is after catching up: what was verified
-        // is what lands.
-        let runs: Arc<Mutex<Vec<CheckRun>>> = Default::default();
-        let (tools, ctx, work_dir, build) = (
-            self.harness.tools.clone(),
-            {
-                let mut ctx = self.tool_ctx();
-                ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
-                ctx
-            },
-            work.work_dir.clone(),
-            checks::build_cache(&work.project_root),
-        );
-        let ran = runs.clone();
-        let retest = move |iso: &worktree::Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
-            let (tools, ctx, work_dir, build, ran, iso) = (tools.clone(), ctx.clone(), work_dir.clone(), build.clone(), ran.clone(), iso.clone());
-            Box::pin(async move {
-                let changed = worktree::changed_files(&iso).await;
-                let found = checks::detect(&work_dir, &changed);
-                let done = checks::run(&tools, &ctx, &found, &build?).await;
-                let failed: Vec<String> = done.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
-                *ran.lock().unwrap_or_else(|p| p.into_inner()) = done;
-                if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
-            })
-        };
-        let (caught, landed) = worktree::land_one(&mut iso, &message, Some(&retest), &landing).await;
-        work.iso = Some(iso.clone());
-        self.verify.work.put(work.clone()).await;
-        let _ = store.set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
-        let runs = runs.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        if let Some(caught) = &caught {
-            let outcome = if !caught.conflicts.is_empty() {
-                Why::new("conflicts").with("files", caught.conflicts.join(", "))
-            } else if caught.onto.is_empty() {
-                Why::new("up_to_date")
-            } else {
-                Why::new("caught_up").with("commit", super::short(&caught.onto))
-            };
-            let _ = store.put_verification_round(&db::VerificationRound {
-                verification_id: v.id.clone(),
-                round,
-                kind: "catch_up".into(),
-                started_at: started,
-                finished_at: Some(Self::now()),
-                checks: json!(runs),
-                outcome: outcome.text(),
-                detail: json!({ "onto": caught.onto, "overlap": caught.overlap, "conflicts": caught.conflicts }),
-                ..Default::default()
-            });
-        }
-        match landed {
-            MergeOutcome::Conflict { files, .. } => {
-                if self.verify.shared().stuck(&v.id) {
-                    self.finish(v, "not_verified", Some(Why::new("stalled").with("open", files.len())));
-                    return Step::Finished;
-                }
-                Step::Continue(format!(
-                    "Your change is verified, but catching it up with the owner's project met their own changes to the same \
-                     lines in {}. Resolve them in your working copy ({}), keeping what the owner meant and what your change \
-                     does, then stage each resolved file with `git add` (or `git rm` to keep a deletion): staging it is how \
-                     you say it is resolved. The resolution is reviewed and checked again.",
-                    files.join(", "),
-                    work.work_dir.display()
-                ))
-            }
-            MergeOutcome::NeedsReview { ref files, .. } => {
-                let text = format!(
-                    "What would land differs from what was reviewed in {}: catching up with the owner's project or the \
-                     project's commit hooks changed it. The next round reviews the result: end your reply when you have \
-                     looked it over in your copy.",
-                    files.join(", ")
-                );
-                self.no_progress(work, v, round + 1, Some(&landed), text).await
-            }
-            MergeOutcome::RetestFailed { .. } => {
-                let text = findings_brief(&work.project_root.display().to_string(), round as u32, &[], &[], &runs, &[]);
-                self.no_progress(work, v, round + 1, Some(&landed), text).await
-            }
-            MergeOutcome::Unreviewed { ref files, .. } => {
-                let text = format!(
-                    "Your working copy holds changes nobody reviewed ({}): too big to snapshot, a repository of its own, or \
-                     made after the review. Remove them from your copy, or move them into the change so they are reviewed, \
-                     and end your reply.",
-                    files.join(", ")
-                );
-                self.no_progress(work, v, round + 1, Some(&landed), text).await
-            }
-            MergeOutcome::Merged { ref commit, .. } => {
-                self.record_landing(v, round + 1, &landed);
-                let _ = store.set_verification_landed(&v.id, commit, Self::now());
-                self.finish(v, "verified", None);
-                work.clean_up();
-                Step::Finished
-            }
-            MergeOutcome::NoChanges => {
-                self.record_landing(v, round + 1, &landed);
-                self.finish(v, "verified", None);
-                Step::Finished
-            }
-            other => {
-                self.record_landing(v, round + 1, &other);
-                self.not_landed(work, v, other, notes).await
-            }
-        }
+        self.finish(&v, "verified", None);
+        Step::Finished
     }
 
     /// Every rule a review reads: the employee's own, as they are now, and
@@ -1936,142 +1691,27 @@ impl VerifyCheck {
         super::rules::rules_section(&owner_rules, &super::rules::project_rules_from(|rel| at_base.get(rel).cloned()))
     }
 
-    fn record_landing(&self, v: &db::Verification, round: i64, landed: &MergeOutcome) {
-        let _ = self.store().put_verification_round(&db::VerificationRound {
-            verification_id: v.id.clone(),
-            round,
-            kind: "land".into(),
-            outcome: super::landing_why(landed).text(),
-            detail: match landed {
-                MergeOutcome::Merged {
-                    files,
-                    commit,
-                    caught_up_to,
-                } => json!({ "landedAs": commit, "caughtUpTo": caught_up_to, "files": files }),
-                other => json!({ "outcome": worktree::render_outcome("the change", other) }),
-            },
-            started_at: Self::now(),
-            finished_at: Some(Self::now()),
-            ..Default::default()
-        });
-    }
-
-    /// A verified change that could not land for want of review (what
-    /// would land isn't what was reviewed, holds changes nobody reviewed,
-    /// or failed its checks or hooks): back to the builder with `text`, and
-    /// no progress. Its landing step counts as one open issue, so landings
-    /// that keep failing without a new low pause for the owner after
-    /// [`findings::ROUNDS_WITHOUT_PROGRESS`] tries, like a review that
-    /// stalls. `landed`: `None` when the copy changed after the review.
-    async fn no_progress(&self, work: &mut Work, v: &db::Verification, round: i64, landed: Option<&MergeOutcome>, text: String) -> Step {
-        let store = self.store().clone();
-        let (outcome, said) = match landed {
-            Some(l) => (super::landing_why(l), worktree::render_outcome("the change", l)),
-            None => (Why::new("changed_after_review"), "The copy changed after it was reviewed.".to_string()),
-        };
-        let _ = store.put_verification_round(&db::VerificationRound {
-            verification_id: v.id.clone(),
-            round,
-            kind: "land".into(),
-            outcome: outcome.text(),
-            detail: json!({ "outcome": said, "openBlocking": 1 }),
-            started_at: Self::now(),
-            finished_at: Some(Self::now()),
-            ..Default::default()
-        });
-        if findings::stalled(&progress_counts(&store.verification_rounds(&v.id).unwrap_or_default(), i64::MAX), false) {
-            let (project, tries) = (work.project_root.display().to_string(), findings::ROUNDS_WITHOUT_PROGRESS);
-            let question = Question::keyed(
-                "cantLand",
-                json!({ "project": project, "tries": tries }),
-                format!(
-                    "The change to {project} passed review, but it can't land as it was reviewed, and it hasn't got closer \
-                     in the last {tries} tries. What should happen?"
-                ),
-            );
-            // Why it can't land is the landing's own account: shown with the
-            // question, as what he decides on.
-            let context = format!("{said}\n\n{text}");
-            if let Some(step) = self.stalled(work, v, &question, &context, 1, &text).await {
-                return step;
-            }
-        }
-        Step::Continue(text)
-    }
-
-    /// A verified change that could not land: the builder fixes what is its
-    /// to fix; the owner decides what is theirs.
-    async fn not_landed(
-        &self,
-        work: &mut Work,
-        v: &db::Verification,
-        outcome: MergeOutcome,
-        _notes: &str,
-    ) -> Step {
-        match outcome {
-            MergeOutcome::HookFailed { ref output, .. } => {
-                let text = format!(
-                    "The project's own commit hooks refused your change when it was about to land:\n```\n{output}\n```\nFix it in your \
-                     working copy ({}) and end your reply; it is checked again.",
-                    work.work_dir.display()
-                );
-                // Its landing step, recorded already, is the one that counts.
-                let round = next_step(self.store(), &v.id) - 1;
-                self.no_progress(work, v, round, Some(&outcome), text).await
-            }
-            MergeOutcome::RetestFailed { error, .. } => Step::Continue(format!(
-                "After catching up, the project's checks failed:\n{error}\nFix it in your working copy and end your reply."
-            )),
-            MergeOutcome::OwnerEdits { .. } if self.verify.shared().after_owner.remove(&v.id) => {
-                self.finish(v, "verified", Some(Why::new("edits_in_way")));
-                Step::Finished
-            }
-            MergeOutcome::OwnerEdits { files, .. } => {
-                let (files, path) = (files.join(", "), work.work_dir.display().to_string());
-                let question = Question::keyed(
-                    "ownerEdits",
-                    json!({ "files": files }),
-                    format!(
-                        "This change is verified, and you have edits of your own in {files} that it also touches. Nothing of \
-                         yours was overwritten. What should happen?"
-                    ),
-                )
-                .with_context("ownerEditsContext", json!({ "path": path }));
-                let context = format!("The change waits in its copy at {path}.");
-                let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
-                self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref()).await.unwrap_or(Step::Finished)
-            }
-            other => {
-                // Why it did not land, as a code; the raw words (a git
-                // error) are in the landing's step and the log.
-                tracing::info!(verification = %v.id, outcome = %worktree::render_outcome("the change", &other), "verified work not landed");
-                self.finish(v, "verified", Some(super::landing_why(&other)));
-                Step::Finished
-            }
-        }
-    }
-
     /// The loop stopped making progress with `open` blocking issues: the
-    /// owner is asked whether it goes on, lands anyway or stops. Once he
+    /// owner is asked whether it goes on or stops. Once he
     /// has sent it on [`STALL_GO_ONS`] times this turn and it stalls again,
     /// it stops as stalled instead of asking again. `brief`: what the
     /// builder is told if it goes on. `None`: the round goes on.
-    async fn stalled(&self, work: &mut Work, v: &db::Verification, question: &Question, context: &str, open: usize, brief: &str) -> Option<Step> {
+    async fn stalled(&self, v: &db::Verification, question: &Question, context: &str, open: usize, brief: &str) -> Option<Step> {
         if self.verify.shared().gone_on_enough(&v.id) {
             self.finish(v, "not_verified", Some(Why::new("stalled").with("open", open)));
             return Some(Step::Finished);
         }
         let purpose = Purpose::Stalled { open, brief: brief.to_string() };
-        let answer = self.ask_owner(&v.id, question, context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+        let answer = self.ask_owner(&v.id, question, context, &[KEEP_GOING, STOP_HERE], &purpose).await;
         if went_on(answer.as_ref()) {
             self.verify.shared().go_on(&v.id);
         }
-        self.answered(work, v, &purpose, answer.as_ref()).await
+        self.answered(v, &purpose, answer.as_ref()).await
     }
 
     /// What the owner's answer to one of the loop's questions does, the same
     /// whenever it comes. `None`: the round goes on.
-    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>) -> Option<Step> {
+    async fn answered(&self, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>) -> Option<Step> {
         if let Some(told) = instruction(purpose, answer) {
             return Some(Step::Continue(told));
         }
@@ -2086,9 +1726,6 @@ impl VerifyCheck {
             }),
             Purpose::Stalled { open, .. } => match answer {
                 Some(KEEP_GOING) => None,
-                Some(LAND_ANYWAY) => {
-                    Some(self.land_unverified(work, v, Why::new("landed_unreviewed")).await.map_or(Step::Finished, Step::Continue))
-                }
                 Some(_) => {
                     self.finish(v, "not_verified", Some(Why::new("stopped_by_owner").with("open", *open)));
                     Some(Step::Finished)
@@ -2099,9 +1736,6 @@ impl VerifyCheck {
                 }
             },
             Purpose::ReviewFailed => match answer {
-                Some(LAND_ANYWAY) => {
-                    Some(self.land_unverified(work, v, Why::new("review_incomplete")).await.map_or(Step::Finished, Step::Continue))
-                }
                 Some(STOP_HERE) | None => {
                     self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
                     Some(Step::Finished)
@@ -2109,56 +1743,7 @@ impl VerifyCheck {
                 // Run again: a later round reviews the change.
                 Some(_) => None,
             },
-            Purpose::NoChecks => Some(match answer {
-                Some(LAND_ANYWAY) => self.land_unverified(work, v, Why::new("no_checks")).await.map_or(Step::Finished, Step::Continue),
-                _ => {
-                    self.finish(v, "not_verified", Some(Why::new("no_checks")));
-                    Step::Finished
-                }
-            }),
-            Purpose::OwnerEdits => Some(match answer {
-                // Landed through the one path: only if the copy is still what
-                // was reviewed, caught up and re-tested again.
-                Some(LAND_AFTER_MINE) => {
-                    self.verify.shared().after_owner.insert(v.id.clone());
-                    Box::pin(self.land_reviewed(work, v, "")).await
-                }
-                _ => {
-                    self.finish(v, "verified", Some(Why::new("kept_own_edits")));
-                    Step::Finished
-                }
-            }),
         }
-    }
-
-    /// Land work that isn't verified, at the owner's choice: the same
-    /// landing, the badge "Not verified" with why. `Some` is what the builder
-    /// is told when the landing needs it.
-    async fn land_unverified(
-        &self,
-        work: &mut Work,
-        v: &db::Verification,
-        reason: Why,
-    ) -> Option<String> {
-        let Some(mut iso) = work.iso.clone() else {
-            self.finish(v, "not_verified", Some(reason));
-            return None;
-        };
-        let landing = worktree::Landing { stop: self.cancel.clone(), ..Default::default() };
-        let (_, outcome) = worktree::land_one(&mut iso, &landing_message(&v.spec), None, &landing).await;
-        work.iso = Some(iso);
-        self.record_landing(
-            v,
-            next_step(self.store(), &v.id),
-            &outcome,
-        );
-        if let MergeOutcome::Merged { commit, .. } = &outcome {
-            let _ = self
-                .store()
-                .set_verification_landed(&v.id, commit, Self::now());
-        }
-        self.finish(v, "not_verified", Some(reason));
-        None
     }
 
     /// An app's live check, run every round like any other check: its page
@@ -2269,22 +1854,6 @@ fn progress_counts(rows: &[db::VerificationRound], before: i64) -> Vec<usize> {
         .collect()
 }
 
-/// The one commit a change lands as: the request's first line, as a
-/// sentence.
-fn landing_message(spec: &str) -> String {
-    let line = spec
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("Code changes made by an employee");
-    let line: String = line.chars().take(72).collect();
-    let mut chars = line.chars();
-    match chars.next() {
-        Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
-        None => "Code changes made by an employee".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2299,17 +1868,15 @@ mod tests {
         )
         .unwrap();
         let held = |key: &str| en["verify"]["ask"][key.trim_start_matches("verify.ask.")].as_str().map(str::to_string);
-        for label in [KEEP_GOING, LAND_ANYWAY, STOP_HERE, KEEP_IN_COPY, LAND_AFTER_MINE, KEEP_MINE] {
+        for label in [KEEP_GOING, STOP_HERE] {
             let key = choice_key(label).expect("each choice of the loop's has a key");
             assert_eq!(held(&key).as_deref(), Some(label), "{key}");
         }
         assert_eq!(choice_key("cents"), None, "a reviewer's own choice shows as written");
-        let q = Question::keyed("noChecks", json!({ "project": "/p" }), String::new()).with_context("ownerEditsContext", json!({ "path": "/c" }));
-        for key in [&q.words["questionKey"], &q.words["contextKey"]] {
-            assert!(held(key.as_str().unwrap()).is_some(), "{key}");
+        for key in ["stalled", "reviewFailed"] {
+            let q = Question::keyed(key, json!({}), String::new());
+            assert!(held(q.words["questionKey"].as_str().unwrap()).is_some(), "{key}");
         }
-        assert_eq!(held("verify.ask.noChecks").unwrap().replace("{project}", "/p"),
-            "The change to /p was reviewed, but the project has no build or tests that could run, so it isn't verified. Land it anyway?");
         assert!(Question::as_written("Round to cents?").words.is_null());
     }
 
@@ -2328,10 +1895,10 @@ mod tests {
     #[test]
     fn typed_words_are_instructions_never_a_guessed_choice() {
         let words = Reply::Words("keep going, but add a test for the total".into());
-        for purpose in [Purpose::Stalled { open: 2, brief: String::new() }, Purpose::NoChecks, Purpose::OwnerEdits] {
+        for purpose in [Purpose::Stalled { open: 2, brief: String::new() }] {
             let told = instruction(&purpose, Some(&words)).expect("words are an instruction");
             assert!(told.contains("add a test for the total") && told.contains("next round checks it"), "{purpose:?}");
-            assert_eq!(instruction(&purpose, Some(&Reply::Picked(LAND_ANYWAY.into()))), None, "a choice does what it says");
+            assert_eq!(instruction(&purpose, Some(&Reply::Picked(STOP_HERE.into()))), None, "a choice does what it says");
             assert_eq!(instruction(&purpose, None), None);
         }
         assert_eq!(instruction(&Purpose::Decision { title: "Pins".into() }, Some(&words)), None, "a call is carried out as he put it");
@@ -2350,13 +1917,13 @@ mod tests {
 
     /// Review of #998: a stalled loop the owner kept sending on asked him
     /// again every round without end. He sends it on at most
-    /// [`STALL_GO_ONS`] times a turn, by choice or in words; a Land or Stop
-    /// is no go-on.
+    /// [`STALL_GO_ONS`] times a turn, by choice or in words; a Stop is no
+    /// go-on.
     #[test]
     fn a_stalled_loop_is_sent_on_a_bounded_number_of_times() {
         assert!(went_on(Some(&Reply::Picked(KEEP_GOING.into()))));
         assert!(went_on(Some(&Reply::Words("try a Decimal".into()))));
-        assert!(!went_on(Some(&Reply::Picked(LAND_ANYWAY.into()))) && !went_on(Some(&Reply::Picked(STOP_HERE.into()))) && !went_on(None));
+        assert!(!went_on(Some(&Reply::Picked(STOP_HERE.into()))) && !went_on(None));
         let mut shared = Shared::default();
         for _ in 0..STALL_GO_ONS {
             assert!(!shared.gone_on_enough("v1"));

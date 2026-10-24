@@ -4530,6 +4530,7 @@
 			"step_limit": "De run bereikte zijn stappenlimiet voordat de controle klaar was",
 			"turn_ended": "De run eindigde voordat de controle klaar was",
 			"restarted": "Nebo is opnieuw gestart tijdens de controle",
+			"kept_in_copy": "Het eerdere werk staat nog in de eigen kopie op {path}",
 			"unreviewed": "Niet doorgevoerd: de kopie bevat wijzigingen die niemand heeft gereviewd ({files})",
 			"needs_review": "Wat zou landen verschilt in {files} van wat gereviewd is; eerst wordt het opnieuw gereviewd",
 			"changed_after_review": "De kopie veranderde nadat ze gereviewd was; eerst wordt ze opnieuw gereviewd",
@@ -4583,16 +4584,8 @@
 		"ask": {
 			"stalled": "De review van {project} blijft problemen vinden: {open, plural, one {# blokkerend probleem staat} other {# blokkerende problemen staan}} na {rounds} rondes nog open, zonder minder te worden. Wat moet er gebeuren?",
 			"reviewFailed": "De review van {project} kon niet afronden: {count, plural, one {# reviewer is} other {# reviewers zijn}} {tries} keer mislukt. Opnieuw uitvoeren?",
-			"noChecks": "De wijziging aan {project} is gereviewd, maar het project heeft geen build of tests die konden draaien, dus ze is niet geverifieerd. Toch doorvoeren?",
-			"ownerEdits": "Deze wijziging is geverifieerd, en je hebt eigen wijzigingen in {files} die ze ook raakt. Niets van jou is overschreven. Wat moet er gebeuren?",
-			"ownerEditsContext": "De wijziging wacht in haar kopie op {path}.",
-			"cantLand": "De wijziging aan {project} is door de review gekomen, maar kan niet worden doorgevoerd zoals ze is gereviewd, en is in de laatste {tries} pogingen niet dichterbij gekomen. Wat moet er gebeuren?",
 			"keepGoing": "Doorgaan",
-			"landAnyway": "Toch doorvoeren",
-			"stopHere": "Hier stoppen",
-			"keepInCopy": "In de kopie laten",
-			"landAfterMine": "Doorvoeren nadat ik de mijne commit",
-			"keepMine": "Mijn wijzigingen houden, niet doorvoeren"
+			"stopHere": "Hier stoppen"
 		}
 	},
 	"appPermissions": {

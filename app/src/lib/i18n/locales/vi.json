@@ -4530,6 +4530,7 @@
 			"step_limit": "Lần chạy đã đạt giới hạn bước trước khi kiểm tra xong",
 			"turn_ended": "Lần chạy đã kết thúc trước khi kiểm tra xong",
 			"restarted": "Nebo đã khởi động lại trong lúc kiểm tra",
+			"kept_in_copy": "Phần việc trước đó được giữ trong bản sao tại {path}",
 			"unreviewed": "Chưa đưa vào: bản sao có thay đổi chưa ai xem xét ({files})",
 			"needs_review": "Nội dung sẽ được đưa vào khác với nội dung đã xem xét trong {files}; nó được xem xét lại trước",
 			"changed_after_review": "Bản sao đã thay đổi sau khi được xem xét; nó được xem xét lại trước",
@@ -4583,16 +4584,8 @@
 		"ask": {
 			"stalled": "Việc rà soát {project} vẫn tiếp tục phát hiện vấn đề: sau {rounds} vòng vẫn còn {open} vấn đề chặn chưa xử lý, và không giảm đi. Nên làm gì?",
 			"reviewFailed": "Việc rà soát {project} không thể hoàn tất: {count} người rà soát đã thất bại {tries} lần. Chạy lại chứ?",
-			"noChecks": "Thay đổi trong {project} đã được rà soát, nhưng dự án không có bản dựng hay bài kiểm thử nào chạy được, nên chưa được xác minh. Vẫn hợp nhất chứ?",
-			"ownerEdits": "Thay đổi này đã được xác minh, và bạn có chỉnh sửa riêng trong {files} mà thay đổi này cũng chạm tới. Không có gì của bạn bị ghi đè. Nên làm gì?",
-			"ownerEditsContext": "Thay đổi đang chờ trong bản sao của nó tại {path}.",
-			"cantLand": "Thay đổi trong {project} đã qua rà soát, nhưng không thể hợp nhất đúng như khi được rà soát, và không tiến gần hơn trong {tries} lần thử gần nhất. Nên làm gì?",
 			"keepGoing": "Tiếp tục",
-			"landAnyway": "Vẫn hợp nhất",
-			"stopHere": "Dừng ở đây",
-			"keepInCopy": "Giữ trong bản sao",
-			"landAfterMine": "Hợp nhất sau khi tôi commit phần của tôi",
-			"keepMine": "Giữ phần của tôi, không hợp nhất"
+			"stopHere": "Dừng ở đây"
 		}
 	},
 	"appPermissions": {

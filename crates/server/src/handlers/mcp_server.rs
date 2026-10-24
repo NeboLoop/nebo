@@ -232,7 +232,7 @@ async fn call_tool(
     caller: Caller<'_>,
     tool_use_id: Option<&str>,
     name: &str,
-    mut arguments: serde_json::Value,
+    arguments: serde_json::Value,
 ) -> tools::ToolResult {
     let (run, mut ctx) = match caller {
         Caller::Run(run) => (Some(run), run.ctx.clone()),
@@ -242,23 +242,21 @@ async fn call_tool(
     if let Some(id) = tool_use_id {
         ctx.tool_call_id = id.to_string();
     }
-    // The run's code work: the call is pointed at the project's own copy,
-    // its first change to a project makes the copy, exactly as the runner's
-    // own call is routed. A copy that can't be made refuses the call.
+    // The run's code work: its first change to a project starts the work
+    // there, exactly as the runner's own call does. Work that can't be
+    // recorded never stops the call: it runs, unchecked.
     let verify = run.and_then(|r| r.verify.as_ref());
     let mut started = None;
     // What the call's routing watched for a deploy, judged once it ran.
     let mut watched = Default::default();
     if let Some(verify) = verify {
         let changes = tools.target(name, &arguments).await.is_some_and(|t| !t.read_only);
-        match verify.route(store, &mut arguments, &mut ctx.cwd, changes).await {
-            Ok(routed) => {
-                started = routed.started;
-                watched = routed.watched;
+        match verify.work_on(store, &arguments, ctx.cwd.as_deref(), changes).await {
+            Ok(begun) => {
+                started = begun.started;
+                watched = begun.watched;
             }
-            Err(e) => {
-                return tools::ToolResult::error(format!("{e}. Nothing was changed: code work happens only in its own copy."));
-            }
+            Err(e) => tracing::warn!(tool = %name, error = %e, "code work not recorded; the call runs unchecked"),
         }
     }
     let mut result = tools.execute(&ctx, name, arguments).await;
@@ -783,11 +781,11 @@ mod tests {
         }
     }
 
-    /// A CLI model's write to a project over /agent/mcp goes where the
-    /// runner's own would: into the run's copy of the project, never the
-    /// owner's files, so it is verified like any other code work.
+    /// A CLI model's write to a project over /agent/mcp is code work as the
+    /// runner's own is: it starts the run's work in the project itself, so
+    /// it is verified like any other.
     #[tokio::test]
-    async fn a_cli_runs_write_to_a_project_goes_to_its_own_copy() {
+    async fn a_cli_runs_write_to_a_project_starts_its_code_work() {
         static HOME: std::sync::OnceLock<Option<tempfile::TempDir>> = std::sync::OnceLock::new();
         HOME.get_or_init(|| {
             if std::env::var_os("NEBO_HOME").is_some() {
@@ -823,9 +821,9 @@ mod tests {
         let file = project.path().join("total.py").to_string_lossy().into_owned();
         let r = call_tool(&registry, &store, Caller::Run(&run), None, "save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})).await;
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("your own working copy"), "the model is told where it works: {}", r.content);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def total(a, b): return 0\n", "the owner's file is untouched");
+        assert!(r.content.contains("independent reviewers and the project's own checks verify it"), "the model is told it is checked: {}", r.content);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def total(a, b): return a + b\n", "written where it was asked");
         let v = store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-        assert_eq!(std::fs::read_to_string(std::path::Path::new(&v.work_dir).join("total.py")).unwrap(), "def total(a, b): return a + b\n");
+        assert_eq!((v.work_kind.as_str(), std::path::Path::new(&v.work_dir)), ("folder", project.path()), "the work is the project itself");
     }
 }

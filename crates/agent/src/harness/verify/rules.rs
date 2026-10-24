@@ -16,8 +16,9 @@ pub const FILE_CHARS: usize = 12_000;
 /// The house rules: how this work is done on anyone's code.
 pub const HOUSE_RULES: &str = "\
 - Read-only means read-only: a reviewer or investigator changes nothing, anywhere.
-- Never touch the owner's working copy. All work happens in the isolated copy you were given; it is merged back \
-only when the work is verified, or when the owner chooses to merge it anyway.
+- Work in the project itself, or in the copy you were given when you have one (a helper's copy is merged back \
+only when it is verified). Don't commit, stash or reset in the owner's project unless he asks: the change stays in \
+his files for him to commit.
 - Format only the lines you changed. Never run a formatter across the whole project.
 - Builds use their own build folder, deleted when the work is done.
 - Build and run the tests before anything is pushed or merged.
@@ -117,7 +118,7 @@ mod tests {
         )
         .unwrap();
         let rules = brief_rules(dir.path(), "Never deploy on Fridays.");
-        assert!(rules.contains("Never touch the owner's working copy"));
+        assert!(rules.contains("Don't commit, stash or reset in the owner's project unless he asks"));
         assert!(rules.contains("Never deploy on Fridays."));
         assert!(rules.contains("### CLAUDE.md\nUse pnpm only."));
         assert!(rules.contains("### docs/sme/CODE_AUDITOR.md\nNo competing pathways."));

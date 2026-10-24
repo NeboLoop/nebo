@@ -4530,6 +4530,7 @@
 			"step_limit": "L'exécution a atteint sa limite d'étapes avant la fin de la vérification",
 			"turn_ended": "L'exécution s'est terminée avant la fin de la vérification",
 			"restarted": "Nebo a redémarré pendant la vérification",
+			"kept_in_copy": "Son travail précédent est conservé dans sa copie, à {path}",
 			"unreviewed": "Non intégré : la copie contient des modifications que personne n'a revues ({files})",
 			"needs_review": "Ce qui serait intégré diffère de ce qui a été revu dans {files} ; il est d'abord revu à nouveau",
 			"changed_after_review": "La copie a changé après avoir été revue ; elle est d'abord revue à nouveau",
@@ -4583,16 +4584,8 @@
 		"ask": {
 			"stalled": "La revue de {project} continue de trouver des problèmes : {open, plural, one {# problème bloquant reste ouvert} other {# problèmes bloquants restent ouverts}} après {rounds} tours, sans diminuer. Que faut-il faire ?",
 			"reviewFailed": "La revue de {project} n'a pas pu se terminer : {count, plural, one {# relecteur a échoué} other {# relecteurs ont échoué}} {tries} fois. Relancer ?",
-			"noChecks": "La modification de {project} a été revue, mais le projet n'a ni build ni tests exécutables, elle n'est donc pas vérifiée. L'intégrer quand même ?",
-			"ownerEdits": "Cette modification est vérifiée, et vous avez vos propres modifications dans {files} qu'elle touche aussi. Rien de vos modifications n'a été écrasé. Que faut-il faire ?",
-			"ownerEditsContext": "La modification attend dans sa copie à {path}.",
-			"cantLand": "La modification de {project} a passé la revue, mais elle ne peut pas être intégrée telle qu'elle a été revue, et elle ne s'en est pas rapprochée lors des {tries} derniers essais. Que faut-il faire ?",
 			"keepGoing": "Continuer",
-			"landAnyway": "L'intégrer quand même",
-			"stopHere": "S'arrêter ici",
-			"keepInCopy": "La garder dans sa copie",
-			"landAfterMine": "L'intégrer après mon commit",
-			"keepMine": "Garder les miennes, ne pas l'intégrer"
+			"stopHere": "S'arrêter ici"
 		}
 	},
 	"appPermissions": {

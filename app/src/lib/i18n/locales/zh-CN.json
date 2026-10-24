@@ -4530,6 +4530,7 @@
 			"step_limit": "检查完成前运行已达到步数上限",
 			"turn_ended": "检查完成前运行已结束",
 			"restarted": "检查期间 Nebo 重新启动了",
+			"kept_in_copy": "之前的工作保留在它的副本中：{path}",
 			"unreviewed": "未并入：副本中有没人审查过的更改（{files}）",
 			"needs_review": "将要合入的内容与 {files} 中审查过的内容不同；先重新审查",
 			"changed_after_review": "副本在审查后发生了变化；先重新审查",
@@ -4583,16 +4584,8 @@
 		"ask": {
 			"stalled": "{project} 的审查一直在发现问题：经过 {rounds} 轮后仍有 {open} 个阻塞问题未解决，而且没有减少。接下来怎么做？",
 			"reviewFailed": "{project} 的审查未能完成：{count} 位审查者失败了 {tries} 次。要重新运行吗？",
-			"noChecks": "对 {project} 的更改已审查，但该项目没有可运行的构建或测试，因此未经验证。仍然合入吗？",
-			"ownerEdits": "此更改已验证，但你在 {files} 中有它也涉及的自己的修改。你的内容没有被覆盖。接下来怎么做？",
-			"ownerEditsContext": "更改在 {path} 的副本中等待。",
-			"cantLand": "对 {project} 的更改已通过审查，但无法按审查时的样子合入，而且在最近 {tries} 次尝试中没有更接近。接下来怎么做？",
 			"keepGoing": "继续",
-			"landAnyway": "仍然合入",
-			"stopHere": "到此为止",
-			"keepInCopy": "留在副本中",
-			"landAfterMine": "等我提交我的修改后再合入",
-			"keepMine": "保留我的，不合入"
+			"stopHere": "到此为止"
 		}
 	},
 	"appPermissions": {

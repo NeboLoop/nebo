@@ -4530,6 +4530,7 @@
 			"step_limit": "La ejecución llegó a su límite de pasos antes de terminar la comprobación",
 			"turn_ended": "La ejecución terminó antes de acabar la comprobación",
 			"restarted": "Nebo se reinició mientras se comprobaba",
+			"kept_in_copy": "Su trabajo anterior se conserva en su copia en {path}",
 			"unreviewed": "No integrado: la copia tiene cambios que nadie revisó ({files})",
 			"needs_review": "Lo que se incorporaría difiere de lo revisado en {files}; primero se revisa de nuevo",
 			"changed_after_review": "La copia cambió después de revisarse; primero se revisa de nuevo",
@@ -4583,16 +4584,8 @@
 		"ask": {
 			"stalled": "La revisión de {project} sigue encontrando problemas: {open, plural, one {# problema bloqueante sigue abierto} other {# problemas bloqueantes siguen abiertos}} después de {rounds} rondas, sin disminuir. ¿Qué debe pasar?",
 			"reviewFailed": "La revisión de {project} no pudo terminar: {count, plural, one {# revisor falló} other {# revisores fallaron}} {tries} veces. ¿Ejecutar de nuevo?",
-			"noChecks": "El cambio en {project} se revisó, pero el proyecto no tiene compilación ni pruebas que se pudieran ejecutar, así que no está verificado. ¿Incorporarlo de todos modos?",
-			"ownerEdits": "Este cambio está verificado y tienes cambios propios en {files} que también toca. No se sobrescribió nada tuyo. ¿Qué debe pasar?",
-			"ownerEditsContext": "El cambio espera en su copia en {path}.",
-			"cantLand": "El cambio en {project} pasó la revisión, pero no se puede incorporar tal como se revisó y no se ha acercado en los últimos {tries} intentos. ¿Qué debe pasar?",
 			"keepGoing": "Seguir",
-			"landAnyway": "Incorporarlo de todos modos",
-			"stopHere": "Parar aquí",
-			"keepInCopy": "Dejarlo en su copia",
-			"landAfterMine": "Incorporarlo cuando confirme los míos",
-			"keepMine": "Quedarme con los míos, no incorporarlo"
+			"stopHere": "Parar aquí"
 		}
 	},
 	"appPermissions": {

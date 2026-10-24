@@ -1238,11 +1238,11 @@ async fn run_call(
     // Every gate below judges the call as it will run: the tool settles an
     // inferred action or resource here (after any hook rewrote the input).
     tc.input = tools.normalize_input(&tc.name, std::mem::take(&mut tc.input)).await;
-    let mut target = tools.target(&tc.name, &tc.input).await;
+    let target = tools.target(&tc.name, &tc.input).await;
 
-    // Code work happens in its own copy of the project, never in the
-    // owner's: the call is pointed there, and its first change to a project
-    // makes the copy. A copy that can't be made refuses the call.
+    // Code work happens in the project itself: a call's first change to a
+    // project starts the work there (its base snapshot, its verification).
+    // Work that can't be recorded never stops the call: it runs, unchecked.
     let mut work_note: Option<String> = None;
     // What the call's routing watched for a deploy, judged once it ran.
     let mut watched = Default::default();
@@ -1250,15 +1250,12 @@ async fn run_call(
         && let Some(verify) = cx.verify
     {
         let changes = target.as_ref().is_some_and(|t| !t.read_only);
-        match verify.route(scope.sessions.store(), &mut tc.input, &mut ctx.cwd, changes).await {
-            Ok(routed) => {
-                if routed.rewrote {
-                    target = tools.target(&tc.name, &tc.input).await;
-                }
-                work_note = routed.started;
-                watched = routed.watched;
+        match verify.work_on(scope.sessions.store(), &tc.input, ctx.cwd.as_deref(), changes).await {
+            Ok(begun) => {
+                work_note = begun.started;
+                watched = begun.watched;
             }
-            Err(e) => refusal = Some(format!("{e}. Nothing was changed: code work happens only in its own copy.")),
+            Err(e) => tracing::warn!(tool = %tc.name, error = %e, "code work not recorded; the call runs unchecked"),
         }
     }
 

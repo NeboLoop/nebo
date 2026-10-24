@@ -10567,14 +10567,15 @@ mod tests {
     const ONE_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "title": "The total ignores b", "evidence": "total.py:1", "repro": "a=1, b=2 gives 1", "impact": "Every invoice total is wrong", "fix": "Add b"}], "verified_ok": [{"checked": "the module imports"}]}"#;
     const CLEAN_WITH_THE_FIX: &str = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}], "prior": [{"id": "r1-correctness-1", "state": "fixed"}]}"#;
 
-    /// The whole loop on a real project: the builder's writes go to its own
-    /// copy, independent reviewers find a blocker, the same builder fixes it
-    /// in the same turn, the next round reviews the fix and finds it clean,
-    /// the project's checks pass, the copy lands as one commit, and the
-    /// builder reports from the record; the owner's files changed only by
-    /// that landing.
+    /// The whole loop on a real project, in place: the builder writes in the
+    /// project itself, independent reviewers find a blocker in a read-only
+    /// snapshot of the change, the same builder fixes it where it is in the
+    /// same turn, the next round reviews the fix and finds it clean, the
+    /// project's checks pass, and the builder reports from the record. No
+    /// copy is made and nothing is committed in the owner's history: the
+    /// change is in his files, uncommitted, as he would have made it.
     #[test]
-    fn code_work_is_reviewed_fixed_re_reviewed_and_landed_before_it_is_reported_done() {
+    fn code_work_is_built_reviewed_and_fixed_in_place_before_it_is_reported_done() {
         crate::test_home::with_home(|_| {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
@@ -10595,13 +10596,13 @@ mod tests {
                     Step::Say("Done: total() returns the total."),
                     // Round 1: one reviewer (correctness), one blocker.
                     verdict(ONE_BLOCKER),
-                    // The same builder fixes it, in its copy, and answers again.
+                    // The same builder fixes it, in place, and answers again.
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Fixed r1-correctness-1: b is added."),
                     // Round 2 reviews the fix.
                     verdict(CLEAN_WITH_THE_FIX),
                     // The builder reports.
-                    Step::Say("Built total(); the review caught that b was ignored and I fixed it. Verified and landed."),
+                    Step::Say("Built total(); the review caught that b was ignored and I fixed it. Verified."),
                 ]);
                 let ran = Arc::new(Mutex::new(Vec::new()));
                 let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(ran.clone()))]).await;
@@ -10616,21 +10617,26 @@ mod tests {
                 let v = &rows[0];
                 assert_eq!(v.state, "verified", "{v:?}");
                 assert_eq!(v.rounds, 2);
-                assert!(!v.landed_ref.is_empty(), "it landed");
+                assert_eq!((v.work_dir.as_str(), v.work_kind.as_str()), (repo.to_string_lossy().as_ref(), "folder"), "in the project itself");
+                assert!(v.landed_ref.is_empty(), "nothing to land");
                 assert_eq!(v.spec, "Make total() add a and b");
                 assert!(v.message_id.is_some(), "the badge sits on the report");
                 assert_eq!(std::fs::read_to_string(repo.join("total.py")).unwrap(), "def total(a, b): return a + b\n");
-                let log = crate::worktree::git(&repo, &["log", "--format=%s", "-1"]).await.unwrap();
-                assert_eq!(log, "Make total() add a and b", "one commit, the request as its message");
+                let log = crate::worktree::git(&repo, &["log", "--format=%s"]).await.unwrap();
+                assert_eq!(log, "base", "no commit in the owner's history");
+                assert_eq!(crate::worktree::git(&repo, &["stash", "list"]).await.unwrap(), "", "and no stash");
+                let status = crate::worktree::git(&repo, &["status", "--porcelain"]).await.unwrap();
+                assert_eq!(status, "M total.py", "the change is his, uncommitted; Nebo's folder is never shown");
+                assert!(!repo.join(".nebo/worktrees").exists(), "no copy");
 
                 let rounds = h.store.verification_rounds(&v.id).unwrap();
                 let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
-                assert_eq!(kinds, ["review", "review", "catch_up", "land"]);
+                assert_eq!(kinds, ["review", "review"]);
                 assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
                 assert_eq!(rounds[0].findings[0]["id"], "r1-correctness-1");
                 assert_eq!(rounds[1].fixed, serde_json::json!(["r1-correctness-1"]));
                 assert_eq!(rounds[1].verified_ok[0]["checked"], "a=1, b=2 gives 3");
-                assert!(ran.lock().unwrap().iter().all(|c| c.starts_with("make test in ") && !c.ends_with(&repo.to_string_lossy().into_owned())), "checks ran in the copy");
+                assert!(ran.lock().unwrap().iter().all(|c| c.starts_with("make test in ") && c.ends_with(&repo.to_string_lossy().into_owned())), "checks ran in the project");
 
                 // The reviewers heard only their brief: the request and the
                 // change, never the builder's conversation.
@@ -10806,7 +10812,7 @@ mod tests {
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = the_verification(&h);
                 assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "{v:?}");
-                assert!(!v.landed_ref.is_empty(), "it landed");
+                assert!(v.landed_ref.is_empty(), "in place: nothing to land");
                 assert!(std::fs::read_to_string(project.path().join("total.py")).unwrap().contains("return amount_a + amount_b"));
                 let calls = model.calls();
                 let told = calls[3].messages.iter().rev().find(|m| m.content.contains("Independent reviewers")).expect("the builder's findings");
@@ -10821,7 +10827,7 @@ mod tests {
                 }
                 assert!(told.content.contains("never stop to report or to wait for the owner"), "{}", told.content);
                 let report = calls.last().unwrap().messages.iter().rev().find(|m| m.content.contains("The checking is done")).expect("the report brief");
-                assert!(report.content.contains("your change landed"), "after landing it reports what landed: {}", report.content);
+                assert!(report.content.contains("Your changes are in the project's own files"), "it reports the work where it is: {}", report.content);
                 assert!(!report.content.contains("must review"), "{}", report.content);
             })
         })
@@ -10856,8 +10862,8 @@ mod tests {
                 let h = verifying_harness(&model).await;
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = the_verification(&h);
-                assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "it went on and landed: {v:?}");
-                assert!(!v.landed_ref.is_empty());
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "it went on and was verified: {v:?}");
+                assert!(v.landed_ref.is_empty(), "in place: nothing to land");
                 let rounds = h.store.verification_rounds(&v.id).unwrap();
                 assert_eq!(rounds[0].findings[0]["id"], "r1-correctness-1", "the second run's verdict is round 1's");
             })
@@ -10920,7 +10926,7 @@ mod tests {
                 assert_eq!(exit_of(&answered), "text_response");
                 let v = the_verification(&h);
                 assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "the same round completed: {v:?}");
-                assert!(!v.landed_ref.is_empty());
+                assert!(v.landed_ref.is_empty(), "in place: nothing to land");
                 assert_eq!(h.store.verification_rounds(&v.id).unwrap()[0].detail["reviewers"]["correctness"], "clean");
                 assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n");
                 let heard = model.calls().into_iter().any(|c| texts(&c).iter().any(|t| t.contains("How is it going?")));
@@ -10968,8 +10974,8 @@ mod tests {
                 run_turn(&h, answering_turn()).await;
                 let v = the_verification(&h);
                 assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "another round on the new code: {v:?}");
-                assert!(!v.landed_ref.is_empty());
-                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b):\n    return a + b\n", "the new code landed");
+                assert!(v.landed_ref.is_empty(), "in place: nothing to land");
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b):\n    return a + b\n", "the new code is in the project");
                 let marked = model.calls().into_iter().any(|c| texts(&c).iter().any(|t| t.contains("you changed it since, so what follows is about that earlier version")));
                 assert!(marked, "the round's result says it is about the earlier version");
             })
@@ -11050,8 +11056,8 @@ mod tests {
                 run_turn(&h, answering_turn()).await;
                 assert_eq!(*asked.lock().unwrap(), ["Round totals to cents or to dollars"], "asked on the turn that joined");
                 let v = the_verification(&h);
-                assert_eq!(v.state, "verified", "his answer was carried out and it landed: {v:?}");
-                assert!(!v.landed_ref.is_empty());
+                assert_eq!(v.state, "verified", "his answer was carried out: {v:?}");
+                assert!(v.landed_ref.is_empty(), "in place: nothing to land");
             })
         })
     }
@@ -11117,10 +11123,10 @@ mod tests {
         h
     }
 
-    /// No build or test could run: reviewed, but not verified, and (with
-    /// nobody to ask) it stays in its copy.
+    /// No build or test could run: reviewed, but not verified. The change
+    /// is in the project, where the builder made it.
     #[test]
-    fn work_whose_project_has_no_checks_is_not_verified_and_stays_in_its_copy() {
+    fn work_whose_project_has_no_checks_is_not_verified() {
         crate::test_home::with_home(|_| {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
@@ -11129,15 +11135,13 @@ mod tests {
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
                     Step::Say("Done."),
                     verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
-                    Step::Say("Reviewed, but the project has no tests, so it isn't verified; it waits in its copy."),
+                    Step::Say("Reviewed, but the project has no tests, so it isn't verified."),
                 ]);
                 let h = verifying_harness(&model).await;
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"no_checks"}"#));
-                assert!(v.landed_ref.is_empty());
-                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
-                assert!(std::path::Path::new(&v.work_dir).join("total.py").exists(), "the work waits in its copy");
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n", "the change is where it was made");
             })
         })
     }
@@ -11423,7 +11427,7 @@ mod tests {
                 run_turn(&h, owner_of_app("Show the score")).await;
 
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                assert_eq!((v.work_kind.as_str(), v.state.as_str()), ("isolated", "verified"), "{v:?}");
+                assert_eq!((v.work_kind.as_str(), v.state.as_str()), ("folder", "verified"), "{v:?}");
                 let rounds = h.store.verification_rounds(&v.id).unwrap();
                 let labels: Vec<String> = rounds[0].checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap().to_string()).collect();
                 assert_eq!(labels, ["make test", "Live load of Scoreboard on a phone and a desktop"]);
@@ -11495,7 +11499,7 @@ mod tests {
                 run_turn(&h, owner_of_app("Deploy the score")).await;
 
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                assert_eq!((v.work_kind.as_str(), v.state.as_str(), v.rounds), ("isolated", "verified", 2), "{v:?}");
+                assert_eq!((v.work_kind.as_str(), v.state.as_str(), v.rounds), ("folder", "verified", 2), "{v:?}");
                 assert_eq!((v.deployed_apps.clone(), v.deploy_unchecked), (vec!["ops".to_string()], false));
                 let rounds: Vec<_> = h.store.verification_rounds(&v.id).unwrap().into_iter().filter(|r| r.kind == "review").collect();
                 assert_eq!(rounds.len(), 2, "{rounds:?}");
@@ -11567,47 +11571,6 @@ mod tests {
                     f();
                 }
                 tools::ToolResult::ok(serde_json::json!({"picked": self.picked}).to_string())
-            })
-        }
-    }
-
-    /// Checks that pass, the first run of which also edits the owner's own
-    /// file (an edit of theirs, unsaved, made while the work was checked).
-    struct OwnerEditsDuringChecks(std::path::PathBuf, Arc<Mutex<usize>>);
-
-    impl tools::registry::DynTool for OwnerEditsDuringChecks {
-        fn name(&self) -> &str {
-            "run_command"
-        }
-        fn description(&self) -> String {
-            "runs a command".into()
-        }
-        fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {
-                "command": {"type": "string"}, "cwd": {"type": "string"}, "description": {"type": "string"}, "timeout": {"type": "integer"}
-            }})
-        }
-        fn should_defer(&self) -> bool {
-            false
-        }
-        fn read_only(&self, _input: &serde_json::Value) -> bool {
-            false
-        }
-        fn execute_dyn<'a>(
-            &'a self,
-            _ctx: &'a tools::ToolContext,
-            _input: serde_json::Value,
-        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
-            Box::pin(async move {
-                let first = {
-                    let mut n = self.1.lock().unwrap();
-                    *n += 1;
-                    *n == 1
-                };
-                if first {
-                    let _ = std::fs::write(&self.0, "def total(a, b): return 0  # the owner's note\n");
-                }
-                tools::ToolResult::ok("ok: 3 passed")
             })
         }
     }
@@ -12022,68 +11985,8 @@ mod tests {
                 let v = &rows[0];
                 assert_eq!((v.state.as_str(), v.rounds), ("not_verified", 2), "{v:?}");
                 assert_ne!(v.message_id, first.message_id, "reported again, on the new reply");
-                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n");
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b + 0\n");
                 assert_eq!(model.calls().len(), 8);
-            })
-        })
-    }
-
-    /// Review round 3 M7: "land it after I commit mine" lands only what was
-    /// reviewed: a copy changed since goes back to review first; edits of
-    /// the owner's still in the way are said, not asked again.
-    #[test]
-    fn landing_after_the_owners_edits_lands_only_what_was_reviewed() {
-        crate::test_home::with_home(|_| {
-            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-            rt.block_on(async {
-                let (project, file) = small_project(true).await;
-                let model = Scripted::new(vec![
-                    Step::Call("save_code", serde_json::json!({"path": file.clone(), "content": "def total(a, b): return a + b\n"})),
-                    Step::Say("Done."),
-                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
-                    Step::Say("I looked at the change in my copy."),
-                    verdict(r#"{"findings": [], "verified_ok": [{"checked": "the comment is harmless"}]}"#),
-                    Step::Say("Verified; your edits are still in the way."),
-                ]);
-                let owner_file = project.path().join("total.py");
-                let copy_file: Arc<Mutex<Option<std::path::PathBuf>>> = Default::default();
-                let seen = copy_file.clone();
-                let asked = Arc::new(Mutex::new(Vec::new()));
-                let on_ask: Box<dyn Fn() + Send + Sync> = Box::new(move || {
-                    // While the owner decides, the copy changes.
-                    if let Some(p) = seen.lock().unwrap().as_ref() {
-                        let _ = std::fs::write(p, "def total(a, b): return a + b  # changed after review\n");
-                    }
-                });
-                let h = harness_with(
-                    &model,
-                    vec![
-                        Box::new(FileWriter),
-                        Box::new(OwnerEditsDuringChecks(owner_file.clone(), Arc::new(Mutex::new(0)))),
-                        Box::new(OwnerAnswers { picked: "Land it after I commit mine", asked: asked.clone(), on_ask: Some(on_ask) }),
-                    ],
-                )
-                .await;
-                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
-                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
-                let store = h.store.clone();
-                let watcher = tokio::spawn(async move {
-                    for _ in 0..400 {
-                        if let Some(v) = store.list_verifications(&db::VerificationQuery::default()).unwrap().first() {
-                            *copy_file.lock().unwrap() = Some(std::path::Path::new(&v.work_dir).join("total.py"));
-                            return;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                    }
-                });
-                run_turn(&h, owner("Make total() add a and b")).await;
-                let _ = watcher.await;
-                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                assert_eq!((v.state.as_str(), v.reason.as_str(), v.rounds), ("verified", r#"{"code":"edits_in_way"}"#, 2), "{v:?}");
-                assert_eq!(asked.lock().unwrap().len(), 1, "asked once");
-                assert_eq!(std::fs::read_to_string(&owner_file).unwrap(), "def total(a, b): return 0  # the owner's note\n", "the owner's edit stands");
-                let calls = model.calls();
-                assert!(calls[3].messages.iter().any(|m| m.content.contains("changed after it was reviewed")), "back to review first");
             })
         })
     }
@@ -12157,21 +12060,20 @@ mod tests {
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!(v.state, "not_verified", "{v:?}");
                 assert_eq!(v.open_blockers, 1, "the deferral closed nothing");
-                assert!(v.landed_ref.is_empty());
-                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n");
-                let scratch = crate::harness::verify::work::Work::copies(&v.id).unwrap();
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a\n", "the change is where it was made");
+                let scratch = crate::harness::verify::work::Work::copies(std::path::Path::new(&v.project_root), &v.id).unwrap();
                 assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it ended unverified");
             })
         })
     }
 
-    /// Review 2026-10-20 B2: reviewers read their own copy of what was
-    /// snapshotted, never the builder's; a check that rewrites the builder's
-    /// copy during a round means what was reviewed is not what is there, so
-    /// the round can't pass: the next round reviews the change, and only
-    /// then does it land.
+    /// Review 2026-10-20 B2: reviewers read their own read-only snapshot of
+    /// the change, never the project itself; a check that rewrites the
+    /// project's files during a round means what was reviewed is not what is
+    /// there, so the round can't pass: the next round reviews the change,
+    /// and only then is it verified.
     #[test]
-    fn only_what_was_reviewed_lands() {
+    fn only_what_was_reviewed_is_verified() {
         crate::test_home::with_home(|_| {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             rt.block_on(async {
@@ -12182,7 +12084,7 @@ mod tests {
                     verdict(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
                     Step::Say("The formatter's change is fine."),
                     verdict(r#"{"findings": [], "verified_ok": [{"checked": "the comment changes nothing"}]}"#),
-                    Step::Say("Verified and landed."),
+                    Step::Say("Verified."),
                 ]);
                 let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(RewritingChecks(Arc::new(Mutex::new(0))))]).await;
                 let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
@@ -12193,19 +12095,19 @@ mod tests {
                 assert_eq!(
                     std::fs::read_to_string(project.path().join("total.py")).unwrap(),
                     "def total(a, b): return a + b\n# formatted\n",
-                    "it landed once round 2 reviewed what the check wrote"
+                    "verified once round 2 reviewed what the check wrote"
                 );
                 let calls = model.calls();
                 let reviewer = calls.iter().find(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).unwrap();
                 let heard: String = reviewer.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
-                // Its round's own copy and the verification's one build
-                // folder, with the working copies: never Nebo's own folder.
-                let scratch = crate::harness::verify::work::Work::copies(&v.id).unwrap();
+                // Its round's own snapshot and the verification's one build
+                // folder, in the project's Nebo folder: never Nebo's own.
+                let scratch = crate::harness::verify::work::Work::copies(std::path::Path::new(&v.project_root), &v.id).unwrap();
                 assert!(heard.contains(&format!("{}/round-1/project", scratch.display())), "the reviewer works in its own copy");
                 assert!(heard.contains(&format!("CARGO_TARGET_DIR={}/build;", scratch.display())), "and builds in the verification's one folder");
-                assert!(!heard.contains(&v.work_dir), "never the builder's copy");
-                assert!(calls[3].messages.iter().any(|m| m.content.contains("Your working copy changed while this round ran")));
-                assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it landed");
+                assert!(!heard.contains(&format!("{}/total.py", v.work_dir)), "never the project's own files");
+                assert!(calls[3].messages.iter().any(|m| m.content.contains("Your files changed while this round ran")));
+                assert!(!scratch.exists(), "its reviewers' folder and their build folder went when it was verified");
             })
         })
     }
@@ -12219,8 +12121,8 @@ mod tests {
             rt.block_on(async {
                 let (project, file) = small_project(true).await;
                 // The reviewers' folder can't be made: a file sits where it goes.
-                let reviewers = config::copies_dir().unwrap().join("verify");
-                let _ = std::fs::remove_dir_all(&reviewers);
+                let reviewers = project.path().join(".nebo/verify");
+                std::fs::create_dir_all(project.path().join(".nebo")).unwrap();
                 std::fs::write(&reviewers, "").unwrap();
                 let model = Scripted::new(vec![
                     Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
@@ -12232,8 +12134,6 @@ mod tests {
                 std::fs::remove_file(&reviewers).unwrap();
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#), "{v:?}");
-                assert!(v.landed_ref.is_empty());
-                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
                 let rounds = h.store.verification_rounds(&v.id).unwrap();
                 assert_eq!(rounds[0].kind, "review");
                 assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
@@ -12278,8 +12178,9 @@ mod tests {
     fn an_answer_after_a_restart_does_what_it_did_before() {
         for (purpose, picked, state, reason) in [
             (serde_json::json!({"kind": "stalled", "open": 2, "brief": ""}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
-            (serde_json::json!({"kind": "no_checks"}), "Keep it in its copy", "not_verified", r#"{"code":"no_checks"}"#),
-            (serde_json::json!({"kind": "owner_edits"}), "Keep mine, don't land it", "verified", r#"{"code":"kept_own_edits"}"#),
+            (serde_json::json!({"kind": "review_failed"}), "Stop here", "not_verified", r#"{"code":"review_incomplete"}"#),
+            // A question this loop no longer asks waits on nothing.
+            (serde_json::json!({"kind": "owner_edits"}), "Keep mine, don't land it", "not_verified", r#"{"code":"needs_answer"}"#),
         ] {
             crate::test_home::with_home(|_| {
                 let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
@@ -12330,110 +12231,6 @@ mod tests {
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#));
-            })
-        })
-    }
-
-    /// Review round 4 Y3: a verified change that keeps failing to land
-    /// makes no progress: a hook that refuses every commit is never
-    /// reviewed again on unchanged bytes, and the loop pauses for the owner
-    /// after two tries with nothing landed. A hook that rewrites the change
-    /// sends it back to review, and what lands is what that review read.
-    #[test]
-    fn landings_that_keep_failing_stop_the_loop_and_unchanged_work_is_not_reviewed_again() {
-        for (hook, reviews) in [("echo 'not on this branch' >&2; exit 1", 1), ("echo '# hooked' >> total.py; git add total.py", 2)] {
-            crate::test_home::with_home(|_| {
-                let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-                rt.block_on(async {
-                    let (project, file) = small_project(true).await;
-                    let hooks = project.path().join(".git/hooks");
-                    std::fs::create_dir_all(&hooks).unwrap();
-                    std::fs::write(hooks.join("pre-commit"), format!("#!/bin/sh\n{hook}\n")).unwrap();
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
-                    }
-                    let clean = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#;
-                    let mut steps = vec![
-                        Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
-                        Step::Say("Done."),
-                        verdict(clean),
-                        Step::Say("Looked it over."),
-                    ];
-                    if reviews == 2 {
-                        steps.push(verdict(clean));
-                    }
-                    steps.push(Step::Say("It is reviewed, but it can't land."));
-                    let model = Scripted::new(steps);
-                    let h = verifying_harness(&model).await;
-                    run_turn(&h, owner("Make total() add a and b")).await;
-                    let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                    let rounds = h.store.verification_rounds(&v.id).unwrap();
-                    let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
-                    assert_eq!(rounds.iter().filter(|r| r.kind == "review").count(), reviews, "{kinds:?}");
-                    let landed = std::fs::read_to_string(project.path().join("total.py")).unwrap();
-                    if reviews == 1 {
-                        assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"stalled","args":{"open":1}}"#), "{kinds:?}");
-                        assert!(v.landed_ref.is_empty());
-                        assert_eq!(landed, "def total(a, b): return 0\n", "nothing landed");
-                    } else {
-                        assert_eq!(kinds, ["review", "land", "review", "catch_up", "land"]);
-                        assert_eq!(rounds[1].outcome, r#"{"code":"needs_review","args":{"files":"total.py"}}"#);
-                        assert_eq!(v.state, "verified", "{kinds:?}");
-                        assert_eq!(landed, "def total(a, b): return a + b\n# hooked\n", "the bytes the second review read");
-                    }
-                })
-            });
-        }
-    }
-
-    /// Review round 5: unchanged work is reviewed again when the rules a
-    /// review reads changed since its clean review (the employee's own
-    /// rules here); never skipped on a verdict given under other rules.
-    #[test]
-    fn unchanged_work_is_reviewed_again_under_new_rules() {
-        crate::test_home::with_home(|_| {
-            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-            rt.block_on(async {
-                let (project, file) = small_project(true).await;
-                let hooks = project.path().join(".git/hooks");
-                std::fs::create_dir_all(&hooks).unwrap();
-                std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\necho 'not on this branch' >&2; exit 1\n").unwrap();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
-                }
-                let clean = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#;
-                let model = Scripted::new(vec![
-                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
-                    Step::Say("Done."),
-                    verdict(clean),
-                    Step::Say("Looked it over."),
-                    verdict(clean),
-                    Step::Say("It is reviewed, but it can't land."),
-                ]);
-                let h = verifying_harness(&model).await;
-                h.store.create_agent("dev", Some("agent"), "Dev", "", "", "{}", None, None).unwrap();
-                let store = h.store.clone();
-                let mut req = owner("Make total() add a and b");
-                req.seat.agent_id = "dev".into();
-                // The owner adds a rule while the builder looks it over.
-                let model_calls = model.clone();
-                tokio::spawn(async move {
-                    while model_calls.calls().len() < 3 {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                    store.set_agent_rules_from_packages("dev", "Every total rounds to cents.", "s").unwrap();
-                });
-                run_turn(&h, req).await;
-                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                let rounds = h.store.verification_rounds(&v.id).unwrap();
-                let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
-                assert_eq!(rounds.iter().filter(|r| r.kind == "review").count(), 2, "{kinds:?}");
-                let second = model.calls().iter().filter(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).nth(1).cloned().expect("a second review");
-                assert!(second.messages.iter().any(|m| m.content.contains("Every total rounds to cents.")), "the second review read the new rule");
             })
         })
     }
@@ -12508,7 +12305,7 @@ mod tests {
                         assert_eq!(after.state, "paused", "{after:?}");
                     } else {
                         assert_eq!((after.state.as_str(), after.rounds), ("verified", 1), "{after:?}");
-                        assert!(!after.landed_ref.is_empty(), "a normal round, then it landed");
+                        assert!(after.landed_ref.is_empty(), "a normal round, verified in place");
                         assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n");
                     }
                 })
@@ -12585,7 +12382,7 @@ mod tests {
                 assert!(model.calls().iter().any(|c| texts(c).iter().any(|t| t.contains("Shut down the old research."))), "heard");
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
-                assert!(!v.landed_ref.is_empty(), "it landed");
+                assert!(v.landed_ref.is_empty(), "in place: nothing to land");
                 assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n");
             })
         })
