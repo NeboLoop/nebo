@@ -26,6 +26,7 @@ async fn a_screenshot_shows_the_app_as_the_bot_serves_it() {
     let manager = Arc::new(browser::Manager::new(
         browser::BrowserConfig::default(),
         server.data_dir.to_string_lossy().into_owned(),
+        server.port,
     ));
     // The page is drawn by a stock Chromium (the bot's browsing browser
     // draws nothing).
@@ -93,6 +94,7 @@ async fn the_live_check_fails_errors_and_a_blank_page_and_passes_a_clean_one() {
     let manager = Arc::new(browser::Manager::new(
         browser::BrowserConfig::default(),
         server.data_dir.to_string_lossy().into_owned(),
+        server.port,
     ));
     let store = Arc::new(server.db_store());
     let app = |id: &str, name: &str, html: &str| {
@@ -184,6 +186,7 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
     let manager = Arc::new(browser::Manager::new(
         browser::BrowserConfig::default(),
         server.data_dir.to_string_lossy().into_owned(),
+        server.port,
     ));
     let store = Arc::new(server.db_store());
     let app = |id: &str, name: &str, built_here: bool, html: &str| {
@@ -227,12 +230,14 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
          (async () => {{\
            const r = {{}};\
            const ask = async (k, path, init) => {{\
-             try {{ r[k] = (await fetch('../../../' + path, init)).ok; }} catch (e) {{ r[k] = 'refused'; }}\
+             try {{ r[k] = (await fetch(path.startsWith('http') ? path : '../../../' + path, init)).ok; }} catch (e) {{ r[k] = 'refused'; }}\
            }};\
            await ask('own', 'api/v1/apps/app-league/storage/score', {{ method: 'PUT',\
              headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ value: 3 }}) }});\
            await ask('other', 'api/v1/apps/app-notes/storage');\
            await ask('nebo', 'api/v1/agents');\
+           await ask('server', 'http://127.0.0.1:{other_port}/fetch', {{ mode: 'no-cors' }});\
+           await ask('metadata', 'http://169.254.169.254/latest/meta-data/', {{ mode: 'no-cors' }});\
            await ask('where', 'api/v1/apps/app-league/storage/where', {{ method: 'PUT',\
              headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ value: location.pathname }}) }});\
            window.__asked = r;\
@@ -277,9 +282,11 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
     assert!(asked.contains(r#""own":true"#), "its own routes: {asked}");
     assert!(!asked.contains(r#""other":true"#), "never another app's: {asked}");
     assert!(!asked.contains(r#""nebo":true"#), "never Nebo's API: {asked}");
-    // A frame of this computer's other server never loaded (nor the
-    // metadata address's): a frame loads from the public web alone.
-    assert_eq!(other_hits.load(std::sync::atomic::Ordering::SeqCst), 0, "a frame reached this computer's other server");
+    // Nothing of this computer's other server, nor of a cloud's metadata
+    // address, was reached: not by a frame, not by a request.
+    assert!(asked.contains(r#""server":"refused""#), "never another server here: {asked}");
+    assert!(asked.contains(r#""metadata":"refused""#), "never a cloud's metadata address: {asked}");
+    assert_eq!(other_hits.load(std::sync::atomic::Ordering::SeqCst), 0, "a frame or a fetch reached this computer's other server");
 
     // What a step answers names the page by its address alone.
     let at = run_js.execute_dyn(&ctx, json!({ "expression": "location.href" })).await;
@@ -299,9 +306,9 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
     assert!(!napp::page_pass::admits(&pass, &napp::page_pass::Scope::App("app-notes".into())));
 
     // The page never opens another address: not by a script setting
-    // `location` (a cloud's metadata address, Nebo's own API), not by a
-    // link. The browser refuses the load (it shows its own error page) and
-    // nothing of the other address reaches the step.
+    // `location` (a cloud's metadata address, Nebo's own API, a public
+    // site), not by a link. The load is stopped or refused and the tab is on
+    // the app's page again; nothing of the other address reaches the step.
     let reached = |away: &str| {
         let away = away.to_string();
         let ctx = &ctx;
@@ -310,15 +317,22 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
             let r = run_js
                 .execute_dyn(&ctx, json!({ "expression": "location.href + ' | ' + document.body.innerText" }))
                 .await;
-            r.content.starts_with(&away) || r.content.contains("\"agents\"") || r.content.contains(&format!("\"{away}"))
+            // The address itself, never one that only starts with it (the
+            // app's own page starts with Nebo's home address).
+            r.content.starts_with(&format!("{away} |")) || r.content.contains("\"agents\"") || r.content.contains(&format!("\"{away}"))
         }
     };
     let nebo_api = format!("http://127.0.0.1:{}/api/v1/agents", server.port);
-    for away in ["http://169.254.169.254/latest/meta-data/", nebo_api.as_str()] {
+    // A public site too: the top stays on the app's own address, so the
+    // employee never wanders off the app and no other site is opened from
+    // the page's address.
+    for away in ["http://169.254.169.254/latest/meta-data/", nebo_api.as_str(), "http://example.invalid/"] {
         let reopened = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-league") })).await;
         assert!(!reopened.is_error, "{}", reopened.content);
         let _ = run_js.execute_dyn(&ctx, json!({ "expression": format!("location.href = {}", json!(away)) })).await;
         assert!(!reached(away).await, "a script took the page to {away}");
+        let at = run_js.execute_dyn(&ctx, json!({ "expression": "location.href" })).await;
+        assert!(at.content.contains("/apps/app-league/ui/"), "the page stays on the app's address after {away}: {}", at.content);
     }
     let reopened = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-league") })).await;
     assert!(!reopened.is_error, "{}", reopened.content);
@@ -342,6 +356,24 @@ async fn browser_open_on_an_own_app_page_opens_it_behind_that_apps_pass() {
     assert!(!closed.is_error, "{}", closed.content);
     assert!(!napp::page_pass::admits(&now, &league), "the pass goes with the tab");
 
+    // An app page's address carries its pass: no request from the page
+    // sends that address to another site (`Referer`), whatever the page
+    // opens or embeds there.
+    let shown = napp::page_pass::grant(league.clone(), std::time::Duration::from_secs(60));
+    let served = server
+        .client
+        .get(format!("http://127.0.0.1:{}/k/{shown}/apps/app-league/ui/index.html", server.port))
+        .send()
+        .await
+        .unwrap();
+    napp::page_pass::revoke(&shown);
+    assert!(served.status().is_success(), "{}", served.status());
+    let policy = served.headers().get("referrer-policy").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    assert!(
+        ["no-referrer", "same-origin", "strict-origin", "strict-origin-when-cross-origin"].contains(&policy.as_str()),
+        "an app page's address never goes to another site: Referrer-Policy {policy:?}"
+    );
+
     // Apps it may not work on: another of the owner's (App Developer mode
     // is off) and one from the marketplace.
     let other = tool("browser_open").execute_dyn(&ctx, json!({ "url": page("app-notes") })).await;
@@ -363,6 +395,7 @@ async fn a_missing_key_reads_null_quietly_and_a_misplaced_stylesheet_names_both_
     let manager = Arc::new(browser::Manager::new(
         browser::BrowserConfig::default(),
         server.data_dir.to_string_lossy().into_owned(),
+        server.port,
     ));
     let store = Arc::new(server.db_store());
     let app = |id: &str, name: &str, files: &[(&str, &str)]| {

@@ -131,7 +131,7 @@ async fn a_real_app_still_works_confined() {
         eprintln!("no Chrome — screenshot and recording skipped");
         return;
     }
-    let manager = Arc::new(browser::Manager::new(browser::BrowserConfig::default(), server.data_dir.to_string_lossy().into_owned()));
+    let manager = Arc::new(browser::Manager::new(browser::BrowserConfig::default(), server.data_dir.to_string_lossy().into_owned(), server.port));
     let ctx = tools::ToolContext {
         origin: tools::origin::Origin::User,
         session_key: format!("agent:{id}:web"),
