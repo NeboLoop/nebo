@@ -44,25 +44,92 @@ fn protected(name: &std::ffi::OsStr) -> bool {
 
 /// Whether the tree at `dir` holds a protected folder (a nested
 /// repository's `.git`, an editor's settings), walked without following
-/// links and stopping at the first; `true` too when it holds more than
-/// [`MAX_WALK`] entries, or can't be read: nothing then vouches for it.
+/// links and stopping at the first. In a repository, what git ignores
+/// (`node_modules`, `target`, as the project's own ignore rules say) is not
+/// walked: it is the project's own to clean, as the owner ruled for what is
+/// in a project (10-23: "Do what Claude does here"). `true` too when the
+/// walk passes [`MAX_WALK`] entries, or can't be read: nothing then vouches
+/// for it.
 fn holds_protected(dir: &Path) -> bool {
+    let ignored = match ignored_in(dir) {
+        Ignored::Whole => return false,
+        Ignored::Some(paths) => paths,
+        Ignored::NoRepository => Vec::new(),
+    };
     let mut stack = vec![dir.to_path_buf()];
     let mut seen = 0usize;
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else { return d != dir || dir.exists() };
         for entry in entries {
             let Ok(entry) = entry else { return true };
+            let path = entry.path();
+            if ignored.contains(&path) {
+                continue;
+            }
             seen += 1;
             if seen > MAX_WALK || protected(&entry.file_name()) {
                 return true;
             }
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                stack.push(entry.path());
+                stack.push(path);
             }
         }
     }
     false
+}
+
+/// What git ignores of the tree at `dir`.
+enum Ignored {
+    /// `dir` itself is ignored.
+    Whole,
+    /// The ignored files and folders in it, as git lists them (a folder
+    /// whole).
+    Some(Vec<PathBuf>),
+    /// It is in no repository (or git can't say): nothing is skipped.
+    NoRepository,
+}
+
+/// Asked of git once for a decision: whether `dir` is ignored, and else
+/// which files and folders in it are (`git ls-files --others --ignored
+/// --exclude-standard --directory`), by the repository's own rules.
+fn ignored_in(dir: &Path) -> Ignored {
+    let git = |args: &[&str]| {
+        command::new::<std::process::Command>("git", command::Console::Hidden)
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .ok()
+    };
+    match git(&["rev-parse", "--is-inside-work-tree"]) {
+        Some(out) if out.status.success() => {}
+        _ => return Ignored::NoRepository,
+    }
+    let whole = match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => command::new::<std::process::Command>("git", command::Console::Hidden)
+            .arg("-C")
+            .arg(parent)
+            .args(["check-ignore", "-q", "--"])
+            .arg(name)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .is_ok_and(|s| s.success()),
+        _ => false,
+    };
+    if whole {
+        return Ignored::Whole;
+    }
+    match git(&["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "."]) {
+        Some(out) if out.status.success() => Ignored::Some(
+            out.stdout
+                .split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(|p| dir.join(String::from_utf8_lossy(p).trim_end_matches('/')))
+                .collect(),
+        ),
+        _ => Ignored::NoRepository,
+    }
 }
 
 /// The ask a call's tree removals raise, or `None` when every one is inside

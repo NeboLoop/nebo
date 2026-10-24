@@ -1439,3 +1439,53 @@ async fn a_protected_folder_is_never_removed_unasked_however_it_is_reached() {
         }
     }
 }
+
+/// The owner's ruling (10-23, "Do what Claude does here"): what git
+/// ignores in the project is its own to clean, so the search for a
+/// protected folder in the tree a removal takes never walks it. In Full
+/// Access `rm -rf node_modules` (60,000 entries, a package's own `.git`
+/// among them) goes ahead; `rm -rf vendor`, kept by git, with a nested
+/// repository in it, asks.
+#[tokio::test]
+async fn what_git_ignores_is_not_searched_and_what_it_keeps_is() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("site");
+    std::fs::create_dir_all(&project).unwrap();
+    for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+        crate::worktree::git(&project, &args).await.unwrap();
+    }
+    std::fs::write(project.join(".gitignore"), "node_modules/\n").unwrap();
+    for i in 0..600 {
+        let pkg = project.join(format!("node_modules/pkg-{i}"));
+        std::fs::create_dir_all(&pkg).unwrap();
+        for j in 0..99 {
+            std::fs::write(pkg.join(format!("f{j}.js")), "").unwrap();
+        }
+    }
+    std::fs::create_dir_all(project.join("node_modules/pkg-0/.git")).unwrap();
+    std::fs::create_dir_all(project.join("vendor/lib/.git")).unwrap();
+    std::fs::write(project.join("vendor/lib/.git/HEAD"), "unpushed\n").unwrap();
+    std::fs::write(project.join("vendor/lib/a.c"), "int a;\n").unwrap();
+    let c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+    let root = project.to_string_lossy().into_owned();
+    store
+        .create_verification(
+            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+            1,
+        )
+        .unwrap();
+    let run = |command: String| {
+        let reg = &reg;
+        let c = c.clone();
+        async move { reg.execute(&c, "run_command", json!({ "command": command, "description": "Remove" })).await }
+    };
+    let r = run(format!("cd '{}' && rm -rf vendor", project.display())).await;
+    assert!(r.parked_ask.is_some() && project.join("vendor/lib/.git/HEAD").exists(), "a nested repository git keeps asks: {}", r.content);
+    let r = run(format!("cd '{}' && rm -rf node_modules", project.display())).await;
+    assert!(!r.is_error && r.parked_ask.is_none() && !project.join("node_modules").exists(), "what git ignores goes ahead: {}", r.content);
+}
