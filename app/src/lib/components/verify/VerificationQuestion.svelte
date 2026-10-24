@@ -7,13 +7,14 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { SKIP_VALUE } from '$lib/components/chat/AskWidget.svelte';
+  import { wordedOption, wordedQuestion, type AskWords } from '$lib/chat/askWords';
 
   let {
     ask,
     onpick,
     onclose,
   }: {
-    ask: { question: string; options: string[] };
+    ask: { question: string; options: string[]; words?: AskWords };
     onpick: (value: string) => Promise<boolean>;
     onclose: () => void;
   } = $props();
@@ -31,10 +32,10 @@
 </script>
 
 <section class="verify-question">
-  <p class="verify-question-text">{ask.question}</p>
+  <p class="verify-question-text">{wordedQuestion($t, ask.question, ask.words)}</p>
   <div class="verify-question-choices">
     {#each ask.options as o (o)}
-      <button type="button" class="btn btn-sm btn-primary btn-soft {sending === o ? 'verify-question-chosen' : ''}" data-answer={o} disabled={sending !== null && !failed} onclick={() => pick(o)}>{o}</button>
+      <button type="button" class="btn btn-sm btn-primary btn-soft {sending === o ? 'verify-question-chosen' : ''}" data-answer={o} disabled={sending !== null && !failed} onclick={() => pick(o)}>{wordedOption($t, ask.options, o, ask.words)}</button>
     {/each}
   </div>
   {#if sending !== null && !failed}

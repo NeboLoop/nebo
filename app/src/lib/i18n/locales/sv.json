@@ -4579,7 +4579,21 @@
 		"answering": "Svarar på: {question}",
 		"tellIt": "Säg vad den ska göra",
 		"sending": "Skickar…",
-		"sendFailed": "Ditt svar skickades inte."
+		"sendFailed": "Ditt svar skickades inte.",
+		"ask": {
+			"stalled": "Granskningen av {project} fortsätter att hitta problem: {open, plural, one {# blockerande problem är} other {# blockerande problem är}} fortfarande öppna efter {rounds} omgångar, utan att bli färre. Vad ska hända?",
+			"reviewFailed": "Granskningen av {project} kunde inte bli klar: {count, plural, one {# granskare} other {# granskare}} misslyckades {tries} gånger. Köra igen?",
+			"noChecks": "Ändringen i {project} har granskats, men projektet har inget bygge eller tester som kunde köras, så den är inte verifierad. Föra in den ändå?",
+			"ownerEdits": "Ändringen är verifierad, och du har egna ändringar i {files} som den också rör. Inget av ditt skrevs över. Vad ska hända?",
+			"ownerEditsContext": "Ändringen väntar i sin kopia på {path}.",
+			"cantLand": "Ändringen i {project} klarade granskningen, men kan inte föras in så som den granskades, och den har inte kommit närmare under de senaste {tries} försöken. Vad ska hända?",
+			"keepGoing": "Fortsätt",
+			"landAnyway": "För in den ändå",
+			"stopHere": "Stanna här",
+			"keepInCopy": "Behåll den i kopian",
+			"landAfterMine": "För in den när jag har committat mina",
+			"keepMine": "Behåll mina, för inte in den"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} vill göra mer",

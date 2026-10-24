@@ -4579,7 +4579,21 @@
 		"answering": "Menjawab: {question}",
 		"tellIt": "Beritahu apa yang perlu dibuat",
 		"sending": "Menghantar…",
-		"sendFailed": "Jawapan anda tidak dihantar."
+		"sendFailed": "Jawapan anda tidak dihantar.",
+		"ask": {
+			"stalled": "Semakan {project} terus menemui masalah: selepas {rounds} pusingan masih ada {open} masalah penghalang yang terbuka, dan bilangannya tidak berkurang. Apa yang patut berlaku?",
+			"reviewFailed": "Semakan {project} tidak dapat selesai: {count} penyemak gagal {tries} kali. Jalankan semula?",
+			"noChecks": "Perubahan pada {project} telah disemak, tetapi projek tiada binaan atau ujian yang boleh dijalankan, jadi ia belum disahkan. Gabungkan juga?",
+			"ownerEdits": "Perubahan ini telah disahkan, dan anda ada suntingan sendiri dalam {files} yang turut disentuhnya. Tiada apa-apa milik anda ditulis ganti. Apa yang patut berlaku?",
+			"ownerEditsContext": "Perubahan menunggu dalam salinannya di {path}.",
+			"cantLand": "Perubahan pada {project} lulus semakan, tetapi tidak boleh digabungkan seperti yang disemak, dan ia tidak semakin hampir dalam {tries} cubaan terakhir. Apa yang patut berlaku?",
+			"keepGoing": "Teruskan",
+			"landAnyway": "Gabungkan juga",
+			"stopHere": "Berhenti di sini",
+			"keepInCopy": "Simpan dalam salinannya",
+			"landAfterMine": "Gabungkan selepas saya commit milik saya",
+			"keepMine": "Simpan milik saya, jangan gabungkan"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} mahu buat lebih banyak",

@@ -391,6 +391,52 @@ const STOP_HERE: &str = "Stop here";
 const KEEP_IN_COPY: &str = "Keep it in its copy";
 const LAND_AFTER_MINE: &str = "Land it after I commit mine";
 const KEEP_MINE: &str = "Keep mine, don't land it";
+
+/// The message key a choice of the loop's is worded by in the owner's
+/// language (`verify.ask.*` in the apps); `None` for a reviewer's own
+/// choices, shown as written.
+fn choice_key(label: &str) -> Option<String> {
+    let key = match label {
+        KEEP_GOING => "keepGoing",
+        LAND_ANYWAY => "landAnyway",
+        STOP_HERE => "stopHere",
+        KEEP_IN_COPY => "keepInCopy",
+        LAND_AFTER_MINE => "landAfterMine",
+        KEEP_MINE => "keepMine",
+        _ => return None,
+    };
+    Some(format!("verify.ask.{key}"))
+}
+
+/// One of the loop's questions for the owner: its English words (the
+/// model, the logs, and the fallback), and the message keys and values his
+/// apps word its question and context by in his language (`verify.ask.*`,
+/// the card's `questionKey`, `questionValues`, `contextKey`,
+/// `contextValues`). A reviewer's call is asked in its own words and has
+/// none.
+struct Question {
+    text: String,
+    words: serde_json::Value,
+}
+
+impl Question {
+    /// A question of the loop's own, worded by `verify.ask.<key>`.
+    fn keyed(key: &str, values: serde_json::Value, text: String) -> Self {
+        Question { text, words: json!({ "questionKey": format!("verify.ask.{key}"), "questionValues": values }) }
+    }
+
+    /// Its context too is the loop's, worded by `verify.ask.<key>`.
+    fn with_context(mut self, key: &str, values: serde_json::Value) -> Self {
+        self.words["contextKey"] = json!(format!("verify.ask.{key}"));
+        self.words["contextValues"] = values;
+        self
+    }
+
+    /// A question in someone else's words (a reviewer's call).
+    fn as_written(text: &str) -> Self {
+        Question { text: text.to_string(), words: serde_json::Value::Null }
+    }
+}
 /// The owner's answer to one of the loop's questions: a choice the card
 /// offered, or his own words (typed in the conversation, read by the bot as
 /// the answer: `handlers::asks::answer_in_words`).
@@ -870,16 +916,21 @@ impl VerifyCheck {
     async fn ask_owner(
         &self,
         id: &str,
-        question: &str,
+        question: &Question,
         context: &str,
         options: &[&str],
         purpose: &Purpose,
     ) -> Option<Reply> {
         if options.iter().all(|o| o.trim().is_empty()) {
-            tracing::error!(verification = %id, question, "a question for the owner with no choices was not asked");
+            tracing::error!(verification = %id, question = %question.text, "a question for the owner with no choices was not asked");
             return None;
         }
-        let ask = json!({ "question": question, "context": context, "options": options, "purpose": purpose });
+        // In the owner's language: the question's keys and each choice's.
+        let mut words = question.words.clone();
+        if words.is_object() {
+            words["optionKeys"] = json!(options.iter().map(|o| choice_key(o)).collect::<Vec<_>>());
+        }
+        let ask = json!({ "question": question.text, "context": context, "options": options, "purpose": purpose, "words": words });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
         let before = store.get_verification(id).ok().flatten();
@@ -994,18 +1045,19 @@ impl VerifyCheck {
                 })
                 .unwrap_or_default();
             let opts: Vec<&str> = options.iter().map(String::as_str).collect();
-            let (question, context) = (ask["question"].as_str().unwrap_or(""), ask["context"].as_str().unwrap_or(""));
+            let question = Question { text: ask["question"].as_str().unwrap_or("").to_string(), words: ask["words"].clone() };
+            let context = ask["context"].as_str().unwrap_or("");
             let purpose = serde_json::from_value::<Purpose>(ask["purpose"].clone()).ok();
             // The answer does what it did when it was first asked; his own
             // words to a stalled loop go on top of the brief it was asked
             // with.
             if let Some(Purpose::Stalled { open, brief }) = &purpose {
-                if let Some(step) = self.stalled(&mut work, &v, question, context, *open, brief).await {
+                if let Some(step) = self.stalled(&mut work, &v, &question, context, *open, brief).await {
                     return step;
                 }
             } else {
                 let answer = self
-                    .ask_owner(&v.id, question, context, &opts, purpose.as_ref().unwrap_or(&Purpose::NoChecks))
+                    .ask_owner(&v.id, &question, context, &opts, purpose.as_ref().unwrap_or(&Purpose::NoChecks))
                     .await;
                 match &purpose {
                     Some(p) => {
@@ -1385,12 +1437,16 @@ impl VerifyCheck {
                         .iter()
                         .filter_map(|r| r.review.as_ref().err().map(|e| format!("- {}: {e}", r.lens.as_str())))
                         .collect();
-                    let question = format!(
-                        "The review of {} could not finish: {} reviewer{} failed {attempt} times. Run {} again?",
-                        work.project_root.display(),
-                        unfinished.len(),
-                        if unfinished.len() == 1 { "" } else { "s" },
-                        if unfinished.len() == 1 { "it" } else { "them" }
+                    let project = work.project_root.display().to_string();
+                    let question = Question::keyed(
+                        "reviewFailed",
+                        json!({ "project": project, "count": unfinished.len(), "tries": attempt }),
+                        format!(
+                            "The review of {project} could not finish: {} reviewer{} failed {attempt} times. Run {} again?",
+                            unfinished.len(),
+                            if unfinished.len() == 1 { "" } else { "s" },
+                            if unfinished.len() == 1 { "it" } else { "them" }
+                        ),
                     );
                     let purpose = Purpose::ReviewFailed;
                     let answer = self.ask_owner(&v.id, &question, &why.join("\n"), &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
@@ -1548,7 +1604,7 @@ impl VerifyCheck {
                 "{}\n\nWhy it matters: {}\n\nWhere: {}",
                 d.repro, d.impact, d.evidence
             );
-            match self.ask_owner(&v.id, &d.title, &context, &options, &Purpose::Decision { title: d.title.clone() }).await {
+            match self.ask_owner(&v.id, &Question::as_written(&d.title), &context, &options, &Purpose::Decision { title: d.title.clone() }).await {
                 Some(answer) => {
                     decided.push(format!("The owner decided \"{}\": {}. Carry it out.", d.title, answer.text()));
                     asked.push(json!({ "finding": d, "answer": answer.text() }));
@@ -1602,11 +1658,15 @@ impl VerifyCheck {
                 &decided,
             );
             if findings::stalled(&counts, came_back) {
-                let question = format!(
-                    "The review of {} keeps finding problems: {blocking_now} blocking issue{} still open after {round} rounds, \
-                     without getting fewer. What should happen?",
-                    work.project_root.display(),
-                    if blocking_now == 1 { " is" } else { "s are" }
+                let project = work.project_root.display().to_string();
+                let question = Question::keyed(
+                    "stalled",
+                    json!({ "project": project, "open": blocking_now, "rounds": round }),
+                    format!(
+                        "The review of {project} keeps finding problems: {blocking_now} blocking issue{} still open after \
+                         {round} rounds, without getting fewer. What should happen?",
+                        if blocking_now == 1 { " is" } else { "s are" }
+                    ),
                 );
                 let context = open
                     .iter()
@@ -1660,10 +1720,14 @@ impl VerifyCheck {
             // Reviewed, but no build or test could run: not verified.
             let reason = Why::new("no_checks");
             if work.kind == WorkKind::Isolated {
-                let question = format!(
-                    "The change to {} was reviewed, but the project has no build or tests that could run, so it isn't verified. \
-                     Land it anyway?",
-                    work.project_root.display()
+                let project = work.project_root.display().to_string();
+                let question = Question::keyed(
+                    "noChecks",
+                    json!({ "project": project }),
+                    format!(
+                        "The change to {project} was reviewed, but the project has no build or tests that could run, so it \
+                         isn't verified. Land it anyway?"
+                    ),
                 );
                 let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
                 return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
@@ -1916,14 +1980,19 @@ impl VerifyCheck {
             ..Default::default()
         });
         if findings::stalled(&progress_counts(&store.verification_rounds(&v.id).unwrap_or_default(), i64::MAX), false) {
-            let question = format!(
-                "The change to {} passed review, but it can't land as it was reviewed: {} It hasn't got closer in the last {} \
-                 tries. What should happen?",
-                work.project_root.display(),
-                said,
-                findings::ROUNDS_WITHOUT_PROGRESS
+            let (project, tries) = (work.project_root.display().to_string(), findings::ROUNDS_WITHOUT_PROGRESS);
+            let question = Question::keyed(
+                "cantLand",
+                json!({ "project": project, "tries": tries }),
+                format!(
+                    "The change to {project} passed review, but it can't land as it was reviewed, and it hasn't got closer \
+                     in the last {tries} tries. What should happen?"
+                ),
             );
-            if let Some(step) = self.stalled(work, v, &question, &text, 1, &text).await {
+            // Why it can't land is the landing's own account: shown with the
+            // question, as what he decides on.
+            let context = format!("{said}\n\n{text}");
+            if let Some(step) = self.stalled(work, v, &question, &context, 1, &text).await {
                 return step;
             }
         }
@@ -1958,15 +2027,17 @@ impl VerifyCheck {
                 Step::Finished
             }
             MergeOutcome::OwnerEdits { files, .. } => {
-                let question = format!(
-                    "This change is verified, and you have edits of your own in {} that it also touches. Nothing of yours was \
-                     overwritten. What should happen?",
-                    files.join(", ")
-                );
-                let context = format!(
-                    "The change waits in its copy at {}.",
-                    work.work_dir.display()
-                );
+                let (files, path) = (files.join(", "), work.work_dir.display().to_string());
+                let question = Question::keyed(
+                    "ownerEdits",
+                    json!({ "files": files }),
+                    format!(
+                        "This change is verified, and you have edits of your own in {files} that it also touches. Nothing of \
+                         yours was overwritten. What should happen?"
+                    ),
+                )
+                .with_context("ownerEditsContext", json!({ "path": path }));
+                let context = format!("The change waits in its copy at {path}.");
                 let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
                 self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref()).await.unwrap_or(Step::Finished)
             }
@@ -1985,7 +2056,7 @@ impl VerifyCheck {
     /// has sent it on [`STALL_GO_ONS`] times this turn and it stalls again,
     /// it stops as stalled instead of asking again. `brief`: what the
     /// builder is told if it goes on. `None`: the round goes on.
-    async fn stalled(&self, work: &mut Work, v: &db::Verification, question: &str, context: &str, open: usize, brief: &str) -> Option<Step> {
+    async fn stalled(&self, work: &mut Work, v: &db::Verification, question: &Question, context: &str, open: usize, brief: &str) -> Option<Step> {
         if self.verify.shared().gone_on_enough(&v.id) {
             self.finish(v, "not_verified", Some(Why::new("stalled").with("open", open)));
             return Some(Step::Finished);
@@ -2217,6 +2288,30 @@ fn landing_message(spec: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every question and choice of the loop's is worded in the owner's
+    /// language by a key the apps hold (`verify.ask.*`), and its English is
+    /// the apps' English for it: the fallback says what the key says.
+    #[test]
+    fn the_loops_questions_are_worded_by_keys_the_apps_hold() {
+        let en: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/src/lib/i18n/locales/en.json")).unwrap(),
+        )
+        .unwrap();
+        let held = |key: &str| en["verify"]["ask"][key.trim_start_matches("verify.ask.")].as_str().map(str::to_string);
+        for label in [KEEP_GOING, LAND_ANYWAY, STOP_HERE, KEEP_IN_COPY, LAND_AFTER_MINE, KEEP_MINE] {
+            let key = choice_key(label).expect("each choice of the loop's has a key");
+            assert_eq!(held(&key).as_deref(), Some(label), "{key}");
+        }
+        assert_eq!(choice_key("cents"), None, "a reviewer's own choice shows as written");
+        let q = Question::keyed("noChecks", json!({ "project": "/p" }), String::new()).with_context("ownerEditsContext", json!({ "path": "/c" }));
+        for key in [&q.words["questionKey"], &q.words["contextKey"]] {
+            assert!(held(key.as_str().unwrap()).is_some(), "{key}");
+        }
+        assert_eq!(held("verify.ask.noChecks").unwrap().replace("{project}", "/p"),
+            "The change to /p was reviewed, but the project has no build or tests that could run, so it isn't verified. Land it anyway?");
+        assert!(Question::as_written("Round to cents?").words.is_null());
+    }
 
     /// The card's choice is a choice; his typed words are his own words.
     #[test]

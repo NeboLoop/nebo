@@ -4579,7 +4579,21 @@
 		"answering": "回答中：{question}",
 		"tellIt": "どうするか伝える",
 		"sending": "送信中…",
-		"sendFailed": "回答を送信できませんでした。"
+		"sendFailed": "回答を送信できませんでした。",
+		"ask": {
+			"stalled": "{project} のレビューで問題が見つかり続けています。{rounds} ラウンド後もブロッキング問題が {open} 件残っており、減っていません。どうしますか？",
+			"reviewFailed": "{project} のレビューを完了できませんでした。{count} 人のレビュアーが {tries} 回失敗しました。もう一度実行しますか？",
+			"noChecks": "{project} への変更はレビューされましたが、プロジェクトに実行できるビルドやテストがないため、検証されていません。それでも反映しますか？",
+			"ownerEdits": "この変更は検証済みですが、{files} にこの変更も触れるあなた自身の編集があります。あなたの編集は何も上書きされていません。どうしますか？",
+			"ownerEditsContext": "変更は {path} のコピーで待機しています。",
+			"cantLand": "{project} への変更はレビューに合格しましたが、レビューされたとおりに反映できず、直近 {tries} 回の試行でも近づいていません。どうしますか？",
+			"keepGoing": "続ける",
+			"landAnyway": "それでも反映する",
+			"stopHere": "ここで止める",
+			"keepInCopy": "コピーに残す",
+			"landAfterMine": "自分の変更をコミットしてから反映する",
+			"keepMine": "自分の変更を残し、反映しない"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} が追加の許可を求めています",

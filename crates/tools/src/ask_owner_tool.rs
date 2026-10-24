@@ -126,6 +126,17 @@ impl AskOwnerTool {
         if let Some(context) = input["context"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
             widgets[0]["context"] = json!(context);
         }
+        // A question Nebo itself asks (the code check's) carries the message
+        // keys the owner's apps word it by in his language; its English is
+        // the fallback, and an option still answers with its English label.
+        // An employee's own question is shown as it wrote it.
+        if let Some(words) = input["words"].as_object() {
+            for key in WORD_FIELDS {
+                if let Some(v) = words.get(key).filter(|v| !v.is_null()) {
+                    widgets[0][key] = v.clone();
+                }
+            }
+        }
         match ctx.ask_user(question, widgets).await {
             Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
@@ -141,6 +152,9 @@ impl AskOwnerTool {
         }
     }
 }
+
+/// The fields of a harness question's `words` the card carries.
+const WORD_FIELDS: [&str; 5] = ["questionKey", "questionValues", "contextKey", "contextValues", "optionKeys"];
 
 /// The question as it goes up the reporting line: the question, what is
 /// decided on, the options and the recommended one, so the employee
@@ -431,6 +445,34 @@ mod tests {
         assert!(card.widgets.expect("the card")[0].get("context").is_none());
         let schema = AskOwnerTool::new(Arc::new(Store::new(&tempfile::tempdir().unwrap().path().join("a.db").to_string_lossy()).unwrap()), crate::coworker::new_rail_cell()).schema();
         assert!(schema["properties"]["context"].is_object());
+    }
+
+    /// A question Nebo itself asks travels with the keys the owner's apps
+    /// word it by in his language; its English stays the question, and his
+    /// pick is still the English label. An employee's question has none.
+    #[tokio::test]
+    async fn a_harness_question_carries_its_words_for_the_owners_language() {
+        let q = json!({
+            "question": "The review of /p could not finish: 1 reviewer failed 3 times. Run it again?",
+            "options": ["Keep going", "Stop here"],
+            "words": {
+                "questionKey": "verify.ask.reviewFailed",
+                "questionValues": {"project": "/p", "count": 1, "tries": 3},
+                "optionKeys": ["verify.ask.keepGoing", "verify.ask.stopHere"],
+                "contextKey": null,
+                "unrelated": "dropped"
+            }
+        });
+        let (card, r) = asked(q, "Keep going").await;
+        assert!(card.text.starts_with("The review of /p"), "the English is the fallback");
+        let w = &card.widgets.expect("the card")[0];
+        assert_eq!(w["questionKey"], "verify.ask.reviewFailed");
+        assert_eq!(w["questionValues"]["tries"], 3);
+        assert_eq!(w["optionKeys"], json!(["verify.ask.keepGoing", "verify.ask.stopHere"]));
+        assert!(w.get("contextKey").is_none() && w.get("unrelated").is_none());
+        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap()["picked"], "Keep going");
+        let (card, _) = asked(json!({"question": "Which?", "options": ["A", "B"]}), "A").await;
+        assert!(card.widgets.expect("the card")[0].get("questionKey").is_none());
     }
 
     /// Live 2026-10-02: asked "can you use the cards?", Chief drew an A2UI

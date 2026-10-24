@@ -4579,7 +4579,21 @@
 		"answering": "正在回答：{question}",
 		"tellIt": "告訴它怎麼做",
 		"sending": "正在傳送…",
-		"sendFailed": "你的回答沒有傳送出去。"
+		"sendFailed": "你的回答沒有傳送出去。",
+		"ask": {
+			"stalled": "{project} 的審查一直發現問題：經過 {rounds} 輪後仍有 {open} 個阻擋問題未解決，而且沒有減少。接下來要怎麼做？",
+			"reviewFailed": "{project} 的審查無法完成：{count} 位審查者失敗了 {tries} 次。要重新執行嗎？",
+			"noChecks": "對 {project} 的變更已審查，但專案沒有可執行的建置或測試，因此未經驗證。仍要合入嗎？",
+			"ownerEdits": "此變更已驗證，但你在 {files} 中有它也會動到的自己的修改。你的內容沒有被覆寫。接下來要怎麼做？",
+			"ownerEditsContext": "變更在 {path} 的副本中等候。",
+			"cantLand": "對 {project} 的變更已通過審查，但無法照審查時的樣子合入，而且最近 {tries} 次嘗試都沒有更接近。接下來要怎麼做？",
+			"keepGoing": "繼續",
+			"landAnyway": "仍然合入",
+			"stopHere": "到此為止",
+			"keepInCopy": "留在副本中",
+			"landAfterMine": "等我提交我的修改後再合入",
+			"keepMine": "保留我的，不要合入"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} 想做更多事",
