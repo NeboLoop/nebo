@@ -1660,6 +1660,63 @@ async fn a_pick_for_the_owner_is_the_ask_card_and_only_a_tapped_option_is_a_pick
     assert!(!offered.is_empty() && offered.iter().all(|a2ui| !a2ui), "a2ui was offered to an employee no app draws it for: {offered:?}");
 }
 
+/// Live 2026-10-24: Nebo restarted while a code check waited on the
+/// owner's answer to a reviewer's call. The card lived only in the process
+/// that died; the row kept the question, the phone's sheet said "Waiting on
+/// you", and nothing put the question to him until his next message. At
+/// boot the conversation is woken and its end check asks it again: parked
+/// on the run, and in Needs you with its choices to answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_code_checks_question_a_restart_left_open_is_asked_again_at_boot() {
+    const OWNER: &str = "agent:proof-verify-ask:web";
+    const QUESTION: &str = "Match airports by code first, or by city name?";
+    const OPTIONS: [&str; 2] = ["Code first", "City name"];
+    let nebo = session().await;
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if t.new_text().contains("Nebo restarted while the code check") {
+            return Some(Step::say("VASK-WAITING The check is waiting on your answer."));
+        }
+        t.opener().contains("OWNER-VASK").then(|| Step::say("OWNER-VASK noted."))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    // His conversation, and its check paused on the question, as the last
+    // process left them.
+    rig.owner_writes(OWNER, "", None, "OWNER-VASK make search match airports").await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("deals.py"), "def search(q): ...\n").unwrap();
+    let root = project.path().to_string_lossy().to_string();
+    let store = nebo.store();
+    store
+        .create_verification(
+            &db::NewVerification { id: "v-restart-ask", session_key: OWNER, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+            1,
+        )
+        .unwrap();
+    let ask = json!({ "question": QUESTION, "context": "Where: deals.py:1", "options": OPTIONS, "purpose": { "kind": "decision", "title": QUESTION }, "words": null });
+    store.set_verification_pending_ask("v-restart-ask", Some(&ask)).unwrap();
+    store.set_verification_state("v-restart-ask", &db::VerificationState { state: "paused", ..Default::default() }, 2).unwrap();
+    assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "no card anywhere");
+
+    crate::scheduler::ask_verify_questions_again(&nebo.state);
+    rig.until(30, "the question is put to him again", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
+    })
+    .await;
+    let waiting = crate::handlers::asks::waiting(&nebo.state, Some(OWNER)).await;
+    let card = &waiting.iter().find(|w| w.card.question == QUESTION).expect("the question is in Needs you").card;
+    assert_eq!(card.options, OPTIONS, "with its choices");
+    assert!(card.answerable, "{card:?}");
+    let row = store.get_verification("v-restart-ask").unwrap().unwrap();
+    assert_eq!((row.state.as_str(), row.pending_ask.is_some()), ("paused", true), "the question waits on the row while it is asked");
+    // His Stop ends the wait: nothing of this check is left waiting.
+    assert!(nebo.state.run_registry.cancel_by_session(OWNER).await);
+    rig.until(30, "the check ends with his stop", || {
+        store.get_verification("v-restart-ask").ok().flatten().is_some_and(|v| v.pending_ask.is_none() && !matches!(v.state.as_str(), "running" | "paused"))
+    })
+    .await;
+    rig.until(30, "its turn has ended", || !rig.busy(OWNER)).await;
+}
+
 /// Live 2026-09-29, on the owner's call while he drove: the employee asked
 /// a question the call never put to him, the voice model answered an
 /// invented ask id, and six restated "yes" tasks queued behind the frozen
