@@ -40,6 +40,14 @@
 		 *  same POST /codes path; `code`/`name` above describe the first for older
 		 *  clients. */
 		hires?: { code: string; name: string; plugin?: string; description?: string }[];
+		/** A question Nebo itself asks words itself in the owner's language
+		 *  (`AskWords`): questionKey, questionValues, contextKey,
+		 *  contextValues, optionKeys. */
+		questionKey?: string;
+		questionValues?: Record<string, string | number>;
+		contextKey?: string;
+		contextValues?: Record<string, string | number>;
+		optionKeys?: (string | null)[];
 	}
 
 	/** What a connect card's Connect signs in: the card's own plugin, for the
@@ -200,18 +208,25 @@
 	// and uses markdown like every other agent message — render it, don't show
 	// raw ** markers. Same marked pipeline as the chat transcript.
 	import { parseMarkdown, plainText } from '$lib/markdown';
-	const promptHtml = $derived(parseMarkdown(prompt));
-	const contextHtml = $derived(widgets?.[0]?.context ? parseMarkdown(widgets[0].context) : '');
-
+	import { wordedContext, wordedOption, wordedQuestion } from '$lib/chat/askWords';
 	const widget = $derived(widgets?.[0]);
+	// The question and its context in the owner's language when Nebo sent
+	// their keys, else as written.
+	const shownPrompt = $derived(wordedQuestion($t, prompt, widget));
+	const shownContext = $derived(wordedContext($t, widget?.context ?? '', widget));
+	const promptHtml = $derived(parseMarkdown(shownPrompt));
+	const contextHtml = $derived(shownContext ? parseMarkdown(shownContext) : '');
+
 	const options = $derived(normalizeOptions(widget?.options));
+	/** An option's label as the owner reads it; the answer is the label. */
+	const optionText = (label: string) => wordedOption($t, options.map((o) => o.label), label, widget);
 	const isMulti = $derived(widget?.multiSelect === true || widget?.type === 'checkbox');
 
 	let selected = $state(new Set<string>());
 
 	const answered = $derived(response != null);
 	/** The question on one line, for the receipt: its first line, markdown marks dropped. */
-	const question = $derived(plainText(prompt ?? '', { first: true }));
+	const question = $derived(plainText(shownPrompt ?? '', { first: true }));
 	/** What the owner chose, as the receipt marks it: the options picked, and any answer typed in his own words. */
 	const chosen = $derived(answered && response !== SKIP_VALUE && !response?.startsWith(FAILED_PREFIX) ? (response ?? '').split(', ') : []);
 	const typedAnswers = $derived(options.length > 0 ? chosen.filter((c) => !options.some((o) => o.label === c)) : []);
@@ -249,7 +264,7 @@
 	<AskReceipt
 		lead={answered && !wasSkipped ? $t('chat.askedReceipt') : cancelled && !answered ? $t('common.cancelled') : $t('common.skipped')}
 		subject={question}
-		answer={answered && !wasSkipped ? (failedReason ?? response) : ''}
+		answer={answered && !wasSkipped ? (failedReason ?? optionText(response ?? '')) : ''}
 		failed={failedReason != null}
 	>
 		{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
@@ -259,7 +274,7 @@
 				{#each options as option}
 					<li class="ask-receipt-option" class:ask-receipt-chosen={chosen.includes(option.label)}>
 						{#if chosen.includes(option.label)}<Check class="ask-receipt-mark" />{:else}<span class="ask-receipt-mark-none"></span>{/if}
-						{option.label}
+						{optionText(option.label)}
 					</li>
 				{/each}
 				{#each typedAnswers as typed}
@@ -361,7 +376,7 @@
 						/>
 						<span class="flex flex-col">
 							<span class="text-sm">
-								{option.label}
+								{optionText(option.label)}
 								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
 							</span>
 							{#if option.description}<span class="text-xs text-base-content/70">{option.description}</span>{/if}
@@ -373,7 +388,7 @@
 			<select class="select select-bordered select-sm ask-select" onchange={(e) => e.currentTarget.value && submit(e.currentTarget.value)}>
 				<option value="" selected disabled>{$t('chat.chooseOne')}</option>
 				{#each options as option}
-					<option value={option.label}>{option.label}{option.recommended ? ` · ${$t('chat.recommended')}` : ''}</option>
+					<option value={option.label}>{optionText(option.label)}{option.recommended ? ` · ${$t('chat.recommended')}` : ''}</option>
 				{/each}
 			</select>
 		{:else}
@@ -386,7 +401,7 @@
 					>
 						<span class="flex flex-col items-start text-start">
 							<span class="font-medium">
-								{option.label}
+								{optionText(option.label)}
 								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
 							</span>
 							{#if option.description}<span class="text-xs text-base-content/70 font-normal">{option.description}</span>{/if}

@@ -4579,7 +4579,21 @@
 		"answering": "Answering: {question}",
 		"tellIt": "Tell it what to do",
 		"sending": "Sending…",
-		"sendFailed": "Your answer didn't send."
+		"sendFailed": "Your answer didn't send.",
+		"ask": {
+			"stalled": "The review of {project} keeps finding problems: {open, plural, one {# blocking issue is} other {# blocking issues are}} still open after {rounds} rounds, without getting fewer. What should happen?",
+			"reviewFailed": "The review of {project} could not finish: {count, plural, one {# reviewer} other {# reviewers}} failed {tries} times. Run {count, plural, one {it} other {them}} again?",
+			"noChecks": "The change to {project} was reviewed, but the project has no build or tests that could run, so it isn't verified. Land it anyway?",
+			"ownerEdits": "This change is verified, and you have edits of your own in {files} that it also touches. Nothing of yours was overwritten. What should happen?",
+			"ownerEditsContext": "The change waits in its copy at {path}.",
+			"cantLand": "The change to {project} passed review, but it can't land as it was reviewed, and it hasn't got closer in the last {tries} tries. What should happen?",
+			"keepGoing": "Keep going",
+			"landAnyway": "Land it anyway",
+			"stopHere": "Stop here",
+			"keepInCopy": "Keep it in its copy",
+			"landAfterMine": "Land it after I commit mine",
+			"keepMine": "Keep mine, don't land it"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} wants to do more",

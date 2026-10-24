@@ -4579,7 +4579,21 @@
 		"answering": "Antwort auf: {question}",
 		"tellIt": "Sag, was zu tun ist",
 		"sending": "Wird gesendet…",
-		"sendFailed": "Deine Antwort wurde nicht gesendet."
+		"sendFailed": "Deine Antwort wurde nicht gesendet.",
+		"ask": {
+			"stalled": "Die Prüfung von {project} findet weiter Probleme: {open, plural, one {# blockierendes Problem ist} other {# blockierende Probleme sind}} nach {rounds} Runden noch offen, ohne weniger zu werden. Wie soll es weitergehen?",
+			"reviewFailed": "Die Prüfung von {project} konnte nicht abgeschlossen werden: {count, plural, one {# Prüfer ist} other {# Prüfer sind}} {tries}-mal gescheitert. Erneut ausführen?",
+			"noChecks": "Die Änderung an {project} wurde geprüft, aber das Projekt hat keinen Build und keine Tests, die laufen konnten, daher ist sie nicht verifiziert. Trotzdem übernehmen?",
+			"ownerEdits": "Diese Änderung ist verifiziert, und du hast eigene Änderungen in {files}, die sie ebenfalls berührt. Nichts von dir wurde überschrieben. Wie soll es weitergehen?",
+			"ownerEditsContext": "Die Änderung wartet in ihrer Kopie unter {path}.",
+			"cantLand": "Die Änderung an {project} hat die Prüfung bestanden, kann aber nicht so übernommen werden, wie sie geprüft wurde, und ist in den letzten {tries} Versuchen nicht näher gekommen. Wie soll es weitergehen?",
+			"keepGoing": "Weitermachen",
+			"landAnyway": "Trotzdem übernehmen",
+			"stopHere": "Hier aufhören",
+			"keepInCopy": "In der Kopie lassen",
+			"landAfterMine": "Übernehmen, nachdem ich meine committet habe",
+			"keepMine": "Meine behalten, nicht übernehmen"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} möchte mehr tun",

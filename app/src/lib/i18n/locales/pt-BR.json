@@ -4579,7 +4579,21 @@
 		"answering": "Respondendo: {question}",
 		"tellIt": "Diga o que fazer",
 		"sending": "Enviando…",
-		"sendFailed": "Sua resposta não foi enviada."
+		"sendFailed": "Sua resposta não foi enviada.",
+		"ask": {
+			"stalled": "A revisão de {project} continua encontrando problemas: {open, plural, one {# problema bloqueante continua aberto} other {# problemas bloqueantes continuam abertos}} depois de {rounds} rodadas, sem diminuir. O que deve acontecer?",
+			"reviewFailed": "A revisão de {project} não conseguiu terminar: {count, plural, one {# revisor falhou} other {# revisores falharam}} {tries} vezes. Executar de novo?",
+			"noChecks": "A mudança em {project} foi revisada, mas o projeto não tem build nem testes que pudessem rodar, então ela não está verificada. Integrar mesmo assim?",
+			"ownerEdits": "Esta mudança está verificada, e você tem alterações suas em {files} que ela também toca. Nada seu foi sobrescrito. O que deve acontecer?",
+			"ownerEditsContext": "A mudança aguarda na cópia dela em {path}.",
+			"cantLand": "A mudança em {project} passou na revisão, mas não pode ser integrada do jeito que foi revisada e não chegou mais perto nas últimas {tries} tentativas. O que deve acontecer?",
+			"keepGoing": "Continuar",
+			"landAnyway": "Integrar mesmo assim",
+			"stopHere": "Parar aqui",
+			"keepInCopy": "Manter na cópia",
+			"landAfterMine": "Integrar depois que eu fizer commit das minhas",
+			"keepMine": "Manter as minhas, não integrar"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} quer fazer mais",

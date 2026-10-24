@@ -3,6 +3,7 @@
 // when it opens and again whenever the socket comes back (a change while it
 // was down is only in the list), and kept current by `verification_updated`.
 
+import type { AskWords } from "$lib/chat/askWords";
 import { writable } from "svelte/store";
 import type { VerificationView } from "$lib/api/neboComponents";
 import { getWebSocketClient } from "$lib/websocket/client";
@@ -204,13 +205,15 @@ export function badgeWords(
 }
 
 /** The question a verification waits on the owner for, with the choices
- *  it offered; null when it waits on none. */
-export function askOf(v: VerificationView): { question: string; options: string[] } | null {
-  const ask = v.pendingAsk as { question?: unknown; options?: unknown } | null | undefined;
+ *  it offered and the keys it is worded by in his language (`words`);
+ *  null when it waits on none. */
+export function askOf(v: VerificationView): { question: string; options: string[]; words?: AskWords } | null {
+  const ask = v.pendingAsk as { question?: unknown; options?: unknown; words?: unknown } | null | undefined;
   const question = typeof ask?.question === "string" ? ask.question.trim() : "";
   if (!question) return null;
   const options = Array.isArray(ask?.options) ? ask.options.filter((o): o is string => typeof o === "string") : [];
-  return { question, options };
+  const words = ask?.words && typeof ask.words === "object" ? (ask.words as AskWords) : undefined;
+  return { question, options, ...(words ? { words } : {}) };
 }
 
 /** Answers the question a verification waits on with a choice or Skip,

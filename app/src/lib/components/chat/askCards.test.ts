@@ -65,6 +65,21 @@ const permission = {
 };
 
 describe('ask cards', () => {
+	it("a question of the code check's is worded by its keys, its choices too", () => {
+		const keyed = [{
+			type: 'options' as const,
+			options: ['Keep going', 'Stop here'],
+			questionKey: 'verify.ask.reviewFailed',
+			questionValues: { project: '/work/shop', count: 2, tries: 3 },
+			optionKeys: ['verify.ask.keepGoing', 'verify.ask.stopHere']
+		}];
+		const html = render(AskWidget, { props: { requestId: 'r2', prompt: 'FALLBACK', widgets: keyed, onSubmit: () => {} } }).body;
+		expect(text(html)).toContain('The review of /work/shop could not finish: 2 reviewers failed 3 times. Run them again?');
+		expect(html).not.toContain('FALLBACK');
+		expect(text(html)).toContain('Keep going');
+	});
+
+
 	it('an open question is a tinted ask card, not a receipt', () => {
 		const html = ask(undefined, { disabled: false });
 		expect(html).toContain('class="ask-card"');

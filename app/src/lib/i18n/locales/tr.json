@@ -4579,7 +4579,21 @@
 		"answering": "Yanıtlanıyor: {question}",
 		"tellIt": "Ne yapacağını söyle",
 		"sending": "Gönderiliyor…",
-		"sendFailed": "Yanıtın gönderilmedi."
+		"sendFailed": "Yanıtın gönderilmedi.",
+		"ask": {
+			"stalled": "{project} incelemesi sorun bulmaya devam ediyor: {rounds} turdan sonra hâlâ açık engelleyici sorun sayısı {open} ve azalmıyor. Ne yapılsın?",
+			"reviewFailed": "{project} incelemesi tamamlanamadı: {count} inceleyici {tries} kez başarısız oldu. Yeniden çalıştırılsın mı?",
+			"noChecks": "{project} üzerindeki değişiklik incelendi, ancak projede çalıştırılabilecek bir derleme veya test yok, bu yüzden doğrulanmadı. Yine de aktarılsın mı?",
+			"ownerEdits": "Bu değişiklik doğrulandı ve {files} içinde onun da dokunduğu kendi düzenlemeleriniz var. Sizin hiçbir şeyinizin üzerine yazılmadı. Ne yapılsın?",
+			"ownerEditsContext": "Değişiklik {path} konumundaki kopyasında bekliyor.",
+			"cantLand": "{project} üzerindeki değişiklik incelemeden geçti, ancak incelendiği hâliyle aktarılamıyor ve son {tries} denemede bu hedefe yaklaşmadı. Ne yapılsın?",
+			"keepGoing": "Devam et",
+			"landAnyway": "Yine de aktar",
+			"stopHere": "Burada dur",
+			"keepInCopy": "Kopyasında tut",
+			"landAfterMine": "Benimkileri commit ettikten sonra aktar",
+			"keepMine": "Benimkileri koru, aktarma"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} daha fazlasını yapmak istiyor",

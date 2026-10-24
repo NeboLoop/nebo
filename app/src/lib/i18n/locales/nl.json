@@ -4579,7 +4579,21 @@
 		"answering": "Antwoord op: {question}",
 		"tellIt": "Zeg wat het moet doen",
 		"sending": "Versturen…",
-		"sendFailed": "Je antwoord is niet verstuurd."
+		"sendFailed": "Je antwoord is niet verstuurd.",
+		"ask": {
+			"stalled": "De review van {project} blijft problemen vinden: {open, plural, one {# blokkerend probleem staat} other {# blokkerende problemen staan}} na {rounds} rondes nog open, zonder minder te worden. Wat moet er gebeuren?",
+			"reviewFailed": "De review van {project} kon niet afronden: {count, plural, one {# reviewer is} other {# reviewers zijn}} {tries} keer mislukt. Opnieuw uitvoeren?",
+			"noChecks": "De wijziging aan {project} is gereviewd, maar het project heeft geen build of tests die konden draaien, dus ze is niet geverifieerd. Toch doorvoeren?",
+			"ownerEdits": "Deze wijziging is geverifieerd, en je hebt eigen wijzigingen in {files} die ze ook raakt. Niets van jou is overschreven. Wat moet er gebeuren?",
+			"ownerEditsContext": "De wijziging wacht in haar kopie op {path}.",
+			"cantLand": "De wijziging aan {project} is door de review gekomen, maar kan niet worden doorgevoerd zoals ze is gereviewd, en is in de laatste {tries} pogingen niet dichterbij gekomen. Wat moet er gebeuren?",
+			"keepGoing": "Doorgaan",
+			"landAnyway": "Toch doorvoeren",
+			"stopHere": "Hier stoppen",
+			"keepInCopy": "In de kopie laten",
+			"landAfterMine": "Doorvoeren nadat ik de mijne commit",
+			"keepMine": "Mijn wijzigingen houden, niet doorvoeren"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} wil meer doen",

@@ -4579,7 +4579,21 @@
 		"answering": "Menjawab: {question}",
 		"tellIt": "Katakan apa yang harus dilakukan",
 		"sending": "Mengirim…",
-		"sendFailed": "Jawabanmu tidak terkirim."
+		"sendFailed": "Jawabanmu tidak terkirim.",
+		"ask": {
+			"stalled": "Peninjauan {project} terus menemukan masalah: setelah {rounds} putaran masih ada {open} masalah penghambat yang terbuka, dan jumlahnya tidak berkurang. Apa yang harus dilakukan?",
+			"reviewFailed": "Peninjauan {project} tidak dapat selesai: {count} peninjau gagal {tries} kali. Jalankan lagi?",
+			"noChecks": "Perubahan pada {project} sudah ditinjau, tetapi proyek tidak memiliki build atau tes yang bisa dijalankan, jadi belum terverifikasi. Tetap gabungkan?",
+			"ownerEdits": "Perubahan ini sudah terverifikasi, dan Anda punya suntingan sendiri di {files} yang juga disentuhnya. Tidak ada milik Anda yang ditimpa. Apa yang harus dilakukan?",
+			"ownerEditsContext": "Perubahan menunggu di salinannya di {path}.",
+			"cantLand": "Perubahan pada {project} lolos peninjauan, tetapi tidak bisa digabungkan seperti saat ditinjau, dan tidak semakin dekat dalam {tries} percobaan terakhir. Apa yang harus dilakukan?",
+			"keepGoing": "Lanjutkan",
+			"landAnyway": "Tetap gabungkan",
+			"stopHere": "Berhenti di sini",
+			"keepInCopy": "Simpan di salinannya",
+			"landAfterMine": "Gabungkan setelah saya commit milik saya",
+			"keepMine": "Simpan milik saya, jangan gabungkan"
+		}
 	},
 	"appPermissions": {
 		"title": "{name} ingin melakukan lebih banyak",
