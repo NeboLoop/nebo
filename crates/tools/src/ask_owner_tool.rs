@@ -80,12 +80,12 @@ impl AskOwnerTool {
     }
 
     async fn ask(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
-        let question = input["question"].as_str().unwrap_or("");
+        let steps = steps(input);
         // A helper never talks with the owner: the conversation that
         // started it does. Its question ends its turn and goes back in its
         // report; that conversation asks and sends the answer on.
         if ctx.door == types::permissions::Door::Helper {
-            return back_to_the_starter(input);
+            return back_to_the_starter(input, &steps);
         }
         // Asking needs someone at the keyboard: an automated, workflow,
         // channel or helper run would wait on a card nobody sees.
@@ -97,7 +97,7 @@ impl AskOwnerTool {
             // question goes up the reporting line. A seat that answers to the
             // owner still decides for itself: this is not a new way to
             // interrupt the owner.
-            if let Some(answered) = self.ask_up_the_line(ctx, &escalation(input)).await {
+            if let Some(answered) = self.ask_up_the_line(ctx, &escalation(input, &steps)).await {
                 return answered;
             }
             return ToolResult::error(
@@ -107,43 +107,23 @@ impl AskOwnerTool {
                  your decision in `answer` so it goes on.",
             );
         }
-        let options = input.get("options").cloned().unwrap_or_else(|| json!([]));
-        let multi_select = input["multi_select"].as_bool().unwrap_or(false);
-        let labels: Vec<String> = options
-            .as_array()
-            .map(|a| a.iter().filter_map(|o| o.as_str().map(str::to_string)).collect())
-            .unwrap_or_default();
-        let mut widgets =
-            json!([{ "type": "options", "multiSelect": multi_select, "options": options }]);
-        // A long list shows as a dropdown. The card keeps `options`, so an
-        // app that doesn't know `style` still shows the choices as buttons.
-        if input["style"].as_str() == Some("select") {
-            widgets[0]["style"] = json!("select");
-        }
+        let Some(first) = steps.first() else {
+            return ToolResult::error("question can't be empty.");
+        };
+        let mut widgets = Value::Array(steps.iter().map(Step::widget).collect());
         // What he is deciding on travels on the card, above the question:
         // the brief, the draft, the plan itself, not a tool row far above
         // (2026-10-19: "Want this every morning?" under a collapsed brief).
         if let Some(context) = input["context"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
             widgets[0]["context"] = json!(context);
         }
-        // A question Nebo itself asks (the code check's) carries the message
-        // keys the owner's apps word it by in his language; its English is
-        // the fallback, and an option still answers with its English label.
-        // An employee's own question is shown as it wrote it.
-        if let Some(words) = input["words"].as_object() {
-            for key in WORD_FIELDS {
-                if let Some(v) = words.get(key).filter(|v| !v.is_null()) {
-                    widgets[0][key] = v.clone();
-                }
-            }
-        }
-        match ctx.ask_user(question, widgets).await {
+        match ctx.ask_user(&first.question, widgets).await {
             Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
                  tell them what you assumed. If a helper asked it, send_message the helper your decision \
                  in `answer` so it goes on.",
             ),
-            Some(response) => ToolResult::ok(answer(&labels, multi_select, &response).to_string()),
+            Some(response) => ToolResult::ok(answers(&steps, &response).to_string()),
             None => ToolResult::error(
                 "No app is connected to show the question. Make a reasonable decision and \
                  proceed, or set out the options in your reply. If a helper asked it, send_message the \
@@ -153,21 +133,149 @@ impl AskOwnerTool {
     }
 }
 
+/// The most questions one card steps through.
+const MAX_STEPS: usize = 4;
+
+/// One choice on a question: a short label, and a line saying what it means.
+#[derive(Debug, Clone, PartialEq)]
+struct Choice {
+    label: String,
+    description: String,
+}
+
+/// One question of an ask, as the card shows it: a step of its wizard. A
+/// single question is a wizard of one step.
+#[derive(Debug, Clone, PartialEq)]
+struct Step {
+    /// The few words its step chip shows; empty on a single question.
+    header: String,
+    question: String,
+    options: Vec<Choice>,
+    multi_select: bool,
+    style: String,
+    /// A question Nebo itself asks: the keys it is worded by.
+    words: Option<serde_json::Map<String, Value>>,
+}
+
+impl Step {
+    fn from(v: &Value) -> Self {
+        let text = |key: &str| v[key].as_str().map(str::trim).unwrap_or("").to_string();
+        Step {
+            header: text("header"),
+            question: text("question"),
+            options: v["options"].as_array().map(|a| a.iter().filter_map(choice).collect()).unwrap_or_default(),
+            multi_select: v["multi_select"].as_bool().unwrap_or(false),
+            style: text("style"),
+            words: v["words"].as_object().cloned(),
+        }
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.options.iter().map(|o| o.label.clone()).collect()
+    }
+
+    /// The step as its card widget: an option is its label alone, or
+    /// `{label, description}` when it has one.
+    fn widget(&self) -> Value {
+        let options: Vec<Value> = self
+            .options
+            .iter()
+            .map(|o| if o.description.is_empty() { json!(o.label) } else { json!({"label": o.label, "description": o.description}) })
+            .collect();
+        let mut w = json!({ "type": "options", "multiSelect": self.multi_select, "options": options, "question": self.question });
+        if !self.header.is_empty() {
+            w["header"] = json!(self.header);
+        }
+        // A long list shows as a dropdown. The card keeps `options`, so an
+        // app that doesn't know `style` still shows the choices as buttons.
+        if self.style == "select" {
+            w["style"] = json!("select");
+        }
+        // A question Nebo itself asks (the code check's) carries the message
+        // keys the owner's apps word it by in his language; its English is
+        // the fallback, and an option still answers with its English label.
+        // An employee's own question is shown as it wrote it.
+        if let Some(words) = &self.words {
+            for key in WORD_FIELDS {
+                if let Some(v) = words.get(key).filter(|v| !v.is_null()) {
+                    w[key] = v.clone();
+                }
+            }
+        }
+        w
+    }
+}
+
+/// An option as given: a label, or `{label, description}`.
+fn choice(o: &Value) -> Option<Choice> {
+    let (label, description) = match o {
+        Value::String(s) => (s.as_str(), ""),
+        Value::Object(m) => (m.get("label")?.as_str()?, m.get("description").and_then(Value::as_str).unwrap_or("")),
+        _ => return None,
+    };
+    let label = label.trim();
+    (!label.is_empty()).then(|| Choice { label: label.to_string(), description: description.trim().to_string() })
+}
+
+/// The fields of one question given at the top level.
+const ONE_QUESTION: [&str; 6] = ["header", "question", "options", "multi_select", "style", "words"];
+
+/// The call with its questions in `questions` and each option a
+/// `{label}` object. A question Nebo asks itself (the code check's, with its
+/// `words`) and an ask from before the wizard give one question at the top
+/// level: it becomes the one entry. An option given as a plain string is
+/// its label.
+fn normalized(input: Value) -> Value {
+    let Value::Object(mut fields) = input else { return input };
+    if !fields.contains_key("questions") && fields.contains_key("question") {
+        let one: serde_json::Map<String, Value> = ONE_QUESTION.iter().filter_map(|k| fields.remove(*k).map(|v| (k.to_string(), v))).collect();
+        fields.insert("questions".into(), json!([one]));
+    }
+    if let Some(list) = fields.get_mut("questions").and_then(Value::as_array_mut) {
+        for options in list.iter_mut().filter_map(|q| q.get_mut("options")).filter_map(Value::as_array_mut) {
+            for o in options.iter_mut().filter(|o| o.is_string()) {
+                *o = json!({ "label": o.clone() });
+            }
+        }
+    }
+    Value::Object(fields)
+}
+
+/// The ask's questions, in order.
+fn steps(input: &Value) -> Vec<Step> {
+    normalized(input.clone())["questions"].as_array().map(|list| list.iter().map(Step::from).collect()).unwrap_or_default()
+}
+
 /// The fields of a harness question's `words` the card carries.
 const WORD_FIELDS: [&str; 5] = ["questionKey", "questionValues", "contextKey", "contextValues", "optionKeys"];
 
-/// The question as it goes up the reporting line: the question, what is
+/// The question as it goes up the reporting line: each question, what is
 /// decided on, the options and the recommended one, so the employee
 /// answering has all the owner's card would have shown.
-fn escalation(input: &Value) -> String {
-    let mut out = input["question"].as_str().unwrap_or("").trim().to_string();
-    if let Some(context) = input["context"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
-        out.push_str(&format!("\n\nContext: {context}"));
-    }
-    let options: Vec<&str> = input["options"].as_array().map(|a| a.iter().filter_map(|o| o.as_str()).collect()).unwrap_or_default();
-    if let Some(first) = options.first() {
-        let pick = if input["multi_select"].as_bool().unwrap_or(false) { "any of" } else { "one of" };
-        out.push_str(&format!("\nOptions ({pick}): {}\nRecommended: {first}", options.join(" | ")));
+fn escalation(input: &Value, steps: &[Step]) -> String {
+    let mut out = String::new();
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\n\n");
+        }
+        if steps.len() > 1 {
+            out.push_str(&format!("{}. ", i + 1));
+        }
+        out.push_str(&step.question);
+        if i == 0 {
+            if let Some(context) = input["context"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
+                out.push_str(&format!("\n\nContext: {context}"));
+            }
+        }
+        if let Some(first) = step.options.first() {
+            let pick = if step.multi_select { "any of" } else { "one of" };
+            let shown: Vec<String> = step
+                .options
+                .iter()
+                .map(|o| if o.description.is_empty() { o.label.clone() } else { format!("{} ({})", o.label, o.description) })
+                .collect();
+            out.push_str(&format!("\nOptions ({pick}): {}\nRecommended: {}", shown.join(" | "), first.label));
+        }
     }
     out
 }
@@ -175,12 +283,21 @@ fn escalation(input: &Value) -> String {
 /// A helper's question for the owner, as the result that ends its turn: the
 /// question travels on the result ([`ToolResult::question`]) to the
 /// conversation that started the helper.
-fn back_to_the_starter(input: &Value) -> ToolResult {
-    let text = |key: &str| input[key].as_str().map(str::trim).unwrap_or("").to_string();
-    let options = input["options"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|o| o.as_str()).map(str::trim).filter(|o| !o.is_empty()).map(str::to_string).collect())
-        .unwrap_or_default();
+fn back_to_the_starter(input: &Value, steps: &[Step]) -> ToolResult {
+    let context = input["context"].as_str().map(str::trim).unwrap_or("").to_string();
+    // One question travels as it is. Several travel as one question that
+    // sets each out, with its choices: the conversation that started the
+    // helper asks them again as its own card.
+    let question = match steps {
+        [one] => types::OwnerQuestion {
+            question: one.question.clone(),
+            context,
+            options: one.labels(),
+            multi_select: one.multi_select,
+            style: one.style.clone(),
+        },
+        _ => types::OwnerQuestion { question: escalation(&json!({}), steps), context, ..Default::default() },
+    };
     ToolResult {
         content: "Your question goes back with your report to the conversation that started you. It asks \
                   the owner and sends you the answer, as a message that starts \"The owner's answer to your \
@@ -188,13 +305,7 @@ fn back_to_the_starter(input: &Value) -> ToolResult {
                   that answer comes: any other message leaves it open, and you don't ask it again."
             .to_string(),
         terminal: true,
-        question: Some(types::OwnerQuestion {
-            question: text("question"),
-            context: text("context"),
-            options,
-            multi_select: input["multi_select"].as_bool().unwrap_or(false),
-            style: text("style"),
-        }),
+        question: Some(question),
         ..Default::default()
     }
 }
@@ -247,19 +358,50 @@ fn answer(options: &[String], multi_select: bool, response: &str) -> Value {
     })
 }
 
+/// The owner's reply to the whole ask, as the employee reads it. One
+/// question: its answer. Several: the card sends one answer per question,
+/// in order, as a JSON list; each is read against its own question. Words
+/// that are not that list (typed in the chat, or from an older app) are his
+/// own words for the set.
+fn answers(steps: &[Step], response: &str) -> Value {
+    if let [one] = steps {
+        return answer(&one.labels(), one.multi_select, response);
+    }
+    match serde_json::from_str::<Vec<String>>(response) {
+        Ok(each) if each.len() == steps.len() => json!({
+            "answers": steps
+                .iter()
+                .zip(&each)
+                .map(|(step, said)| {
+                    let mut a = if said.is_empty() {
+                        json!({ "skipped": true })
+                    } else {
+                        answer(&step.labels(), step.multi_select, said)
+                    };
+                    a["question"] = json!(step.question);
+                    a
+                })
+                .collect::<Vec<_>>(),
+        }),
+        _ => json!({
+            "own_words": response,
+            "note": "He answered all the questions at once in his own words, so nothing was picked. Take it as what he wrote; ask again only what it leaves open.",
+        }),
+    }
+}
+
 impl DynTool for AskOwnerTool {
     fn name(&self) -> &str {
         "ask_owner"
     }
 
     fn description(&self) -> String {
-        "Asks the owner one question; the work waits for the answer.\n\
-         - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
-         - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
-         - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer.\n\
-         - 6 or more options: set `style` to \"select\" for a dropdown.\n\
-         - About something you made or found (a brief, a draft, a plan)? Put it in `context`, not your message: the card shows it above the question.\n\
-         - The card is the one place the question appears: never write it in your message too.\n\
+        "Asks the owner up to 4 questions on one card; the work waits for the answers.\n\
+         - Only for real ambiguity: readings that lead to different work, or a choice only the owner can make. A clear instruction your mode allows is carried out, never asked back.\n\
+         - To have him pick, give `options`: a `label` of 1 to 5 words and a one-line `description`, the recommended option first. They show where he types, on desktop and in the mobile app, with \"Other\" for his own words. Never list them in text or draw a panel. Leave them out for a free answer.\n\
+         - Several decisions: one entry each in `questions`, each with a `header` of a few words.\n\
+         - 6+ options: `style` \"select\".\n\
+         - What he decides on (a brief, a draft, a plan) goes in `context`, shown above. The card is the one place the question appears: never write it in your message too.\n\
          - In a helper run your turn ends here: the question goes to the conversation that started you, which sends the answer back."
             .to_string()
     }
@@ -268,14 +410,35 @@ impl DynTool for AskOwnerTool {
         json!({
             "type": "object",
             "properties": {
-                "question": { "type": "string", "description": "The question, complete enough to answer without scrolling back." },
-                "context": { "type": "string", "description": "What he decides on, in markdown, shown above the question: the deliverable itself or a short summary." },
-                "options": { "type": "array", "items": { "type": "string" }, "description": "Short labels to choose from, the recommended one first. Leave out for a free answer." },
-                "multi_select": { "type": "boolean", "description": "Allow more than one option." },
-                "style": { "type": "string", "enum": ["buttons", "select"] }
-            },
-            "required": ["question"]
+                "questions": {
+                    "type": "array",
+                    "maxItems": MAX_STEPS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "header": { "type": "string" },
+                            "question": { "type": "string", "description": "Complete enough to answer without scrolling back." },
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": { "label": { "type": "string" }, "description": { "type": "string" } },
+                                    "required": ["label"]
+                                }
+                            },
+                            "multi_select": { "type": "boolean" },
+                            "style": { "type": "string", "enum": ["buttons", "select"] }
+                        },
+                        "required": ["question"]
+                    }
+                },
+                "context": { "type": "string" }
+            }
         })
+    }
+
+    fn normalize_input(&self, input: Value) -> Value {
+        normalized(input)
     }
 
     fn search_hint(&self) -> &str {
@@ -297,17 +460,20 @@ impl DynTool for AskOwnerTool {
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
-        if input["question"]
-            .as_str()
-            .is_none_or(|q| q.trim().is_empty())
-        {
+        let steps = steps(input);
+        if steps.is_empty() || steps.iter().any(|s| s.question.is_empty()) {
             return Err("question can't be empty.".to_string());
+        }
+        if steps.len() > MAX_STEPS {
+            return Err(format!("One card holds at most {MAX_STEPS} questions. Ask the rest once these are answered."));
+        }
+        if steps.len() > 1 && steps.iter().any(|s| s.header.is_empty()) {
+            return Err("With several questions, give each a `header` of a few words for its step.".to_string());
         }
         // Choices written into the question show as text the owner can't
         // tap (live 2026-10-08: three video lengths as a bullet list, a card
         // with only Other… and Skip). Send them back to be buttons.
-        let no_options = input["options"].as_array().is_none_or(|o| o.is_empty());
-        if no_options && listed_choices(input["question"].as_str().unwrap_or("")) >= 2 {
+        if steps.iter().any(|s| s.options.is_empty() && listed_choices(&s.question) >= 2) {
             return Err(
                 "The question lists choices in its text, where the owner can't tap them. Put \
                  each choice in `options` as a short label (the recommended one first) and keep \
@@ -398,9 +564,20 @@ mod tests {
     /// waiting on it.
     #[tokio::test]
     async fn an_escalated_question_keeps_its_options_and_a_skip_frees_the_helper() {
-        let up = escalation(&json!({"question": "Which vendor?", "context": "Two quotes.", "options": ["Acme", "Globex"]}));
-        assert_eq!(up, "Which vendor?\n\nContext: Two quotes.\nOptions (one of): Acme | Globex\nRecommended: Acme");
-        assert_eq!(escalation(&json!({"question": "  Budget? "})), "Budget?");
+        let up = |input: Value| escalation(&input, &steps(&input));
+        assert_eq!(
+            up(json!({"question": "Which vendor?", "context": "Two quotes.", "options": ["Acme", "Globex"]})),
+            "Which vendor?\n\nContext: Two quotes.\nOptions (one of): Acme | Globex\nRecommended: Acme"
+        );
+        assert_eq!(up(json!({"question": "  Budget? "})), "Budget?");
+        // Each question of a wizard, numbered, with what each choice means.
+        assert_eq!(
+            up(json!({"questions": [
+                {"header": "Vendor", "question": "Which vendor?", "options": [{"label": "Acme", "description": "Cheaper, slower"}, "Globex"]},
+                {"header": "Start", "question": "When to start?", "options": ["Monday"]}
+            ]})),
+            "1. Which vendor?\nOptions (one of): Acme (Cheaper, slower) | Globex\nRecommended: Acme\n\n2. When to start?\nOptions (one of): Monday\nRecommended: Monday"
+        );
         let (_, r) = asked(json!({"question": "Which vendor?", "options": ["Acme", "Globex"]}), crate::origin::SKIP_SENTINEL).await;
         assert!(r.content.contains("If a helper asked it, send_message the helper your decision"), "{}", r.content);
     }
@@ -567,9 +744,119 @@ mod tests {
             crate::coworker::new_rail_cell(),
         );
         let d = tool.description();
-        assert!(d.contains("To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app"), "{d}");
+        assert!(d.contains("To have him pick, give `options`") && d.contains("They show where he types, on desktop and in the mobile app"), "{d}");
         assert!(d.contains("Never list them in text or draw a panel"), "{d}");
-        assert!(d.contains("set `style` to \"select\""), "{d}");
-        assert_eq!(tool.schema()["properties"]["style"]["enum"], json!(["buttons", "select"]));
+        assert!(d.contains("`style` \"select\""), "{d}");
+        assert_eq!(tool.schema()["properties"]["questions"]["items"]["properties"]["style"]["enum"], json!(["buttons", "select"]));
+    }
+
+    /// The owner compared cards: options that were whole sentences read as
+    /// three paragraphs. An option is a short label with a one-line
+    /// description; a plain string is still a label with none. Both shapes
+    /// go out on the card, and the pick comes back as the label.
+    #[tokio::test]
+    async fn an_option_is_a_label_with_a_description_or_a_plain_label() {
+        let tool = AskOwnerTool::new(
+            Arc::new(Store::new(&tempfile::tempdir().unwrap().path().join("a.db").to_string_lossy()).unwrap()),
+            crate::coworker::new_rail_cell(),
+        );
+        let input = json!({"questions": [{"question": "How long should the video be?", "options": [
+            {"label": "30 seconds", "description": "A tight cut of the best clips"},
+            "60 seconds",
+            {"label": "  ", "description": "no label: dropped"}
+        ]}]});
+        assert!(tool.validate_input(&input).is_ok());
+        let schema = tool.schema();
+        let option = &schema["properties"]["questions"]["items"]["properties"]["options"]["items"];
+        assert_eq!(option["required"], json!(["label"]));
+        assert!(option["properties"]["description"].is_object());
+        let (card, r) = asked(input, "30 seconds").await;
+        assert_eq!(card.text, "How long should the video be?");
+        let w = &card.widgets.expect("the card")[0];
+        assert_eq!(w["options"], json!([{"label": "30 seconds", "description": "A tight cut of the best clips"}, "60 seconds"]));
+        assert_eq!(w["question"], "How long should the video be?");
+        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap()["picked"], "30 seconds");
+        // The question at the top level, as Nebo's own questions ask it.
+        let (card, r) = asked(json!({"question": "Which one?", "options": ["A", {"label": "B", "description": "the other"}]}), "B").await;
+        assert_eq!(card.widgets.expect("the card")[0]["options"], json!(["A", {"label": "B", "description": "the other"}]));
+        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap()["picked"], "B");
+        // The registry runs the call as `questions`, so a question at the top
+        // level is never refused as parameters the schema doesn't name.
+        let one = tool.normalize_input(json!({"question": "Which?", "options": ["A"], "words": {"questionKey": "k"}, "context": "c"}));
+        assert_eq!(one, json!({"context": "c", "questions": [{"question": "Which?", "options": [{"label": "A"}], "words": {"questionKey": "k"}}]}));
+        assert_eq!(tool.normalize_input(one.clone()), one, "idempotent");
+        assert!(crate::input_schema::unknown_parameters(&tool.schema(), &json!({"context": "c"})).is_empty());
+        let d = tool.description();
+        assert!(d.contains("a `label` of 1 to 5 words") && d.contains("the recommended option first") && d.contains("\"Other\""), "{d}");
+    }
+
+    /// Several decisions at once are one card the owner steps through: one
+    /// widget per question, each with its header, and one reply holding
+    /// every answer, read against its own question.
+    #[tokio::test]
+    async fn several_questions_are_one_card_and_one_reply() {
+        let input = json!({"context": "The cut is ready.", "questions": [
+            {"header": "Length", "question": "How long?", "options": [{"label": "30 seconds", "description": "Tight"}, "60 seconds"]},
+            {"header": "Music", "question": "Which music?", "options": ["Upbeat", "Calm", "None"], "multi_select": true},
+            {"header": "Title", "question": "What title?"}
+        ]});
+        let reply = json!(["60 seconds", "Upbeat, Calm", "Spring launch"]).to_string();
+        let (card, r) = asked(input.clone(), &reply).await;
+        assert_eq!(card.text, "How long?", "an app that shows one question shows the first");
+        let widgets = card.widgets.expect("the card");
+        let widgets = widgets.as_array().unwrap();
+        assert_eq!(widgets.len(), 3);
+        assert_eq!(widgets.iter().map(|w| w["header"].as_str().unwrap()).collect::<Vec<_>>(), ["Length", "Music", "Title"]);
+        assert_eq!(widgets[0]["context"], "The cut is ready.");
+        assert!(widgets[1].get("context").is_none());
+        assert_eq!(widgets[1]["multiSelect"], true);
+        let v: Value = serde_json::from_str(&r.content).unwrap();
+        let a = v["answers"].as_array().expect("one answer per question");
+        assert_eq!(a[0]["picked"], "60 seconds");
+        assert_eq!(a[0]["question"], "How long?");
+        assert_eq!(a[1]["picked"], json!(["Upbeat", "Calm"]));
+        assert_eq!(a[2]["response"], "Spring launch");
+        // A question he left blank is skipped; words that are not one answer
+        // per question are his own words for the set.
+        let (_, r) = asked(input.clone(), &json!(["30 seconds", "", "X"]).to_string()).await;
+        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap()["answers"][1]["skipped"], true);
+        let (_, r) = asked(input, "short, calm, no title").await;
+        let v: Value = serde_json::from_str(&r.content).unwrap();
+        assert_eq!(v["own_words"], "short, calm, no title");
+        assert!(v.get("answers").is_none());
+    }
+
+    /// A wizard's steps need their headers, and one card holds at most four.
+    #[test]
+    fn a_wizard_needs_headers_and_holds_four() {
+        let tool = AskOwnerTool::new(
+            Arc::new(Store::new(&tempfile::tempdir().unwrap().path().join("a.db").to_string_lossy()).unwrap()),
+            crate::coworker::new_rail_cell(),
+        );
+        let q = |header: &str| json!({"header": header, "question": "Which?", "options": ["A", "B"]});
+        assert!(tool.validate_input(&json!({"questions": [q("One"), q("Two")]})).is_ok());
+        assert!(tool.validate_input(&json!({"questions": [q(""), q("Two")]})).unwrap_err().contains("`header`"));
+        assert!(tool.validate_input(&json!({"questions": [q("")]})).is_ok(), "one question needs no header");
+        assert!(tool.validate_input(&json!({"questions": [q("1"), q("2"), q("3"), q("4"), q("5")]})).unwrap_err().contains("at most 4"));
+        assert!(tool.validate_input(&json!({"questions": []})).is_err());
+        assert!(tool.validate_input(&json!({"questions": [{"header": "A", "question": " "}]})).is_err());
+    }
+
+    /// A helper's several questions go back as one question that sets each
+    /// out with its choices: the conversation that started it asks them.
+    #[tokio::test]
+    async fn a_helpers_several_questions_go_back_set_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = AskOwnerTool::new(Arc::new(Store::new(&dir.path().join("a.db").to_string_lossy()).unwrap()), crate::coworker::new_rail_cell());
+        let ctx = ToolContext { door: types::permissions::Door::Helper, ..Default::default() };
+        let r = tool
+            .execute_dyn(&ctx, json!({"questions": [
+                {"header": "Vendor", "question": "Which vendor?", "options": ["Acme", "Globex"]},
+                {"header": "Start", "question": "When?"}
+            ]}))
+            .await;
+        let q = r.question.expect("the question travels on the result");
+        assert_eq!(q.question, "1. Which vendor?\nOptions (one of): Acme | Globex\nRecommended: Acme\n\n2. When?");
+        assert!(q.options.is_empty());
     }
 }

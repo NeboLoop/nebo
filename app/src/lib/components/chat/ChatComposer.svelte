@@ -720,6 +720,12 @@
     editor?.commands.focus();
   }
 
+  /** Talk in this chat: what the owner says answers the question waiting
+   *  here, the same way a typed reply does (the ask card's mic). */
+  export function startVoice() {
+    handleStartConversation();
+  }
+
   export function focusAndInsert(char: string) {
     if (!editor) return;
     editor.commands.focus();
