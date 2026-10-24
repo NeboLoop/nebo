@@ -1318,10 +1318,12 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
         AskCase::AskMode => "Ask mode: it asks before changing anything".into(),
         AskCase::Widens => "It would give an employee more room, which only you can do".into(),
         AskCase::RemovesEmployee => "It would delete an employee, which needs your OK every time".into(),
-        AskCase::RemovesFolders { targets, whole_work, .. } => {
+        AskCase::RemovesFolders { targets, whole_work, moves, .. } => {
             let named: Vec<&str> =
                 targets.iter().map(|t| t.strip_prefix("file:").or_else(|| t.strip_prefix("command:")).unwrap_or(t)).collect();
-            if *whole_work {
+            if *moves {
+                format!("It would move or rename {}, which needs your OK", named.join(", "))
+            } else if *whole_work {
                 format!("It would remove {}, which needs your OK every time", named.join(", "))
             } else {
                 format!("It would remove {}, outside its work", named.join(", "))

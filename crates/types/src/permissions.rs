@@ -72,6 +72,13 @@ pub struct CallEffects {
     /// (`permissions::removals`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<String>,
+    /// Where the call puts what it brings from elsewhere or links to: the
+    /// destination of `cp`, `ln`, `install`, `rsync`, and the `-t` folder
+    /// of `mv`, named as `moves` names them. A folder a removal takes that
+    /// isn't there yet holds only what these (and `creates`, `moves`) put
+    /// in it first (`permissions::removals`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<String>,
     /// The call creates, re-arms or fires scheduled work: a schedule, a
     /// workflow trigger, an employee's automations. Only a run someone is
     /// attending may do that (`limits::arms_schedule`): an unattended run
@@ -154,6 +161,7 @@ impl CallEffects {
             })
             .collect();
         self.moves = self.moves.into_iter().map(anchor).collect();
+        self.places = self.places.into_iter().map(anchor).collect();
         self.creates = self
             .creates
             .into_iter()
@@ -704,10 +712,13 @@ pub enum AskCase {
     /// working copy or the project it copies, itself, or a protected folder
     /// in one (`.git`, `.nebo`, an editor's settings) (`whole_work`: never
     /// covered by "Allow always"). `warning` is the command's one-line
-    /// risk, for the card, when it has one.
+    /// risk, for the card, when it has one. `moves`: it asks only for what
+    /// the call moves or renames (`CallEffects::moves`), and the card says so.
     RemovesFolders {
         targets: Vec<String>,
         whole_work: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        moves: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         warning: Option<DestructiveWarning>,
     },

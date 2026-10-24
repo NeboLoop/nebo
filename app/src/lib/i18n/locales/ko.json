@@ -3349,6 +3349,8 @@
 			"removesEmployee": "직원을 삭제하려면 매번 승인이 필요합니다.",
 			"removesFolders": "작업 범위 밖의 폴더를 지우려면 승인이 필요합니다.",
 			"removesWholeWork": "이것을 지우려면 매번 승인이 필요합니다.",
+			"movesProtected": "이 폴더를 옮기거나 이름을 바꾸려면 매번 승인이 필요합니다.",
+			"movesUnknown": "아직 이름을 알 수 없는 것을 옮기거나 이름을 바꿉니다. 승인이 필요합니다.",
 			"reachesScreen": "화면에 있는 내용을 보게 됩니다.",
 			"reachesMicrophone": "마이크에 잡히는 소리를 듣게 됩니다.",
 			"reachesCamera": "카메라에 보이는 것을 보게 됩니다.",

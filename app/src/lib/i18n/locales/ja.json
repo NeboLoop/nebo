@@ -3349,6 +3349,8 @@
 			"removesEmployee": "社員の削除には毎回あなたの承認が必要です。",
 			"removesFolders": "作業範囲外のフォルダーを削除するにはあなたの承認が必要です。",
 			"removesWholeWork": "これを削除するには毎回あなたの承認が必要です。",
+			"movesProtected": "このフォルダーを移動または名前変更するには毎回あなたの承認が必要です。",
+			"movesUnknown": "まだ名前を示せないものを移動または名前変更します。これにはあなたの承認が必要です。",
 			"reachesScreen": "画面に表示されている内容を見ます。",
 			"reachesMicrophone": "マイクが拾う音を聞きます。",
 			"reachesCamera": "カメラに映るものを見ます。",

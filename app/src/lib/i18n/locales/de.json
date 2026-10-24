@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Einen Mitarbeiter zu löschen braucht jedes Mal dein OK.",
 			"removesFolders": "Einen Ordner außerhalb seiner Arbeit zu entfernen braucht dein OK.",
 			"removesWholeWork": "Das zu entfernen braucht jedes Mal dein OK.",
+			"movesProtected": "Diesen Ordner zu verschieben oder umzubenennen braucht jedes Mal dein OK.",
+			"movesUnknown": "Es verschiebt oder benennt etwas um, das es noch nicht benennen kann. Das braucht dein OK.",
 			"reachesScreen": "Es würde sehen, was auf deinem Bildschirm ist.",
 			"reachesMicrophone": "Es würde hören, was dein Mikrofon aufnimmt.",
 			"reachesCamera": "Es würde sehen, was deine Kamera sieht.",

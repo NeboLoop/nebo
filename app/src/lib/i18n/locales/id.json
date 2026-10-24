@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Menghapus karyawan perlu persetujuanmu setiap kali.",
 			"removesFolders": "Menghapus folder di luar pekerjaannya perlu persetujuanmu.",
 			"removesWholeWork": "Menghapus ini perlu persetujuanmu setiap kali.",
+			"movesProtected": "Memindahkan atau mengganti nama folder ini perlu persetujuanmu setiap kali.",
+			"movesUnknown": "Ini memindahkan atau mengganti nama sesuatu yang belum bisa disebutkan. Itu perlu persetujuanmu.",
 			"reachesScreen": "Ia akan melihat apa yang ada di layarmu.",
 			"reachesMicrophone": "Ia akan mendengar apa yang ditangkap mikrofonmu.",
 			"reachesCamera": "Ia akan melihat apa yang dilihat kameramu.",

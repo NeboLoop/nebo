@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Usunięcie pracownika wymaga Twojej zgody za każdym razem.",
 			"removesFolders": "Usunięcie folderu spoza jego pracy wymaga Twojej zgody.",
 			"removesWholeWork": "Usunięcie tego wymaga Twojej zgody za każdym razem.",
+			"movesProtected": "Przeniesienie tego folderu lub zmiana jego nazwy wymaga Twojej zgody za każdym razem.",
+			"movesUnknown": "Przenosi lub zmienia nazwę czegoś, czego nie umie jeszcze nazwać. To wymaga Twojej zgody.",
 			"reachesScreen": "Widziałby, co jest na Twoim ekranie.",
 			"reachesMicrophone": "Słyszałby, co rejestruje Twój mikrofon.",
 			"reachesCamera": "Widziałby, co widzi Twoja kamera.",

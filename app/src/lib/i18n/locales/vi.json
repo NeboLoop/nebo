@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Xóa một nhân viên cần bạn đồng ý mỗi lần.",
 			"removesFolders": "Xóa một thư mục ngoài công việc của nó cần bạn đồng ý.",
 			"removesWholeWork": "Xóa thứ này cần bạn đồng ý mỗi lần.",
+			"movesProtected": "Di chuyển hoặc đổi tên thư mục này cần bạn đồng ý mỗi lần.",
+			"movesUnknown": "Nó di chuyển hoặc đổi tên một thứ chưa thể gọi tên. Việc đó cần bạn đồng ý.",
 			"reachesScreen": "Nó sẽ thấy những gì trên màn hình của bạn.",
 			"reachesMicrophone": "Nó sẽ nghe những gì micrô của bạn thu được.",
 			"reachesCamera": "Nó sẽ thấy những gì camera của bạn thấy.",

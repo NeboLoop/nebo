@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Memadam pekerja memerlukan kebenaran anda setiap kali.",
 			"removesFolders": "Membuang folder di luar kerjanya memerlukan kebenaran anda.",
 			"removesWholeWork": "Membuang ini memerlukan kebenaran anda setiap kali.",
+			"movesProtected": "Memindahkan atau menamakan semula folder ini memerlukan kebenaran anda setiap kali.",
+			"movesUnknown": "Ia memindahkan atau menamakan semula sesuatu yang belum boleh dinamakan. Itu memerlukan kebenaran anda.",
 			"reachesScreen": "Ia akan melihat apa yang ada pada skrin anda.",
 			"reachesMicrophone": "Ia akan mendengar apa yang ditangkap mikrofon anda.",
 			"reachesCamera": "Ia akan melihat apa yang dilihat kamera anda.",

@@ -3349,6 +3349,8 @@
 			"removesEmployee": "Excluir um funcionário precisa do seu OK toda vez.",
 			"removesFolders": "Remover uma pasta fora do trabalho dele precisa do seu OK.",
 			"removesWholeWork": "Remover isso precisa do seu OK toda vez.",
+			"movesProtected": "Mover ou renomear esta pasta precisa do seu OK toda vez.",
+			"movesUnknown": "Ele move ou renomeia algo que ainda não consegue nomear. Isso precisa do seu OK.",
 			"reachesScreen": "Veria o que está na sua tela.",
 			"reachesMicrophone": "Ouviria o que o seu microfone capta.",
 			"reachesCamera": "Veria o que a sua câmera vê.",
