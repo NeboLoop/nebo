@@ -116,6 +116,26 @@ async fn run(args: &[&str]) -> Result<(bool, Vec<u8>, String), String> {
     }
 }
 
+/// ffmpeg's option that writes each selected frame once, at its own moment,
+/// never copied to fill a gap: `-fps_mode` from 5.1 on, `-vsync` before it
+/// (ffmpeg 9 removed `-vsync`). `version` is what `ffmpeg -version` says
+/// ("ffmpeg version 9.0.2 ...", "ffmpeg version n4.4.2 ..."); a version
+/// that isn't a release number is a build from ffmpeg's own source, newer
+/// than any release that lacks `-fps_mode`.
+fn frame_timing_option(version: &str) -> &'static str {
+    let number = version
+        .split_whitespace()
+        .skip_while(|w| *w != "version")
+        .nth(1)
+        .unwrap_or_default()
+        .trim_start_matches('n');
+    let mut parts = number.split(|c: char| !c.is_ascii_digit()).map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), minor) if (major, minor.unwrap_or(0)) < (5, 1) => "-vsync",
+        _ => "-fps_mode",
+    }
+}
+
 /// The last thing ffmpeg said, short, for a note.
 fn last_words(stderr: &str) -> String {
     stderr
@@ -167,6 +187,8 @@ pub async fn frames(video: &Path, out: &Path) -> Result<(Vec<Frame>, Option<f64>
     );
     let pattern = out.join("taken-%03d.jpg").to_string_lossy().into_owned();
     let taken = MAX_TAKEN.to_string();
+    let (_, version, _) = run(&["-version"]).await?;
+    let frame_timing = frame_timing_option(&String::from_utf8_lossy(&version));
     let (ok, _, said) = run(&[
         "-nostdin",
         "-hide_banner",
@@ -176,7 +198,7 @@ pub async fn frames(video: &Path, out: &Path) -> Result<(Vec<Frame>, Option<f64>
         "-an",
         "-vf",
         &filter,
-        "-vsync",
+        frame_timing,
         "vfr",
         "-frames:v",
         &taken,
@@ -385,6 +407,22 @@ mod tests {
             Some(62.5)
         );
         assert_eq!(duration_of("  Duration: N/A, start"), None);
+    }
+
+    /// Frames keep their own moments on every ffmpeg: `-fps_mode` from 5.1
+    /// and on builds from ffmpeg's source, `-vsync` on the releases before.
+    #[test]
+    fn frame_timing_follows_the_ffmpeg_version() {
+        let said = |v: &str| frame_timing_option(&format!("ffmpeg version {v} Copyright (c) 2000-2026 the FFmpeg developers"));
+        assert_eq!(said("9.0.2"), "-fps_mode");
+        assert_eq!(said("7.1.1-tessus"), "-fps_mode");
+        assert_eq!(said("5.1"), "-fps_mode");
+        assert_eq!(said("n6.1.1"), "-fps_mode");
+        assert_eq!(said("N-118920-g1d2b3c4d5e"), "-fps_mode");
+        assert_eq!(said("5.0.1"), "-vsync");
+        assert_eq!(said("4.4.2-0ubuntu0.22.04.1"), "-vsync");
+        assert_eq!(said("n4.3"), "-vsync");
+        assert_eq!(frame_timing_option(""), "-fps_mode");
     }
 
     /// A short test video, made with ffmpeg: a moving test pattern with a
