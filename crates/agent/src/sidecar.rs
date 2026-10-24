@@ -52,11 +52,23 @@ You see only the frames: say \"between 0:03 and 0:04\" rather than inventing wha
 them. Report only what you can actually see and say plainly what is illegible. Never invent content. \
 No preamble.";
 
-/// Most tokens one reading takes.
-const READING_TOKENS: i32 = 1_500;
+/// Most tokens one reading takes. A reasoning model counts its hidden
+/// reasoning in the same cap, so this holds a full reading of a dense
+/// screenshot (all of its text verbatim can run past 1,500 tokens) and
+/// the little reasoning [`READING_EFFORT`] still spends. Only the tokens
+/// written are charged.
+const READING_TOKENS: i32 = 4_000;
 
-/// Most tokens one video's reading takes.
-const WATCHING_TOKENS: i32 = 2_000;
+/// Most tokens one video's reading takes: a timeline over many frames, and
+/// the same room for reasoning.
+const WATCHING_TOKENS: i32 = 6_000;
+
+/// The reasoning a look or a watch asks for: the lowest a request takes.
+/// Describing what is in a picture needs little thought, and a reasoning
+/// model left at its default thinks through the whole output cap and writes
+/// nothing (2026-10-24: two screenshots read on a reasoning model came back
+/// empty, each at exactly the cap).
+const READING_EFFORT: types::packs::ProviderEffort = types::packs::ProviderEffort::Low;
 
 /// The longest one look may take, from asking to the last word. The owner's
 /// message waits on the readings of its pictures before it is stored and
@@ -152,7 +164,7 @@ async fn read(
         system: system.to_string(),
         model: eyes.model.clone(),
         enable_thinking: false,
-        effort: None,
+        effort: Some(READING_EFFORT),
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
@@ -168,14 +180,31 @@ async fn read(
             }
         };
         let mut text = String::new();
+        let mut usage = None;
+        let mut stop_reason = None;
         while let Some(event) = rx.recv().await {
             match event.event_type {
                 StreamEventType::Text => text.push_str(&event.text),
-                StreamEventType::Done | StreamEventType::Error => break,
+                StreamEventType::Usage => usage = event.usage,
+                StreamEventType::Done => {
+                    stop_reason = event.stop_reason;
+                    break;
+                }
+                StreamEventType::Error => break,
                 _ => {}
             }
         }
         let text = text.trim();
+        if text.is_empty() && crate::harness::model_call::hit_output_limit(stop_reason.as_deref()) {
+            warn!(
+                provider = eyes.provider.id(),
+                model = %eyes.model,
+                max_tokens,
+                output_tokens = usage.as_ref().map(|u| u.output_tokens),
+                input_tokens = usage.as_ref().map(|u| u.input_tokens),
+                "vision reading came back empty: the output cap ran out before any text"
+            );
+        }
         (!text.is_empty()).then(|| text.to_string())
     };
     match tokio::time::timeout(READING_LIMIT, reading).await {
@@ -306,9 +335,11 @@ mod tests {
     }
 
     /// Every look and watch names its most tokens, so the gateway holds
-    /// that much of the balance and not its large default.
+    /// that much of the balance and not its large default, and asks for the
+    /// lowest reasoning, so a reasoning model spends the tokens on the
+    /// reading and does not think through the whole cap.
     #[tokio::test]
-    async fn a_look_and_a_watch_each_name_their_most_tokens() {
+    async fn a_look_and_a_watch_name_their_most_tokens_and_the_lowest_reasoning() {
         let picture = Picture {
             image: ai::ImageContent { media_type: "image/png".into(), data: String::new() },
             width: 10,
@@ -318,9 +349,10 @@ mod tests {
         let eyes = Eyes { provider: kept.clone(), model: String::new() };
         look(ai::RequestTrace::new("image_read"), &eyes, &picture, "attached", None).await;
         watch(ai::RequestTrace::new("video_read"), &eyes, &[(0.0, picture.clone())], Some(1.0), "attached").await;
-        let sent: Vec<(String, i32)> =
-            kept.0.lock().unwrap().iter().map(|r| (r.trace.purpose.to_string(), r.max_tokens)).collect();
-        assert_eq!(sent, vec![("image_read".to_string(), 1_500), ("video_read".to_string(), 2_000)]);
+        let sent: Vec<(String, i32, Option<types::packs::ProviderEffort>)> =
+            kept.0.lock().unwrap().iter().map(|r| (r.trace.purpose.to_string(), r.max_tokens, r.effort)).collect();
+        let low = Some(types::packs::ProviderEffort::Low);
+        assert_eq!(sent, vec![("image_read".to_string(), 4_000, low), ("video_read".to_string(), 6_000, low)]);
     }
 
     /// A helper that never answers gives up within the limit, and the
