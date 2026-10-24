@@ -18,7 +18,7 @@
 //! - [`rules`]: the rules every brief carries;
 //! - [`review`]: a round of independent reviewers, one per lens;
 //! - [`findings`]: what a reviewer reports, and when the loop has stalled;
-//! - [`work`]: a turn's code work, moved into isolated copies;
+//! - [`work`]: a turn's code work, started where it happens;
 //! - [`engine`]: the loop itself, the end check of a turn with code work.
 
 pub mod checks;
@@ -37,30 +37,6 @@ use std::path::{Path, PathBuf};
 /// ([`types::Why`]): a code the apps word, with its values.
 pub use types::Why;
 
-/// What a landing came to, as the owner reads it.
-pub fn landing_why(outcome: &crate::worktree::MergeOutcome) -> Why {
-    use crate::worktree::{Busy, MergeOutcome};
-    match outcome {
-        MergeOutcome::NoChanges => Why::new("nothing_to_land"),
-        MergeOutcome::Merged { commit, .. } => Why::new("landed").with("commit", short(commit)),
-        MergeOutcome::Conflict { files, .. } => Why::new("conflicts").with("files", files.join(", ")),
-        MergeOutcome::OwnerEdits { files, .. } => Why::new("owner_edits").with("files", files.join(", ")),
-        MergeOutcome::OwnerBusy { why, .. } => match why {
-            Busy::Detached | Busy::MadeDetached => Why::new("busy_no_branch"),
-            Busy::OtherBranch { now, made_from } => {
-                Why::new("busy_branch").with("now", now.as_str()).with("from", made_from.as_str())
-            }
-            Busy::InProgress(op) => Why::new("busy_in_progress").with("op", op.replace('_', "-")),
-        },
-        MergeOutcome::HookFailed { .. } => Why::new("hook_failed"),
-        MergeOutcome::RetestFailed { .. } => Why::new("retest_failed"),
-        MergeOutcome::NotAttempted { .. } => Why::new("not_attempted"),
-        MergeOutcome::Unreviewed { files, .. } => Why::new("unreviewed").with("files", files.join(", ")),
-        MergeOutcome::NeedsReview { files, .. } => Why::new("needs_review").with("files", files.join(", ")),
-        MergeOutcome::Failed { .. } => Why::new("land_failed"),
-    }
-    }
-
 /// `why` in plain English, for the builder's report brief (the model reads
 /// it; the owner's screen words the code itself).
 pub fn english(why: &Why) -> String {
@@ -74,35 +50,16 @@ pub fn english(why: &Why) -> String {
         "stopped_by_owner" => format!("stopped by the owner with {} open issue(s)", a("open")),
         "stalled" => format!("stopped making progress with {} open issue(s)", a("open")),
         "no_checks" => "nothing proved it works: the project has no build, type check or tests to run".into(),
-        "landed_unreviewed" => "landed without passing review, at the owner's choice".into(),
-        "edits_in_way" => "not landed yet: the owner's edits are still in the way".into(),
-        "kept_own_edits" => "not landed: the owner kept their own edits; the change waits in its copy".into(),
         "live_failed" => "the live check failed".into(),
         "live_no_script" => "it could not be checked live: the app's page didn't load the check script (its entry page isn't UTF-8 text, the app isn't one of the owner's own, or the page went to another address)".into(),
         "live_unavailable" => "it could not be checked live: the bot has no browser to open the app in".into(),
         "live_ok" => "the page reloaded and checked out".into(),
         "review_clean" => "no blocking or major issues".into(),
         "review_blocking" => format!("{} blocking issue(s)", a("count")),
-        "up_to_date" => "already up to date with the project".into(),
-        "caught_up" => format!("caught up to {}", a("commit")),
-        "conflicts" => format!("the owner's changes and this one meet in {}", a("files")),
-        "landed" => format!("landed as {}", a("commit")),
-        "nothing_to_land" => "nothing to land".into(),
-        "owner_edits" => format!("the owner's own edits in {} are in the way", a("files")),
-        "busy_no_branch" => "not landed yet: the project is on no branch".into(),
-        "busy_branch" => format!("not landed yet: the project is on branch {}, and the copy was made from {}", a("now"), a("from")),
-        "busy_in_progress" => format!("not landed yet: a {} is in progress in the project", a("op")),
-        "hook_failed" => "the project's commit hooks refused it".into(),
-        "retest_failed" => "the checks failed after catching up with the project".into(),
-        "not_attempted" => "not tried, because an earlier piece did not land".into(),
-        "land_failed" => "it could not land; nothing of the owner's changed".into(),
         "step_limit" => "the run reached its step limit before the checking finished".into(),
         "turn_ended" => "the run ended before the checking finished".into(),
         "restarted" => "Nebo restarted while it was being checked".into(),
-        "unreviewed" => format!("the copy holds changes nobody reviewed: {}", a("files")),
-        "needs_review" => format!("what would land differs from what was reviewed in {}; reviewed again first", a("files")),
-        "changed_after_review" => "the copy changed after it was reviewed; reviewed again first".into(),
-        "waiting_to_land" => "waiting for another landing on this project to finish".into(),
+        "kept_in_copy" => format!("its earlier work is kept in its copy at {}", a("path")),
         other => other.replace('_', " "),
     }
 }
@@ -115,9 +72,11 @@ pub fn short(commit: &str) -> String {
 /// The input fields that name a path a call works on.
 pub const PATH_FIELDS: &[&str] = &["path", "file_path", "notebook_path", "cwd", "dir", "folder"];
 
-/// The paths a call names: its path fields (relative ones against `cwd`),
-/// each of `paths[]`, the absolute paths in a command, and the folder a
-/// command runs in.
+/// The paths a call may change: its path fields (relative ones against
+/// `cwd`), each of `paths[]`, and for a command the folders it runs in and
+/// the paths it writes ([`command_paths`]). A program a command runs, or a
+/// file it only reads, is never among them (10-23: running
+/// `/opt/homebrew/bin/doctl` made a copy of the Homebrew repository).
 pub fn named_paths(input: &serde_json::Value, cwd: Option<&str>) -> Vec<PathBuf> {
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(expand_home(p));
@@ -145,12 +104,56 @@ pub fn named_paths(input: &serde_json::Value, cwd: Option<&str>) -> Vec<PathBuf>
         {
             out.push(PathBuf::from(expand_home(c)));
         }
-        for word in shlex::split(command).unwrap_or_default() {
-            let word = word.trim_matches(|c| matches!(c, ';' | '&' | '|' | '(' | ')' | '>' | '<'));
-            let word = word.split_once('=').map(|(_, v)| v).unwrap_or(word);
-            if word.starts_with('/') || word.starts_with("~/") {
-                out.push(PathBuf::from(expand_home(word)));
-            }
+        let here = input.get("cwd").and_then(|v| v.as_str()).or(cwd);
+        out.extend(command_paths(command, here));
+    }
+    out
+}
+
+/// The folders a command moves into (`cd`, `pushd`) and the paths it
+/// writes, as far as its text shows: what it removes, rewrites and makes
+/// (`tools::policy::shell_effects`), what it redirects or `tee`s into, and
+/// the destination of a copy, move, link or install (its last operand).
+/// Relative ones are taken from `cwd`.
+pub fn command_paths(command: &str, cwd: Option<&str>) -> Vec<PathBuf> {
+    let resolve = |p: &str| -> PathBuf {
+        let path = PathBuf::from(expand_home(p));
+        match cwd {
+            Some(c) if path.is_relative() => Path::new(&expand_home(c)).join(path),
+            _ => path,
+        }
+    };
+    let fx = tools::policy::shell_effects(command, cwd);
+    let mut out: Vec<PathBuf> = fx
+        .deletes
+        .iter()
+        .chain(&fx.overwrites)
+        .chain(&fx.creates)
+        .chain(&fx.removes_trees)
+        .chain(&fx.moves)
+        .filter_map(|n| n.strip_prefix("file:"))
+        .map(|p| resolve(p.strip_suffix("/*").unwrap_or(p)))
+        .collect();
+    out.extend(tools::policy::shell_write_targets(command).iter().map(|p| resolve(p)));
+    let mut here: Option<PathBuf> = cwd.map(|c| PathBuf::from(expand_home(c)));
+    for sub in tools::policy::subcommands(command) {
+        let words: Vec<&str> = sub.words().iter().flatten().map(String::as_str).collect();
+        let Some(program) = words.first().and_then(|w| Path::new(w).file_name()).and_then(|n| n.to_str()) else { continue };
+        if matches!(program, "cd" | "pushd")
+            && let Some(dir) = words.get(1).filter(|d| **d != "-")
+        {
+            let dir = PathBuf::from(expand_home(dir));
+            let next = match &here {
+                Some(h) if dir.is_relative() => h.join(dir),
+                _ => dir,
+            };
+            out.push(next.clone());
+            here = Some(next);
+        }
+        if matches!(program, "cp" | "mv" | "ln" | "install" | "rsync")
+            && let Some(dest) = words[1..].iter().rev().find(|w| !w.starts_with('-'))
+        {
+            out.push(resolve(dest));
         }
     }
     out
@@ -200,19 +203,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_calls_paths_are_its_fields_its_commands_paths_and_its_folder() {
+    fn a_calls_paths_are_its_fields_its_folder_and_what_its_command_writes() {
         let paths = named_paths(
-            &json!({"command": "cargo test --manifest-path /repo/Cargo.toml && OUT=/tmp/x make > /repo/log", "description": "run tests"}),
+            &json!({"command": "cargo test --manifest-path /repo/Cargo.toml && OUT=/tmp/x make > /repo/log && cp a.rs /other/src/", "description": "run tests"}),
             Some("/repo/crates"),
         );
         assert_eq!(
             paths,
-            vec![
-                PathBuf::from("/repo/crates"),
-                PathBuf::from("/repo/Cargo.toml"),
-                PathBuf::from("/tmp/x"),
-                PathBuf::from("/repo/log")
-            ]
+            vec![PathBuf::from("/repo/crates"), PathBuf::from("/repo/log"), PathBuf::from("/other/src/")]
+        );
+        assert_eq!(
+            named_paths(&json!({"command": "cd /repo && cd web && pnpm build"}), None),
+            vec![PathBuf::from("/repo"), PathBuf::from("/repo/web")]
         );
         assert_eq!(
             named_paths(&json!({"path": "src/lib.rs"}), Some("/repo")),
@@ -259,6 +261,34 @@ mod tests {
                 code_folders(&email, None, true, &[]).is_empty(),
                 "an email is not code"
             );
+        })
+    }
+
+    /// 10-23, live: a command that ran `/opt/homebrew/bin/doctl` made a copy
+    /// of the Homebrew repository and ran in it, where there was no Cellar
+    /// and no bin. Running a program, or reading a file, in a repository is
+    /// never code work in it; writing there is.
+    #[test]
+    fn running_a_program_from_a_repository_is_not_code_work_in_it() {
+        crate::test_home::with_home(|_| {
+            let root = tempfile::tempdir().unwrap();
+            let brew = root.path().join("homebrew");
+            std::fs::create_dir_all(brew.join("bin")).unwrap();
+            std::fs::create_dir_all(brew.join(".git")).unwrap();
+            std::fs::write(brew.join("bin/doctl"), "#!/bin/sh\n").unwrap();
+            let elsewhere = root.path().join("Letters");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            let doctl = brew.join("bin/doctl").display().to_string();
+            let cwd = elsewhere.to_string_lossy().into_owned();
+            for command in [
+                format!("{doctl} apps list --format ID"),
+                format!("{doctl} apps update abc --spec spec.yaml > out.json"),
+                format!("cat {}/Library/Taps/README.md | head", brew.display()),
+            ] {
+                assert!(code_folders(&json!({ "command": command }), Some(&cwd), true, &[]).is_empty(), "{command}");
+            }
+            let writes = format!("echo x >> {}/Library/Formula/a.rb", brew.display());
+            assert_eq!(code_folders(&json!({ "command": writes }), Some(&cwd), true, &[]), vec![project::Folder::Project(brew.clone())]);
         })
     }
 

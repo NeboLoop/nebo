@@ -49,12 +49,9 @@
 		 *  option is. It takes only those, never his own words. */
 		answers?: (string | null)[];
 		/** A question Nebo itself asks words itself in the owner's language
-		 *  (`AskWords`): questionKey, questionValues, contextKey,
-		 *  contextValues, optionKeys. */
+		 *  (`AskWords`): questionKey, questionValues, optionKeys. */
 		questionKey?: string;
 		questionValues?: Record<string, string | number>;
-		contextKey?: string;
-		contextValues?: Record<string, string | number>;
 		optionKeys?: (string | null)[];
 	}
 
@@ -208,13 +205,13 @@
 	// and uses markdown like every other agent message — render it, don't show
 	// raw ** markers. Same marked pipeline as the chat transcript.
 	import { parseMarkdown, plainText } from '$lib/markdown';
-	import { wordedContext, wordedOption, wordedQuestion } from '$lib/chat/askWords';
+	import { wordedOption, wordedQuestion } from '$lib/chat/askWords';
 	import { chooseOther, emptyAnswer, pick, replyAnswers, replyValue, stepValue, wizardSteps, type StepAnswer, type WizardStep } from '$lib/chat/askWizard';
 	const widget = $derived(widgets?.[0]);
-	// The question and its context in the owner's language when Nebo sent
-	// their keys, else as written.
+	// The question in the owner's language when Nebo sent its key, else as
+	// written; its context as written.
 	const shownPrompt = $derived(wordedQuestion($t, prompt, widget));
-	const shownContext = $derived(wordedContext($t, widget?.context ?? '', widget));
+	const shownContext = $derived(widget?.context ?? '');
 	const promptHtml = $derived(parseMarkdown(shownPrompt));
 	const contextHtml = $derived(shownContext ? parseMarkdown(shownContext) : '');
 

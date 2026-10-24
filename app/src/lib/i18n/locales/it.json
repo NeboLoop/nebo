@@ -4535,6 +4535,7 @@
 			"step_limit": "L'esecuzione ha raggiunto il limite di passaggi prima della fine del controllo",
 			"turn_ended": "L'esecuzione è terminata prima della fine del controllo",
 			"restarted": "Nebo si è riavviato durante il controllo",
+			"kept_in_copy": "Il lavoro precedente è conservato nella sua copia in {path}",
 			"unreviewed": "Non integrato: la copia contiene modifiche che nessuno ha revisionato ({files})",
 			"needs_review": "Ciò che verrebbe integrato differisce da ciò che è stato revisionato in {files}; prima viene revisionato di nuovo",
 			"changed_after_review": "La copia è cambiata dopo la revisione; prima viene revisionata di nuovo",
@@ -4555,7 +4556,6 @@
 			"checks": "Esecuzione dei controlli del progetto.",
 			"reviewers": "I revisori stanno leggendo la modifica.",
 			"fixing": "Correzione di ciò che hanno trovato i revisori. Il turno successivo controlla le correzioni.",
-			"landing": "Inserimento della modifica nel progetto.",
 			"live": "Controllo dal vivo."
 		},
 		"sheet": {
@@ -4588,16 +4588,8 @@
 		"ask": {
 			"stalled": "La revisione di {project} continua a trovare problemi: {open, plural, one {# problema bloccante è ancora aperto} other {# problemi bloccanti sono ancora aperti}} dopo {rounds} turni, senza diminuire. Cosa deve succedere?",
 			"reviewFailed": "La revisione di {project} non è riuscita a finire: {count, plural, one {# revisore ha fallito} other {# revisori hanno fallito}} {tries} volte. Rieseguire?",
-			"noChecks": "La modifica a {project} è stata revisionata, ma il progetto non ha build né test eseguibili, quindi non è verificata. Integrarla comunque?",
-			"ownerEdits": "Questa modifica è verificata e hai modifiche tue in {files} che tocca anche lei. Niente di tuo è stato sovrascritto. Cosa deve succedere?",
-			"ownerEditsContext": "La modifica aspetta nella sua copia in {path}.",
-			"cantLand": "La modifica a {project} ha superato la revisione, ma non si può integrare così come è stata revisionata, e non si è avvicinata negli ultimi {tries} tentativi. Cosa deve succedere?",
 			"keepGoing": "Continua",
-			"landAnyway": "Integrala comunque",
-			"stopHere": "Fermati qui",
-			"keepInCopy": "Lasciala nella sua copia",
-			"landAfterMine": "Integrala dopo il mio commit",
-			"keepMine": "Tieni le mie, non integrarla"
+			"stopHere": "Fermati qui"
 		}
 	},
 	"appPermissions": {

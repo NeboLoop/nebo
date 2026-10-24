@@ -1,23 +1,20 @@
 //! Isolation for mutating fan-out (coding harness P5.3).
 //!
-//! When a parallel batch is spawned with `isolate: "worktree"`, each child
-//! gets its own copy of the project, fenced by its grant's `fence` and `cwd`, and
-//! the parent merges the copies back when the batch is done. Read-only
-//! fan-out never comes here: it shares the tree.
+//! When helpers fan out with `isolate: "worktree"`, each gets its own git
+//! worktree of the project, at `<repo>/.nebo/worktrees/<id>` on its own
+//! branch (`.nebo/worktrees/` is excluded through the repository's
+//! `info/exclude`; it survives `git clean -fdx` as an excluded folder
+//! holding a repository, though not `git clean -ffdx`),
+//! fenced by its grant's `fence` and `cwd`, and the parent merges the
+//! copies back when they are reviewed. Read-only fan-out never comes here:
+//! it shares the tree. A project that is no repository, or a worktree git
+//! can't make, gets no copy: the work goes on in the project itself.
 //!
-//! ONE option, two arms, chosen by whether the folder is a git repository:
-//! - `Isolation::Git`: a git worktree on its own branch. Turning a folder
-//!   into a repo upgrades a project to this arm with no other change.
-//! - `Isolation::Copy`: a scratch copy of the folder (most owners' project
-//!   folders are not repos, and Nebo never runs `git init` in one).
-//!
-//! Landing a copy is one way for both arms ([`merge_all`]), in order:
+//! Landing a copy is one way ([`merge_all`]), in order:
 //! 1. Catch up in the copy ([`catch_up`]): git squashes the task's work into
-//!    one commit and rebases it onto the owner's current HEAD; the copy arm
-//!    takes in every file the owner changed meanwhile. A conflict stays in
-//!    the copy for the builder to resolve there (a rebase in progress; the
-//!    owner's version next to the file as `<file>.owner`), never in the
-//!    owner's tree.
+//!    one commit and rebases it onto the owner's current HEAD. A conflict
+//!    stays in the copy for the builder to resolve there (a rebase in
+//!    progress), never in the owner's tree.
 //! 2. Re-test in the copy (the caller's check), so what was verified is
 //!    what lands.
 //! 3. Land ([`land`]): one commit, fast-forwarded onto the owner's branch,
@@ -26,7 +23,8 @@
 //!
 //! Several copies land in dependency order, one at a time, each caught up
 //! and re-tested on top of the one before; the first that does not land
-//! stops the set, and the copies not landed are kept.
+//! stops the set, and the copies not landed are kept. A copy is removed
+//! once it has landed, or when it holds no change.
 //!
 //! House git rules hold throughout: no stash, no reset, no checkout of the
 //! owner's files, nothing forced. The owner's tree is only ever moved
@@ -34,16 +32,12 @@
 //! Every git subprocess runs with prompts disabled — an unattended agent can
 //! never answer one.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing::warn;
 
-/// Scratch copies above this refuse, naming the size: a folder of photos is
-/// not a project, and copying it per hand would fill the disk.
-pub const MAX_SCRATCH_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Worktrees and scratch copies older than this with nothing left in them
-/// are swept at startup (a parent killed mid-batch leaves them behind).
+/// Worktrees older than this with nothing left in them are swept at
+/// startup (a parent killed mid-batch leaves them behind).
 pub const STALE_AFTER_SECS: u64 = 7 * 24 * 3600;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -70,55 +64,21 @@ pub struct Worktree {
     pub conflicted: Vec<String>,
 }
 
-/// A copy of a non-repo folder plus the fingerprints it was copied from, so
-/// copy-back can tell "the child changed it" from "the owner changed it".
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ScratchCopy {
-    pub task_id: String,
-    pub root: PathBuf,
-    pub path: PathBuf,
-    /// Relative path → fingerprint at copy time.
-    pub snapshot: HashMap<PathBuf, u64>,
-    /// Symlinks in the folder, which are never followed into the copy.
-    pub skipped: Vec<PathBuf>,
-    /// Files the owner and the copy both changed, whose owner's version
-    /// waits next to the file in the copy until the builder has folded it
-    /// in and deleted the owner's version: deleting it is the builder's
-    /// explicit word that the file is resolved.
-    pub pending: Vec<Pending>,
-}
-
-/// One conflict waiting in a scratch copy.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct Pending {
-    pub rel: PathBuf,
-    /// Where the owner's version waits in the copy: `<file>.nebo-owner`
-    /// (`<file>.nebo-owner-deleted`, empty, when the owner deleted it), or
-    /// that name numbered when the project already holds a file of it.
-    pub twin: PathBuf,
-    /// The fingerprint of the owner's version that was put next to it
-    /// (`None`: the owner had deleted the file). An owner change after it
-    /// is a fresh conflict, never taken as handled.
-    pub owner_fp: Option<u64>,
-}
-
+/// A helper's own copy of the project: a git worktree on its own branch.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum Isolation {
     Git(Worktree),
-    Copy(ScratchCopy),
 }
 
 impl Isolation {
     pub fn path(&self) -> &Path {
         match self {
             Isolation::Git(w) => &w.path,
-            Isolation::Copy(c) => &c.path,
         }
     }
     pub fn task_id(&self) -> &str {
         match self {
             Isolation::Git(w) => &w.task_id,
-            Isolation::Copy(c) => &c.task_id,
         }
     }
 
@@ -126,7 +86,6 @@ impl Isolation {
     pub fn root(&self) -> &Path {
         match self {
             Isolation::Git(w) => &w.root,
-            Isolation::Copy(c) => &c.root,
         }
     }
 
@@ -134,7 +93,6 @@ impl Isolation {
     pub fn branch(&self) -> &str {
         match self {
             Isolation::Git(w) => &w.branch,
-            Isolation::Copy(_) => "",
         }
     }
 }
@@ -407,15 +365,82 @@ pub async fn repo_root(dir: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(out))
 }
 
-/// Where copies live: outside the project, under Nebo's data dir, so the
-/// owner's folder (and `git status`) never shows them.
-fn worktrees_dir(root: &Path) -> PathBuf {
-    let base = config::data_dir().unwrap_or_else(|_| std::env::temp_dir());
-    let name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "repo".into());
-    base.join("worktrees").join(name)
+/// The folder a project keeps Nebo's working files in, beside the owner's
+/// own Nebo files there (`.nebo/hooks.yaml`, which he commits):
+/// [`NEBO_OWN`].
+pub const NEBO_DIR: &str = ".nebo";
+
+/// Nebo's own working folders in a project's `.nebo`: helpers' copies
+/// (`worktrees`), the reviewers' snapshots of a change (`verify`) and the
+/// one build folder its checks share (`build`). Only these are hidden from
+/// git and left out of a change; anything else in `.nebo` is the owner's.
+pub const NEBO_OWN: &[&str] = &["worktrees", "verify", "build"];
+
+/// `<project>/.nebo`, made when missing, and in a git repository each of
+/// Nebo's own folders in it ([`NEBO_OWN`]) excluded through the
+/// repository's own `info/exclude`, so `git status` never shows them and
+/// nothing in them is ever committed; the owner's own files there stay his.
+/// The one place Nebo's working files in a project are: a helper's copy
+/// (inside the project's own `.nebo`) keeps them in the project's, never a
+/// `.nebo` of its own.
+pub fn nebo_dir(project: &Path) -> Result<PathBuf, String> {
+    let parts: Vec<_> = project.components().collect();
+    let project: PathBuf = match parts.iter().position(|c| c.as_os_str() == NEBO_DIR) {
+        Some(at) => parts[..at].iter().collect(),
+        None => project.to_path_buf(),
+    };
+    let dir = project.join(NEBO_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    if let Some(common) = git_common_dir(&project) {
+        let exclude = common.join("info").join("exclude");
+        let rules = std::fs::read_to_string(&exclude).unwrap_or_default();
+        let missing: Vec<String> =
+            NEBO_OWN.iter().map(|own| format!("{NEBO_DIR}/{own}/")).filter(|line| !rules.lines().any(|l| l.trim() == line)).collect();
+        if !missing.is_empty() {
+            let _ = std::fs::create_dir_all(common.join("info"));
+            let mut text = rules;
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            for line in missing {
+                text.push_str(&line);
+                text.push('\n');
+            }
+            std::fs::write(&exclude, text).map_err(|e| format!("write {}: {e}", exclude.display()))?;
+        }
+    }
+    Ok(dir)
+}
+
+/// The git directory every worktree of the repository at `dir` shares (its
+/// `.git` folder, followed from a worktree's `.git` file), read from disk.
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    let dot = dir.join(".git");
+    if dot.is_dir() {
+        return Some(dot);
+    }
+    let pointer = std::fs::read_to_string(&dot).ok()?;
+    let gitdir = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+    let gitdir = if gitdir.is_absolute() { gitdir } else { dir.join(gitdir) };
+    // A linked worktree's git dir is `<common>/worktrees/<name>`, and says so.
+    match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(common) => {
+            let common = PathBuf::from(common.trim());
+            Some(if common.is_absolute() { common } else { gitdir.join(common) })
+        }
+        Err(_) => Some(gitdir),
+    }
+}
+
+/// Where a helper's copies of the repository at `root` live: in its
+/// canonical root's Nebo folder (a worktree's copy beside the main
+/// checkout's, never nested in another copy), `<repo>/.nebo/worktrees`.
+async fn worktrees_dir(root: &Path) -> Result<PathBuf, String> {
+    let canonical = match git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+        Ok(common) => PathBuf::from(common).parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf()),
+        Err(_) => root.to_path_buf(),
+    };
+    nebo_dir(&canonical).map(|d| d.join("worktrees"))
 }
 
 /// A task id is joined into a path and a branch name: one segment of
@@ -430,14 +455,13 @@ pub fn validate_task_id(task_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Isolate `task_id` for the project at `workspace`: a worktree if it is a
-/// repo, a scratch copy otherwise.
+/// Isolate `task_id` for the project at `workspace`: a git worktree of its
+/// repository. `Err` when it is no repository, or git can't make one: the
+/// work then goes on in the project itself.
 pub async fn create(workspace: &Path, task_id: &str) -> Result<Isolation, String> {
     validate_task_id(task_id)?;
-    match repo_root(workspace).await {
-        Ok(root) => create_worktree(&root, task_id).await.map(Isolation::Git),
-        Err(_) => create_copy(workspace, task_id).map(Isolation::Copy),
-    }
+    let root = repo_root(workspace).await?;
+    create_worktree(&root, task_id).await.map(Isolation::Git)
 }
 
 /// Create a worktree on a fresh branch from the repo's current HEAD. A task
@@ -453,7 +477,7 @@ pub async fn create(workspace: &Path, task_id: &str) -> Result<Isolation, String
 /// in it.
 pub async fn create_worktree(root: &Path, task_id: &str) -> Result<Worktree, String> {
     validate_task_id(task_id)?;
-    let dir = worktrees_dir(root);
+    let dir = worktrees_dir(root).await?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(task_id);
     let branch = format!("nebo/{task_id}");
@@ -531,58 +555,11 @@ async fn reattach_worktree(wt: Worktree) -> Result<Worktree, String> {
 }
 
 /// A held copy, ready to work in or land again: a worktree whose work was
-/// put away on its branch is checked out again; a scratch copy is where it
-/// was kept. `Err` when its work is gone.
+/// put away on its branch is checked out again. `Err` when its work is gone.
 pub async fn reattach(iso: Isolation) -> Result<Isolation, String> {
     match iso {
         Isolation::Git(wt) => reattach_worktree(wt).await.map(Isolation::Git),
-        Isolation::Copy(c) if c.path.is_dir() => Ok(Isolation::Copy(c)),
-        Isolation::Copy(c) => Err(format!("its copy at {} is gone", c.path.display())),
     }
-}
-
-/// Walk a folder: every regular file with its size. Symlinks are skipped
-/// (a copy must never follow one out of the project); the skipped list is
-/// returned so the outcome can say so.
-fn walk(root: &Path) -> Result<(Vec<(PathBuf, u64)>, Vec<PathBuf>), String> {
-    let mut files = Vec::new();
-    let mut skipped = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
-            let path = entry.path();
-            let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("stat {}: {e}", path.display()))?;
-            if meta.file_type().is_symlink() {
-                skipped.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
-            } else if meta.is_dir() {
-                stack.push(path);
-            } else if meta.is_file() {
-                files.push((path.strip_prefix(root).unwrap_or(&path).to_path_buf(), meta.len()));
-            }
-        }
-    }
-    files.sort();
-    Ok((files, skipped))
-}
-
-fn fingerprint_file(path: &Path) -> Option<u64> {
-    std::fs::read(path).ok().map(|b| tools::checkpoint::fingerprint(&b))
-}
-
-/// Write `bytes` to `dst` with the permissions `like` has (the executable
-/// bit kept), creating its folder.
-fn write_like(dst: &Path, bytes: &[u8], like: &Path) -> Result<(), String> {
-    dst.parent()
-        .map(std::fs::create_dir_all)
-        .unwrap_or(Ok(()))
-        .and_then(|_| std::fs::write(dst, bytes))
-        .map_err(|e| format!("write {}: {e}", dst.display()))?;
-    if let Ok(meta) = std::fs::metadata(like) {
-        let _ = std::fs::set_permissions(dst, meta.permissions());
-    }
-    Ok(())
 }
 
 /// Left out of review and landing in a folder that is no repository and
@@ -662,102 +639,6 @@ pub async fn ignored_paths(folder: &Path, git_dir: Option<&Path>, paths: &[Strin
         Err(e) => Err(e),
     }
 }
-
-/// The paths of `paths` a scratch copy ignores ([`ignored_paths`]), read
-/// through a throwaway repository that holds nothing.
-async fn copy_ignored(c: &ScratchCopy, paths: &[String]) -> Result<Vec<String>, String> {
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    let lister = std::env::temp_dir().join(format!("nebo-ls-{}", uuid::Uuid::new_v4().simple()));
-    let dir = lister.to_string_lossy().into_owned();
-    let ignored = match git(&std::env::temp_dir(), &["init", "-q", "--bare", &dir]).await {
-        Ok(_) => ignored_paths(&c.path, Some(&lister), paths).await,
-        Err(e) => Err(e),
-    };
-    let _ = std::fs::remove_dir_all(&lister);
-    ignored.map_err(|e| format!("what {} ignores: {e}", c.path.display()))
-}
-
-/// A path relative to a folder as git names it: '/'-separated.
-fn rel_str(rel: &Path) -> String {
-    rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
-}
-
-/// Copy a non-repo folder into a scratch directory and remember what every
-/// file looked like.
-pub fn create_copy(workspace: &Path, task_id: &str) -> Result<ScratchCopy, String> {
-    validate_task_id(task_id)?;
-    let root = std::path::absolute(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
-    if !root.is_dir() {
-        return Err(format!("{} is not a directory", root.display()));
-    }
-    let (files, skipped) = walk(&root)?;
-    let total: u64 = files.iter().map(|(_, n)| n).sum();
-    if total > MAX_SCRATCH_BYTES {
-        return Err(format!(
-            "{} holds {:.1} GB of files; a scratch copy is refused above {:.0} GB. \
-             Point workspace at the project folder itself, not a parent, or make it a git repository.",
-            root.display(),
-            total as f64 / 1e9,
-            MAX_SCRATCH_BYTES as f64 / 1e9
-        ));
-    }
-    let path = worktrees_dir(&root).join(task_id);
-    if path.exists() {
-        return Err(format!("{} already exists", path.display()));
-    }
-    let mut snapshot = HashMap::with_capacity(files.len());
-    for (rel, _) in &files {
-        let src = root.join(rel);
-        let bytes = std::fs::read(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
-        write_like(&path.join(rel), &bytes, &src)?;
-        snapshot.insert(rel.clone(), tools::checkpoint::fingerprint(&bytes));
-    }
-    // An empty folder still needs its directory.
-    std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    Ok(ScratchCopy { task_id: task_id.to_string(), root, path, snapshot, skipped, pending: Vec::new() })
-}
-
-/// What one hand did to one file, relative to the snapshot.
-#[derive(Debug, Clone, PartialEq)]
-enum Change {
-    Written(Vec<u8>),
-    Deleted,
-}
-
-/// Every file the child changed (relative path → change). The owner's
-/// versions waiting next to conflicted files are not the child's.
-fn changes_of(c: &ScratchCopy) -> Result<Vec<(PathBuf, Change)>, String> {
-    let (files, _) = walk(&c.path)?;
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let twins: std::collections::HashSet<&PathBuf> = c.pending.iter().map(|p| &p.twin).collect();
-    for (rel, _) in files {
-        if twins.contains(&rel) {
-            continue;
-        }
-        seen.insert(rel.clone());
-        let bytes = std::fs::read(c.path.join(&rel)).map_err(|e| format!("read {}: {e}", rel.display()))?;
-        let fp = tools::checkpoint::fingerprint(&bytes);
-        if c.snapshot.get(&rel) != Some(&fp) {
-            out.push((rel, Change::Written(bytes)));
-        }
-    }
-    for rel in c.snapshot.keys() {
-        if !seen.contains(rel) {
-            out.push((rel.clone(), Change::Deleted));
-        }
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
-}
-
-/// Where the owner's version of a file both hands changed waits in a copy:
-/// `<file>.nebo-owner`, or an empty `<file>.nebo-owner-deleted` when the
-/// owner deleted it.
-pub const OWNER_SUFFIX: &str = ".nebo-owner";
-pub const OWNER_DELETED_SUFFIX: &str = ".nebo-owner-deleted";
 
 /// What catching a copy up with the owner's project did.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -902,32 +783,7 @@ async fn owner_busy(wt: &Worktree) -> Option<Busy> {
 pub async fn catch_up(iso: &mut Isolation, message: &str, landing: &Landing) -> Result<CatchUp, MergeOutcome> {
     match iso {
         Isolation::Git(wt) => catch_up_git(wt, message, landing).await,
-        Isolation::Copy(c) => {
-            held_to_review(&Isolation::Copy(c.clone()), landing).await?;
-            let kept_at = c.path.clone();
-            catch_up_copy(c).map_err(|error| MergeOutcome::Failed { error, kept_at, branch: String::new() })
-        }
     }
-}
-
-/// The changes of a scratch copy that land: never what the folder ignores
-/// ([`copy_ignored`], build output, by path, so a build folder the copy
-/// removed is no change either), unless it was reviewed; and never the
-/// deletion of an ignored file, whatever was reviewed or chosen.
-async fn copy_landing_changes(c: &ScratchCopy, landing: &Landing) -> Result<Vec<(PathBuf, Change)>, String> {
-    let changes = changes_of(c)?;
-    let paths: Vec<String> = changes.iter().map(|(rel, _)| rel_str(rel)).collect();
-    let ignored = copy_ignored(c, &paths).await?;
-    Ok(changes
-        .into_iter()
-        .filter(|(rel, ch)| {
-            let rel = rel_str(rel);
-            if !ignored.contains(&rel) {
-                return true;
-            }
-            !matches!(ch, Change::Deleted) && landing.only.as_ref().is_some_and(|o| o.contains_key(&rel))
-        })
-        .collect())
 }
 
 /// The changed paths outside what `landing` reviewed.
@@ -962,10 +818,6 @@ pub async fn held_to_review(iso: &Isolation, landing: &Landing) -> Result<(), Me
                 .filter_map(|e| e.get(3..).map(str::to_string))
                 .collect();
             (changed, dirty)
-        }
-        Isolation::Copy(c) => {
-            let changed = copy_landing_changes(c, landing).await.map_err(failed)?.into_iter().map(|(p, _)| rel_str(&p)).collect();
-            (changed, Vec::new())
         }
     };
     let unreviewed = outside_review(&changed, landing);
@@ -1074,114 +926,6 @@ async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Re
     Ok(CatchUp { onto: owner, changed, overlap, ..Default::default() })
 }
 
-fn catch_up_copy(c: &mut ScratchCopy) -> Result<CatchUp, String> {
-    // A conflict whose owner's version the builder deleted is resolved:
-    // that version is folded in, unless the owner changed the file again
-    // since, or the file still holds conflict markers.
-    let mut still = Vec::new();
-    for p in std::mem::take(&mut c.pending) {
-        let twin_left = std::fs::symlink_metadata(c.path.join(&p.twin)).is_ok();
-        let marked = std::fs::read(c.path.join(&p.rel)).is_ok_and(|b| has_markers(&b, DEFAULT_MARKER_SIZE));
-        let owner_now = fingerprint_file(&c.root.join(&p.rel));
-        if twin_left || marked {
-            still.push(p);
-        } else if owner_now == p.owner_fp {
-            match owner_now {
-                Some(fp) => {
-                    c.snapshot.insert(p.rel, fp);
-                }
-                None => {
-                    c.snapshot.remove(&p.rel);
-                }
-            }
-        } else {
-            // Changed again by the owner: a fresh conflict, never an overwrite.
-            still.push(put_twin(c, &p.rel)?);
-        }
-    }
-    c.pending = still;
-    let ours = changes_of(c)?;
-    let ours_paths: std::collections::HashSet<PathBuf> = ours.iter().map(|(p, _)| p.clone()).collect();
-    let (owner_files, _) = walk(&c.root)?;
-    let mut theirs: Vec<PathBuf> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for (rel, _) in owner_files {
-        seen.insert(rel.clone());
-        if c.snapshot.get(&rel) != fingerprint_file(&c.root.join(&rel)).as_ref() {
-            theirs.push(rel);
-        }
-    }
-    theirs.extend(c.snapshot.keys().filter(|rel| !seen.contains(*rel)).cloned());
-    let mut overlap = Vec::new();
-    for rel in theirs {
-        if c.pending.iter().any(|p| p.rel == rel) {
-            continue;
-        }
-        // A file of ours where the owner's goes into a folder: theirs isn't
-        // taken in, and the landing asks about the folder.
-        if rel.ancestors().skip(1).any(|a| ours_paths.contains(a)) {
-            continue;
-        }
-        if ours_paths.contains(&rel) {
-            // Both changed it: the owner's version waits next to it.
-            let pending = put_twin(c, &rel)?;
-            c.pending.push(pending);
-            overlap.push(rel.to_string_lossy().into_owned());
-            continue;
-        }
-        // Only the owner changed it: the copy takes it in.
-        let src = c.root.join(&rel);
-        let dst = c.path.join(&rel);
-        match std::fs::read(&src).ok() {
-            Some(bytes) => {
-                write_like(&dst, &bytes, &src)?;
-                c.snapshot.insert(rel, tools::checkpoint::fingerprint(&bytes));
-            }
-            None => {
-                let _ = std::fs::remove_file(&dst);
-                c.snapshot.remove(&rel);
-            }
-        }
-    }
-    let changed: Vec<String> = changes_of(c)?.into_iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
-    let conflicts: Vec<String> = c.pending.iter().map(|p| p.rel.to_string_lossy().into_owned()).collect();
-    Ok(CatchUp { no_changes: changed.is_empty() && conflicts.is_empty(), changed, overlap, conflicts, ..Default::default() })
-}
-
-/// Put the owner's current version of `rel` next to it in the copy, and
-/// remember exactly what was put there and where.
-fn put_twin(c: &ScratchCopy, rel: &Path) -> Result<Pending, String> {
-    let owner_bytes = std::fs::read(c.root.join(rel)).ok();
-    let twin = free_twin(c, rel, owner_bytes.is_none());
-    let at = c.path.join(&twin);
-    at.parent()
-        .map(std::fs::create_dir_all)
-        .unwrap_or(Ok(()))
-        .and_then(|_| std::fs::write(&at, owner_bytes.as_deref().unwrap_or_default()))
-        .map_err(|e| format!("write {}: {e}", at.display()))?;
-    Ok(Pending { rel: rel.to_path_buf(), twin, owner_fp: owner_bytes.as_deref().map(tools::checkpoint::fingerprint) })
-}
-
-/// A name for the owner's version of `rel` that nothing in the copy or the
-/// project holds: `<file>.nebo-owner` (or `-deleted`), numbered when taken.
-/// An owner's own file of that name is never mistaken for one.
-fn free_twin(c: &ScratchCopy, rel: &Path, deleted: bool) -> PathBuf {
-    let suffix = if deleted { OWNER_DELETED_SUFFIX } else { OWNER_SUFFIX };
-    let taken = |p: &PathBuf| {
-        c.snapshot.contains_key(p)
-            || c.pending.iter().any(|q| &q.twin == p)
-            || std::fs::symlink_metadata(c.path.join(p)).is_ok()
-            || std::fs::symlink_metadata(c.root.join(p)).is_ok()
-    };
-    (0..)
-        .map(|n| match n {
-            0 => PathBuf::from(format!("{}{suffix}", rel.to_string_lossy())),
-            n => PathBuf::from(format!("{}{suffix}-{n}", rel.to_string_lossy())),
-        })
-        .find(|p| !taken(p))
-        .expect("a free name")
-}
-
 /// Land a caught-up copy on the owner's branch.
 ///
 /// Git: the task's one commit must sit on the tip of the branch the copy
@@ -1200,7 +944,6 @@ fn free_twin(c: &ScratchCopy, rel: &Path, deleted: bool) -> PathBuf {
 pub async fn land(iso: &Isolation, landing: &Landing) -> MergeOutcome {
     match iso {
         Isolation::Git(wt) => land_git(wt, landing).await,
-        Isolation::Copy(c) => land_copy(c, landing).await,
     }
 }
 
@@ -1456,267 +1199,8 @@ async fn finish_no_changes(iso: &Isolation) -> MergeOutcome {
                 warn!(path = %wt.path.display(), error = %e, "unchanged worktree not removed");
             }
         }
-        Isolation::Copy(c) => remove_copy(&c.path),
     }
     MergeOutcome::NoChanges
-}
-
-/// Whether a folder on the way from `root` to `target` (or `target`
-/// itself) is a link: writing through it could leave the project.
-fn through_a_link(root: &Path, target: &Path) -> bool {
-    let Ok(rel) = target.strip_prefix(root) else { return true };
-    let mut at = root.to_path_buf();
-    for part in rel.components() {
-        at.push(part);
-        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
-            return true;
-        }
-    }
-    false
-}
-
-async fn land_copy(c: &ScratchCopy, landing: &Landing) -> MergeOutcome {
-    let failed = |error: String| MergeOutcome::Failed { error, kept_at: c.path.clone(), branch: String::new() };
-    // A copy that is gone is nothing to land, never a set of deletions.
-    if !c.path.is_dir() {
-        return failed(format!("its copy at {} is gone", c.path.display()));
-    }
-    if !c.pending.is_empty() {
-        return MergeOutcome::Conflict {
-            files: c.pending.iter().map(|p| p.rel.to_string_lossy().into_owned()).collect(),
-            kept_at: c.path.clone(),
-            branch: String::new(),
-        };
-    }
-    if let Err(outcome) = held_to_review(&Isolation::Copy(c.clone()), landing).await {
-        return outcome;
-    }
-    // What the folder ignores is rebuilt from its sources: never landed,
-    // unless it was reviewed.
-    let changes = match copy_landing_changes(c, landing).await {
-        Ok(ch) => ch,
-        Err(e) => return failed(e),
-    };
-    if changes.is_empty() {
-        remove_copy(&c.path);
-        return MergeOutcome::NoChanges;
-    }
-    let paths: Vec<String> = changes.iter().map(|(rel, _)| rel_str(rel)).collect();
-    let written: Vec<String> =
-        changes.iter().filter(|(_, ch)| matches!(ch, Change::Written(_))).map(|(rel, _)| rel.to_string_lossy().into_owned()).collect();
-    let marked: Vec<String> =
-        written.iter().filter(|f| std::fs::read(c.path.join(f)).is_ok_and(|b| has_markers(&b, DEFAULT_MARKER_SIZE))).cloned().collect();
-    if !marked.is_empty() {
-        return MergeOutcome::Conflict { files: marked, kept_at: c.path.clone(), branch: String::new() };
-    }
-    // A name whose case alone changed: on a disk that ignores case the new
-    // name reads as the old file, which is what the owner should still have.
-    let deleted: Vec<&PathBuf> = changes.iter().filter(|(_, ch)| matches!(ch, Change::Deleted)).map(|(rel, _)| rel).collect();
-    let renamed_from = |rel: &PathBuf| -> Option<&PathBuf> {
-        let lower = rel.to_string_lossy().to_lowercase();
-        (!c.snapshot.contains_key(rel)).then(|| deleted.iter().copied().find(|d| d.to_string_lossy().to_lowercase() == lower)).flatten()
-    };
-    let expected = |rel: &PathBuf| -> Option<u64> {
-        match renamed_from(rel) {
-            Some(old) if fingerprint_file(&c.root.join(rel)).is_some() => c.snapshot.get(old).copied(),
-            _ => c.snapshot.get(rel).copied(),
-        }
-    };
-    // The owner changed one of these files since the catch-up (a deletion
-    // included), or has a folder where the change puts a file: theirs is
-    // never overwritten or hidden.
-    let touched: Vec<String> = changes
-        .iter()
-        .filter(|(rel, _)| {
-            let target = c.root.join(rel);
-            std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_dir()) || expected(rel) != fingerprint_file(&target)
-        })
-        .map(|(rel, _)| rel.to_string_lossy().into_owned())
-        .collect();
-    if !touched.is_empty() {
-        return MergeOutcome::OwnerEdits { files: touched, kept_at: c.path.clone(), branch: String::new() };
-    }
-    if let Some((rel, _)) = changes.iter().find(|(rel, _)| through_a_link(&c.root, &c.root.join(rel))) {
-        return failed(format!("{} is reached through a link out of the project", rel.display()));
-    }
-    // Deletions go first: a rename that only changes a name's case deletes
-    // the old name before the new one is written, and on a disk that
-    // ignores case both are the one file, set aside once.
-    let mut order: Vec<usize> = (0..changes.len()).collect();
-    order.sort_by_key(|&i| !matches!(changes[i].1, Change::Deleted));
-    // One journal for the landing: every file staged next to its place,
-    // the owner's version set aside, then all moved in together. A failure
-    // (or a restart midway, [`cleanup_stale`]) puts every file back.
-    let beside = |target: &Path, what: &str| {
-        target.with_file_name(format!(".{}.{}.{what}", target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), c.task_id))
-    };
-    let mut journal = Journal { steps: Vec::new(), done: false, copy: Some(c.path.clone()) };
-    for &i in &order {
-        let (rel, change) = &changes[i];
-        let target = c.root.join(rel);
-        let (staged, fp) = match change {
-            Change::Written(bytes) => (Some(beside(&target, "nebo-landing")), Some(tools::checkpoint::fingerprint(bytes))),
-            Change::Deleted => (None, None),
-        };
-        let renamed_case = matches!(change, Change::Written(_)) && renamed_from(rel).is_some();
-        let backup = (!renamed_case && std::fs::symlink_metadata(&target).is_ok()).then(|| beside(&target, "nebo-backup"));
-        if let Some(taken) = staged.iter().chain(backup.iter()).find(|p| std::fs::symlink_metadata(p).is_ok()) {
-            return failed(format!("{} is in the way of landing {}", taken.display(), rel.display()));
-        }
-        journal.steps.push(Step { target, staged, backup, fp, was: c.snapshot.get(rel).copied() });
-    }
-    let journal_at = journal_path(c);
-    if let Err(e) = journal.write(&journal_at) {
-        return failed(e);
-    }
-    for (&i, step) in order.iter().zip(&journal.steps) {
-        let (rel, change) = &changes[i];
-        if let (Change::Written(bytes), Some(staged)) = (change, &step.staged)
-            && let Err(e) = write_like(staged, bytes, &c.path.join(rel))
-        {
-            journal.roll_back(&journal_at);
-            return failed(format!("stage {}: {e}", rel.display()));
-        }
-    }
-    for (&i, step) in order.iter().zip(&journal.steps) {
-        let rel = &changes[i].0;
-        #[cfg(test)]
-        before_replace(&step.target);
-        // Checked again right before it is replaced, and the set-aside
-        // version checked after: an owner's edit since is never overwritten.
-        let owner_kept = |at: &Path| step.backup.is_none() || fingerprint_file(at) == step.was;
-        if !owner_kept(&step.target) && std::fs::symlink_metadata(&step.target).is_ok() {
-            journal.roll_back(&journal_at);
-            return MergeOutcome::OwnerEdits { files: vec![rel.to_string_lossy().into_owned()], kept_at: c.path.clone(), branch: String::new() };
-        }
-        if let Some(b) = &step.backup {
-            if let Err(e) = std::fs::rename(&step.target, b) {
-                journal.roll_back(&journal_at);
-                return failed(format!("write {}: {e}", rel.display()));
-            }
-            if !owner_kept(b) {
-                journal.roll_back(&journal_at);
-                return MergeOutcome::OwnerEdits { files: vec![rel.to_string_lossy().into_owned()], kept_at: c.path.clone(), branch: String::new() };
-            }
-        }
-        if let Some(st) = &step.staged
-            && let Err(e) = std::fs::rename(st, &step.target)
-        {
-            journal.roll_back(&journal_at);
-            return failed(format!("write {}: {e}", rel.display()));
-        }
-    }
-    journal.done = true;
-    if let Err(e) = journal.write(&journal_at) {
-        warn!(error = %e, "a landed copy's journal could not be marked done; the owner's files are landed");
-    }
-    journal.finish(&journal_at);
-    remove_copy(&c.path);
-    MergeOutcome::Merged { files: paths, commit: String::new(), caught_up_to: String::new() }
-}
-
-/// Run just before a scratch copy's landing replaces `target` (a test
-/// stands in for the owner editing it then).
-#[cfg(test)]
-fn before_replace(target: &Path) {
-    if let Some(hook) = BEFORE_REPLACE.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-        hook(target);
-    }
-}
-
-#[cfg(test)]
-type ReplaceHook = Box<dyn Fn(&Path) + Send>;
-
-#[cfg(test)]
-static BEFORE_REPLACE: std::sync::Mutex<Option<ReplaceHook>> = std::sync::Mutex::new(None);
-
-/// A copy's landing in progress: what each owner file it writes or deletes
-/// is staged as and set aside as, kept next to the copy until it is done.
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-struct Journal {
-    steps: Vec<Step>,
-    /// Every file is in place; only the set-aside versions are left to drop.
-    done: bool,
-    /// The copy that is landing: removed once the landing is done.
-    #[serde(default)]
-    copy: Option<PathBuf>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-struct Step {
-    target: PathBuf,
-    /// The new version staged next to it (`None`: the landing deletes it).
-    staged: Option<PathBuf>,
-    /// The owner's version set aside while it is replaced (`None`: there
-    /// was none).
-    backup: Option<PathBuf>,
-    /// The new version's fingerprint.
-    fp: Option<u64>,
-    /// The owner's version's fingerprint when the copy caught up.
-    #[serde(default)]
-    was: Option<u64>,
-}
-
-const JOURNAL_SUFFIX: &str = ".nebo-landing.json";
-
-fn journal_path(c: &ScratchCopy) -> PathBuf {
-    c.path.with_file_name(format!("{}{JOURNAL_SUFFIX}", c.task_id))
-}
-
-impl Journal {
-    fn write(&self, at: &Path) -> Result<(), String> {
-        let tmp = at.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_vec(self).unwrap_or_default())
-            .and_then(|_| std::fs::rename(&tmp, at))
-            .map_err(|e| format!("write {}: {e}", at.display()))
-    }
-
-    /// Put every owner file back as it was: a staged version not moved in
-    /// is dropped, a set-aside version goes back, a new file this landing
-    /// made is removed.
-    fn roll_back(&self, at: &Path) {
-        for step in self.steps.iter().rev() {
-            if let Some(staged) = &step.staged {
-                let _ = std::fs::remove_file(staged);
-            }
-            match &step.backup {
-                Some(b) if std::fs::symlink_metadata(b).is_ok() => {
-                    if let Err(e) = std::fs::rename(b, &step.target) {
-                        warn!(path = %step.target.display(), error = %e, "an owner's file could not be put back; it is at its set-aside name");
-                    }
-                }
-                None if step.fp.is_some() && fingerprint_file(&step.target) == step.fp => {
-                    let _ = std::fs::remove_file(&step.target);
-                }
-                _ => {}
-            }
-        }
-        let _ = std::fs::remove_file(at);
-    }
-
-    /// A landing that is done drops the owner's set-aside versions, and
-    /// its copy: everything in it is landed.
-    fn finish(&self, at: &Path) {
-        for step in &self.steps {
-            for p in step.staged.iter().chain(step.backup.iter()) {
-                let _ = std::fs::remove_file(p);
-            }
-        }
-        if let Some(copy) = &self.copy {
-            remove_copy(copy);
-        }
-        let _ = std::fs::remove_file(at);
-    }
-}
-
-/// A copy's landing a restart cut short: finished when every file was in
-/// place, put back otherwise.
-fn recover_landing(at: &Path) {
-    match std::fs::read(at).ok().and_then(|b| serde_json::from_slice::<Journal>(&b).ok()) {
-        Some(j) if j.done => j.finish(at),
-        Some(j) => j.roll_back(at),
-        None => warn!(path = %at.display(), "an unreadable landing journal is kept"),
-    }
 }
 
 /// The order a set of copies lands in: a copy of a project another one's
@@ -1753,32 +1237,13 @@ pub fn dependency_order(isos: &[Isolation]) -> Vec<usize> {
     order
 }
 
-/// What a copy would land, taken before its checks run: the checks are
-/// held to it ([`after_checks`]).
-pub struct Checked(Vec<(PathBuf, Option<u64>)>);
-
-pub fn before_checks(iso: &Isolation) -> Checked {
-    let files = match iso {
-        Isolation::Git(_) => Vec::new(),
-        Isolation::Copy(c) => changes_of(c).unwrap_or_default().into_iter().map(|(rel, ch)| (rel, change_fp(&ch))).collect(),
-    };
-    Checked(files)
-}
-
-fn change_fp(ch: &Change) -> Option<u64> {
-    match ch {
-        Change::Written(bytes) => Some(tools::checkpoint::fingerprint(bytes)),
-        Change::Deleted => None,
-    }
-}
-
 /// After a copy's checks: what was checked is what lands. A file the
 /// checks wrote that the work had not made (a cache, build output) is
 /// dropped from the copy, never landed; a change of theirs to the work's
 /// own files (a formatter, a snapshot update) is refused, and the work goes
 /// back to its builder. Git alike: the checks may change no file the commit
 /// holds, and a file they add beside it is dropped.
-pub async fn after_checks(iso: &Isolation, before: Checked) -> Result<(), String> {
+pub async fn after_checks(iso: &Isolation) -> Result<(), String> {
     let changed: Vec<String> = match iso {
         Isolation::Git(wt) => {
             // The work was all committed before the checks ran: a file
@@ -1787,26 +1252,6 @@ pub async fn after_checks(iso: &Isolation, before: Checked) -> Result<(), String
                 let _ = std::fs::remove_file(wt.path.join(made));
             }
             z_paths(&wt.path, &["diff", "-z", "--name-only", "HEAD"]).await
-        }
-        Isolation::Copy(c) => {
-            let was: HashMap<PathBuf, Option<u64>> = before.0.into_iter().collect();
-            let now = changes_of(c)?;
-            let mut changed: Vec<String> = was
-                .keys()
-                .filter(|rel| !now.iter().any(|(r, _)| r == *rel))
-                .map(|rel| rel.to_string_lossy().into_owned())
-                .collect();
-            for (rel, ch) in &now {
-                match was.get(rel) {
-                    Some(fp) if *fp == change_fp(ch) => {}
-                    None if matches!(ch, Change::Written(_)) && !c.snapshot.contains_key(rel) => {
-                        let _ = std::fs::remove_file(c.path.join(rel));
-                    }
-                    _ => changed.push(rel.to_string_lossy().into_owned()),
-                }
-            }
-            changed.sort();
-            changed
         }
     };
     if changed.is_empty() {
@@ -1922,9 +1367,8 @@ pub async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<
             return (last, outcome);
         }
         if let Some(retest) = retest {
-            let before = before_checks(iso);
             let checked = match retest(iso).await {
-                Ok(()) => after_checks(iso, before).await,
+                Ok(()) => after_checks(iso).await,
                 Err(error) => Err(error),
             };
             if let Err(error) = checked {
@@ -1939,14 +1383,6 @@ pub async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<
     }
     let (kept_at, branch) = kept(iso);
     (last, MergeOutcome::Failed { error: "the project kept moving while the copy caught up; try again when it is quiet".into(), kept_at, branch })
-}
-
-/// A merged scratch copy has nothing left to keep; a failure to delete it is
-/// disk, not correctness, so it is logged and the stale sweep gets it later.
-fn remove_copy(path: &Path) {
-    if let Err(e) = std::fs::remove_dir_all(path) {
-        warn!(path = %path.display(), error = %e, "scratch copy not removed; the stale sweep will retry");
-    }
 }
 
 /// Remove a worktree, and its task branch unless `keep_branch` (work put
@@ -1992,7 +1428,6 @@ pub async fn changed_files(iso: &Isolation) -> Vec<String> {
             }
             files
         }
-        Isolation::Copy(c) => changes_of(c).map(|ch| ch.into_iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect()).unwrap_or_default(),
     }
 }
 
@@ -2018,7 +1453,6 @@ pub async fn put_away(iso: &mut Isolation, message: &str) -> Option<String> {
                 }
             }
         }
-        Isolation::Copy(c) => Some(format!("its work is kept in its copy at {}", c.path.display())),
     }
 }
 
@@ -2083,78 +1517,240 @@ pub async fn discard(iso: &Isolation) -> Result<(), String> {
             }
             Ok(())
         }
-        Isolation::Copy(c) => match std::fs::remove_dir_all(&c.path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("remove {}: {e}", c.path.display())),
-        },
     }
 }
 
-/// Sweep copies a crashed parent left behind under `<data_dir>/worktrees`.
-/// Fail-closed: a worktree with uncommitted changes or
-/// commits not on any remote is kept; a scratch copy is always kept (there is
-/// no snapshot to compare against once the parent is gone) unless it is
-/// empty. Only `nebo/sa-*` branches are ever deleted. Returns what was removed.
-pub async fn cleanup_stale(cutoff_secs: u64) -> Vec<PathBuf> {
-    let base = match config::data_dir() {
-        Ok(d) => d.join("worktrees"),
-        Err(_) => return Vec::new(),
-    };
-    let Ok(projects) = std::fs::read_dir(&base) else { return Vec::new() };
+/// Sweep the copies a crashed parent left behind in the projects `roots`
+/// (`<repo>/.nebo/worktrees`). Only Nebo's own (a helper's `h-…`, a
+/// verification's `v-…`, an older `sa-…`), untouched for `cutoff_secs`,
+/// and holding no work that hasn't landed: nothing uncommitted or
+/// untracked, and no commit the project's other branches and remotes don't
+/// hold. Anything git can't answer for is kept. Returns what was removed.
+pub async fn cleanup_stale(roots: &[PathBuf], cutoff_secs: u64) -> Vec<PathBuf> {
     let now = std::time::SystemTime::now();
     let mut removed = Vec::new();
-    for project in projects.flatten() {
-        let Ok(entries) = std::fs::read_dir(project.path()) else { continue };
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root.join(NEBO_DIR).join("worktrees")) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(JOURNAL_SUFFIX) {
-                recover_landing(&path);
-                continue;
-            }
+            let nebos = ["h-", "v-", "sa-"].iter().any(|p| name.starts_with(p)) && validate_task_id(&name).is_ok();
             let old = entry
                 .metadata()
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|m| now.duration_since(m).ok())
-                .is_some_and(|age| age.as_secs() > cutoff_secs);
-            if !old || !name.starts_with("sa-") {
+                .is_some_and(|age| age.as_secs() >= cutoff_secs);
+            if !nebos || !old || !path.join(".git").is_file() {
                 continue;
             }
-            let is_worktree = path.join(".git").exists();
-            if is_worktree {
-                let dirty = git(&path, &["status", "--porcelain", "-uno"]).await;
-                let unpushed = git(&path, &["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"]).await;
-                let clean = matches!((&dirty, &unpushed), (Ok(d), Ok(u)) if d.trim().is_empty() && u.trim().is_empty());
-                if !clean {
-                    continue;
-                }
-                let Ok(root) = git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await else { continue };
-                let root = PathBuf::from(root);
-                let root = root.parent().map(Path::to_path_buf).unwrap_or(root);
-                let wt = Worktree {
-                    task_id: name.clone(),
-                    root,
-                    path: path.clone(),
-                    branch: format!("nebo/{name}"),
-                    start_branch: String::new(),
-                    base: String::new(),
-                    onto: None,
-                    conflicted: Vec::new(),
-                };
-                if remove(&wt, false).await.is_ok() {
-                    removed.push(path);
-                }
-            } else {
-                let empty = walk(&path).map(|(f, _)| f.is_empty()).unwrap_or(false);
-                if empty && std::fs::remove_dir_all(&path).is_ok() {
-                    removed.push(path);
-                }
+            let branch = format!("nebo/{name}");
+            let dirty = git(&path, &["status", "--porcelain", "--untracked-files=normal"]).await;
+            let unlanded = git(&path, &["rev-list", "--count", "HEAD", "--not", &format!("--exclude={branch}"), "--branches", "--remotes"]).await;
+            let clean = matches!((&dirty, &unlanded), (Ok(d), Ok(n)) if d.trim().is_empty() && n.trim() == "0");
+            if !clean {
+                continue;
+            }
+            let wt = Worktree {
+                task_id: name.clone(),
+                root: root.clone(),
+                path: path.clone(),
+                branch,
+                start_branch: String::new(),
+                base: String::new(),
+                onto: None,
+                conflicted: Vec::new(),
+            };
+            if remove(&wt, false).await.is_ok() {
+                removed.push(path);
             }
         }
     }
     removed
+}
+
+/// The copies the verify loop made in Nebo's data folder
+/// (`<data_dir>/worktrees`), before the builder worked in the project
+/// itself: each verification row of kind `isolated` whose copy is still
+/// there. A git worktree holding work that hasn't landed is moved beside
+/// its project (`<repo>/.nebo/worktrees/<id>`, by git); one holding none is
+/// removed. A copy of a folder that is no repository is never moved: one
+/// identical to its project, file for file and link for link, is removed,
+/// and one that differs stays exactly where it is. Either way a kept
+/// copy's row says where it is (`kept_in_copy`). A copy whose work can't
+/// be told is kept where it is. The folders they were in go once empty.
+/// Run at boot, before a turn reads the rows. Returns how many it kept
+/// and removed.
+pub async fn adopt_old_copies(store: &db::Store) -> (usize, usize) {
+    let Ok(old_root) = config::data_dir().map(|d| d.join("worktrees")) else { return (0, 0) };
+    let rows = store.list_verifications(&db::VerificationQuery::default()).unwrap_or_default();
+    let (mut kept, mut removed) = (0, 0);
+    for v in rows.iter().filter(|v| v.work_kind == "isolated" && v.landed_ref.is_empty()) {
+        let copy = PathBuf::from(&v.work_dir);
+        if !copy.starts_with(&old_root) || !copy.is_dir() {
+            continue;
+        }
+        let project = PathBuf::from(v.project_root.trim_end_matches('/'));
+        let outcome = if copy.join(".git").is_file() {
+            adopt_worktree(&copy, &v.id).await
+        } else if types::Why::read(&v.reason).is_some_and(|w| w.code == "kept_in_copy") {
+            // Kept where it is, and said so, at an earlier start.
+            continue;
+        } else {
+            settle_folder_copy(&copy, &project)
+        };
+        let at = match outcome {
+            Adopted::Moved(to) => {
+                let _ = store.set_verification_work_dir(&v.id, &to.to_string_lossy(), &v.isolation, &v.branch);
+                if let Some(mut state) = v.isolation_state.clone() {
+                    if let Some(path) = state.get_mut("Git").and_then(|a| a.get_mut("path")) {
+                        *path = serde_json::Value::String(to.to_string_lossy().into_owned());
+                    }
+                    let _ = store.set_verification_isolation(&v.id, &state);
+                }
+                Some(to)
+            }
+            Adopted::Stays => Some(copy.clone()),
+            Adopted::Removed => {
+                removed += 1;
+                None
+            }
+            Adopted::Kept(why) => {
+                warn!(copy = %copy.display(), error = %why, "an old working copy was kept where it is");
+                None
+            }
+        };
+        if let Some(at) = at {
+            let reason = types::Why::new("kept_in_copy").with("path", at.to_string_lossy().into_owned()).text();
+            let _ = store.set_verification_state(
+                &v.id,
+                &db::VerificationState {
+                    state: &v.state,
+                    reason: &reason,
+                    rounds: v.rounds,
+                    open_blockers: v.open_blockers,
+                    open_majors: v.open_majors,
+                    open_minors: v.open_minors,
+                    open: v.open.clone(),
+                    deferred: v.deferred.clone(),
+                    summary: &v.summary,
+                },
+                v.finished_at.unwrap_or(v.created_at),
+            );
+            kept += 1;
+        }
+    }
+    // The folders the copies were in, once nothing is left in them.
+    for project in std::fs::read_dir(&old_root).into_iter().flatten().flatten() {
+        let _ = std::fs::remove_dir(project.path());
+    }
+    let _ = std::fs::remove_dir(&old_root);
+    (kept, removed)
+}
+
+/// What became of one old copy ([`adopt_old_copies`]).
+enum Adopted {
+    /// Moved beside its project, there.
+    Moved(PathBuf),
+    /// Holds work, and stays where it is.
+    Stays,
+    Removed,
+    /// Its work couldn't be told: kept where it is, unnoted.
+    Kept(String),
+}
+
+/// An old git worktree copy: moved by git itself into its repository's
+/// Nebo folder when it holds work its project doesn't (anything
+/// uncommitted or untracked, or a commit no other branch or remote holds),
+/// removed with its branch otherwise.
+async fn adopt_worktree(copy: &Path, id: &str) -> Adopted {
+    let branch = format!("nebo/{id}");
+    let (dirty, unlanded) = (
+        git(copy, &["status", "--porcelain", "--untracked-files=normal"]).await,
+        git(copy, &["rev-list", "--count", "HEAD", "--not", &format!("--exclude={branch}"), "--branches", "--remotes"]).await,
+    );
+    let (Ok(dirty), Ok(unlanded)) = (dirty, unlanded) else { return Adopted::Kept("git could not say what it holds".into()) };
+    let root = match git(copy, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+        Ok(common) => match PathBuf::from(common).parent() {
+            Some(root) => root.to_path_buf(),
+            None => return Adopted::Kept("its repository could not be found".into()),
+        },
+        Err(e) => return Adopted::Kept(e),
+    };
+    if dirty.trim().is_empty() && unlanded.trim() == "0" {
+        let wt = Worktree { task_id: id.to_string(), root, path: copy.to_path_buf(), branch, start_branch: String::new(), base: String::new(), onto: None, conflicted: Vec::new() };
+        return match remove(&wt, false).await {
+            Ok(()) => Adopted::Removed,
+            Err(e) => Adopted::Kept(e),
+        };
+    }
+    let to = match worktrees_dir(&root).await {
+        Ok(dir) => match std::fs::create_dir_all(&dir) {
+            Ok(()) => dir.join(id),
+            Err(e) => return Adopted::Kept(e.to_string()),
+        },
+        Err(e) => return Adopted::Kept(e),
+    };
+    if to.exists() {
+        return Adopted::Kept(format!("{} is taken", to.display()));
+    }
+    match git(&root, &["worktree", "move", &copy.to_string_lossy(), &to.to_string_lossy()]).await {
+        Ok(_) => Adopted::Moved(to),
+        Err(e) => Adopted::Kept(e),
+    }
+}
+
+/// An old copy of a folder that was no repository: removed when it is
+/// identical to its project (every file's bytes and whether it may be run,
+/// every link's target, nothing more and nothing less; Nebo's own folders in the project's
+/// `.nebo` aside), and otherwise left exactly where it is. It is never
+/// moved: in the project's folder a later `git clean -fdx` would take it.
+fn settle_folder_copy(copy: &Path, project: &Path) -> Adopted {
+    let mut theirs = Vec::new();
+    let mut ours = Vec::new();
+    if let Err(e) = entries_under(copy, copy, &mut ours).and_then(|()| entries_under(project, project, &mut theirs)) {
+        return Adopted::Kept(e);
+    }
+    theirs.retain(|(rel, _)| !NEBO_OWN.iter().any(|own| rel.starts_with(&format!("{NEBO_DIR}/{own}/"))));
+    ours.sort();
+    theirs.sort();
+    if ours != theirs {
+        return Adopted::Stays;
+    }
+    match std::fs::remove_dir_all(copy) {
+        Ok(()) => Adopted::Removed,
+        Err(e) => Adopted::Kept(e.to_string()),
+    }
+}
+
+/// Every file and link under `dir`, relative to `base` ('/'-separated):
+/// a file with its bytes' fingerprint and whether it may be run, a link
+/// with its target as written (never followed).
+fn entries_under(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        let rel = path.strip_prefix(base).unwrap_or(&path).components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        if kind.is_symlink() {
+            let target = std::fs::read_link(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            out.push((rel, format!("link:{}", target.display())));
+        } else if kind.is_dir() {
+            entries_under(base, &path, out)?;
+        } else if kind.is_file() {
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            #[cfg(unix)]
+            let runs = {
+                use std::os::unix::fs::PermissionsExt;
+                entry.metadata().map_err(|e| e.to_string())?.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let runs = false;
+            out.push((rel, format!("file:{:016x}:{}", tools::checkpoint::fingerprint(&bytes), if runs { "x" } else { "-" })));
+        } else {
+            return Err(format!("{} is neither a file, a folder nor a link", path.display()));
+        }
+    }
+    Ok(())
 }
 
 /// The lines the child sees at the top of its prompt.
@@ -2164,18 +1760,6 @@ pub fn preamble(iso: &Isolation) -> String {
             "Working copy: {}\nThis is your own git worktree on branch {}. It is also your shell's working directory and where relative paths resolve. Do ALL file work under that path and nowhere else; the parent merges it when you finish. Commit as you like or not at all: uncommitted work is committed for you.\n\n",
             wt.path.display(),
             wt.branch
-        ),
-        Isolation::Copy(c) => format!(
-            "Working copy: {}\nThis is your own copy of the project folder. It is also your shell's working directory and where relative paths resolve. Do ALL file work under that path and nowhere else; the parent copies your changed files back when you finish.{}\n\n",
-            c.path.display(),
-            if c.skipped.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " Not copied (symlinks): {}.",
-                    c.skipped.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(", ")
-                )
-            }
         ),
     }
 }
@@ -2193,15 +1777,10 @@ pub fn render_outcome(desc: &str, outcome: &MergeOutcome) -> String {
             files.join(", ")
         ),
         MergeOutcome::Conflict { files, kept_at, branch } => format!(
-            "- {desc}: not landed yet. Catching up with the project met the owner's changes in {}; they wait in the copy{} at {} to be combined there{}. Nothing of the owner's changed.",
+            "- {desc}: not landed yet. Catching up with the project met the owner's changes in {}; they wait in the copy{} at {} to be combined there (the rebase is in progress there: resolve each file, then stage it with `git add`, or `git rm` to keep a deletion; staging it is the word that it is resolved). Nothing of the owner's changed.",
             files.join(", "),
             branch_note(branch),
             kept_at.display(),
-            if branch.is_empty() {
-                format!(" (the owner's version is next to each file as <file>{OWNER_SUFFIX}, or <file>{OWNER_DELETED_SUFFIX} if they deleted it; deleting it once combined is the word that the file is resolved)")
-            } else {
-                " (the rebase is in progress there: resolve each file, then stage it with `git add`, or `git rm` to keep a deletion; staging it is the word that it is resolved)".to_string()
-            }
         ),
         MergeOutcome::OwnerEdits { files, kept_at, branch } => format!(
             "- {desc}: not landed. The owner has unsaved edits in {} that this change also touches; nothing was overwritten. The work is kept{} at {} until the owner decides.",
@@ -2272,12 +1851,10 @@ mod tests {
     }
 
     /// The builder's word that a conflict is resolved: its resolution
-    /// staged (`git add`). A scratch copy's word is deleting the owner's
-    /// version, which the tests do themselves.
+    /// staged (`git add`).
     async fn stage_resolution(iso: &Isolation) {
-        if let Isolation::Git(wt) = iso {
-            git(&wt.path, &["add", "-A"]).await.unwrap();
-        }
+        let Isolation::Git(wt) = iso;
+        git(&wt.path, &["add", "-A"]).await.unwrap();
     }
 
     fn rt() -> tokio::runtime::Runtime {
@@ -2650,103 +2227,6 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn a_non_repo_folder_gets_a_scratch_copy_not_a_worktree() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let iso = create(f.path(), "sa-10").await.unwrap();
-            assert!(matches!(iso, Isolation::Copy(_)));
-            assert!(iso.path().join("src/a.txt").exists());
-            assert!(!f.path().join(".git").exists(), "never git init in the owner's folder");
-            assert!(!iso.path().starts_with(f.path()), "the copy lives outside the folder");
-        }))
-    }
-
-
-    #[test]
-    fn copy_back_lands_only_files_whose_fingerprint_changed() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let iso = create(f.path(), "sa-21").await.unwrap();
-            std::fs::write(iso.path().join("src/a.txt"), "a1\n").unwrap();
-            std::fs::write(iso.path().join("new.txt"), "n\n").unwrap();
-            std::fs::remove_file(iso.path().join("b.txt")).unwrap();
-            let path = iso.path().to_path_buf();
-            let mut isos = [iso];
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string(), "new.txt".to_string(), "src/a.txt".to_string()]);
-            assert_eq!(std::fs::read_to_string(f.path().join("src/a.txt")).unwrap(), "a1\n");
-            assert_eq!(std::fs::read_to_string(f.path().join("new.txt")).unwrap(), "n\n");
-            assert!(!f.path().join("b.txt").exists(), "deleted in the copy, deleted in the folder");
-            assert!(!path.exists(), "copy removed after it landed");
-        }))
-    }
-
-    #[test]
-    fn a_copy_takes_in_the_owners_other_changes_and_waits_on_the_ones_to_the_same_file() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let iso = create(f.path(), "sa-22").await.unwrap();
-            std::fs::write(iso.path().join("b.txt"), "child\n").unwrap();
-            // Meanwhile the owner edits the same file and another one.
-            std::fs::write(f.path().join("b.txt"), "owner meanwhile\n").unwrap();
-            std::fs::write(f.path().join("src/a.txt"), "owner a\n").unwrap();
-            let copy = iso.path().to_path_buf();
-            let mut isos = [iso];
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Conflict { files, .. } if files == &["b.txt".to_string()]), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner meanwhile\n", "never overwritten");
-            assert_eq!(std::fs::read_to_string(copy.join("b.txt.nebo-owner")).unwrap(), "owner meanwhile\n");
-            assert_eq!(std::fs::read_to_string(copy.join("src/a.txt")).unwrap(), "owner a\n", "the owner's other change is taken in");
-            assert!(!f.path().join("b.txt.sa-22.nebo-conflict").exists(), "nothing is written beside the owner's files");
-
-            // The builder folds the owner's version in, in the copy.
-            std::fs::write(copy.join("b.txt"), "owner meanwhile\nchild\n").unwrap();
-            std::fs::remove_file(copy.join("b.txt.nebo-owner")).unwrap();
-            stage_resolution(&isos[0]).await;
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string()]);
-            assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner meanwhile\nchild\n");
-            assert_eq!(std::fs::read_to_string(f.path().join("src/a.txt")).unwrap(), "owner a\n");
-        }))
-    }
-
-    #[test]
-    fn an_owner_edit_after_the_copy_caught_up_is_asked_about_never_overwritten() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let iso = create(f.path(), "sa-23").await.unwrap();
-            std::fs::write(iso.path().join("b.txt"), "child\n").unwrap();
-            let mut isos = [iso];
-            // The owner edits the file while the copy is being re-tested.
-            let owner_file = f.path().join("b.txt");
-            let retest = |_: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
-                std::fs::write(&owner_file, "owner, during the re-test\n").unwrap();
-                Box::pin(async { Ok(()) })
-            };
-            let out = merge_all(&mut isos, "m", Some(&retest), &Landing::default()).await;
-            assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files == &["b.txt".to_string()]), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner, during the re-test\n");
-        }))
-    }
-
-    #[test]
-    fn folders_over_the_cap_and_symlinks_are_refused_or_skipped_with_the_reason_named() {
-        with_home(|_| {
-            let f = folder();
-            #[cfg(unix)]
-            std::os::unix::fs::symlink("/etc", f.path().join("link")).unwrap();
-            let c = create_copy(f.path(), "sa-15").unwrap();
-            assert!(!c.path.join("link").exists(), "symlinks are never followed");
-            // The cap is checked against the walked total: fake it by asking
-            // for a copy of a folder whose one file claims to be huge is not
-            // possible without writing 2 GiB, so check the message path
-            // through the walk total directly.
-            let (files, skipped) = walk(f.path()).unwrap();
-            assert_eq!(skipped, vec![PathBuf::from("link")]);
-            assert!(files.iter().map(|(_, n)| n).sum::<u64>() < MAX_SCRATCH_BYTES);
-        })
-    }
 
 
     #[test]
@@ -2756,7 +2236,6 @@ mod tests {
             MergeOutcome::NoChanges,
             MergeOutcome::Merged { files: vec!["a".into()], commit: "0123456789abcdef".into(), caught_up_to: "f".into() },
             MergeOutcome::Conflict { files: vec!["a".into()], kept_at: kept.clone(), branch: "nebo/sa-1".into() },
-            MergeOutcome::Conflict { files: vec!["a".into()], kept_at: kept.clone(), branch: String::new() },
             MergeOutcome::OwnerEdits { files: vec!["a".into()], kept_at: kept.clone(), branch: String::new() },
             MergeOutcome::RetestFailed { error: "e".into(), kept_at: kept.clone(), branch: String::new() },
             MergeOutcome::OwnerBusy { why: Busy::InProgress("merge"), kept_at: kept.clone(), branch: String::new() },
@@ -2771,33 +2250,9 @@ mod tests {
         }
         assert!(render_outcome("d", &outcomes[1]).contains("as one commit 0123456789"));
         assert!(render_outcome("d", &outcomes[2]).contains("on branch nebo/sa-1"));
-        assert!(render_outcome("d", &outcomes[3]).contains("<file>.nebo-owner"));
     }
 
     // ---- from the review of the landing (each a repro turned into a test) ----
-
-    #[test]
-    fn an_owner_edit_after_the_twin_was_written_is_a_fresh_conflict_never_an_overwrite() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let c = create_copy(f.path(), "sa-r1").unwrap();
-            std::fs::write(c.path.join("b.txt"), "child\n").unwrap();
-            std::fs::write(f.path().join("b.txt"), "owner1\n").unwrap();
-            let copy = c.path.clone();
-            let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
-            assert_eq!(std::fs::read_to_string(copy.join("b.txt.nebo-owner")).unwrap(), "owner1\n");
-            // The owner keeps working on the file while the builder resolves.
-            std::fs::write(f.path().join("b.txt"), "owner1\nowner2 IMPORTANT\n").unwrap();
-            std::fs::write(copy.join("b.txt"), "child\nowner1\n").unwrap();
-            std::fs::remove_file(copy.join("b.txt.nebo-owner")).unwrap();
-            stage_resolution(&isos[0]).await;
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Conflict { files, .. } if files == &["b.txt".to_string()]), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner1\nowner2 IMPORTANT\n", "the owner's newer edit is kept");
-            assert_eq!(std::fs::read_to_string(copy.join("b.txt.nebo-owner")).unwrap(), "owner1\nowner2 IMPORTANT\n", "and handed to the builder");
-        }))
-    }
 
     #[test]
     fn an_ignored_owner_file_where_the_task_adds_one_is_asked_about_never_overwritten() {
@@ -2977,37 +2432,6 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_deletion_is_told_apart_from_an_emptied_file() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let c = create_copy(f.path(), "sa-r12").unwrap();
-            std::fs::write(c.path.join("b.txt"), "child\n").unwrap();
-            std::fs::remove_file(f.path().join("b.txt")).unwrap();
-            let copy = c.path.clone();
-            let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
-            assert!(copy.join("b.txt.nebo-owner-deleted").exists(), "a deletion, not an empty file");
-            assert!(!copy.join("b.txt.nebo-owner").exists());
-        }))
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_copy_never_writes_through_a_link_out_of_the_project() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let outside = tempfile::tempdir().unwrap();
-            let c = create_copy(f.path(), "sa-r13").unwrap();
-            std::fs::create_dir_all(c.path.join("out")).unwrap();
-            std::fs::write(c.path.join("out/x.txt"), "x\n").unwrap();
-            std::os::unix::fs::symlink(outside.path(), f.path().join("out")).unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Failed { error, .. } if error.contains("link")));
-            assert!(!outside.path().join("x.txt").exists());
-        }))
-    }
-
-    #[test]
     fn a_name_in_any_script_lands_whole() {
         with_home(|_| rt().block_on(async {
             let r = repo().await;
@@ -3131,7 +2555,7 @@ mod tests {
             // Not resolved yet: kept as it is, nothing staged for the builder.
             let note = put_away(&mut iso, "Unfinished").await.unwrap();
             assert!(note.contains("kept in its copy") && copy.exists(), "{note}");
-            assert!(!unmerged(match &iso { Isolation::Git(w) => w, _ => unreachable!() }).await.is_empty(), "the conflict is still the builder's");
+            assert!(!unmerged(match &iso { Isolation::Git(w) => w }).await.is_empty(), "the conflict is still the builder's");
             // Resolved (staged): put away on its branch.
             stage_resolution(&iso).await;
             let note = put_away(&mut iso, "Unfinished").await.unwrap();
@@ -3195,71 +2619,6 @@ mod tests {
         }))
     }
 
-    /// Copy arm: a file the checks made is dropped, never landed; a change
-    /// of theirs to the work's own file sends it back.
-    #[test]
-    fn a_scratch_copy_lands_only_what_was_checked() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join("doc.txt"), "base\n").unwrap();
-            let c = create_copy(f.path(), "sa-m5c").unwrap();
-            std::fs::write(c.path.join("doc.txt"), "edited\n").unwrap();
-            let rewrites = |iso: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
-                let p = iso.path().to_path_buf();
-                Box::pin(async move {
-                    std::fs::create_dir_all(p.join("__pycache__")).unwrap();
-                    std::fs::write(p.join("__pycache__/x.pyc"), "artifact").unwrap();
-                    std::fs::write(p.join("doc.txt"), "rewritten by the checks\n").unwrap();
-                    Ok(())
-                })
-            };
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "Edit doc", Some(&rewrites), &Landing::default()).await;
-            assert!(matches!(&out[0].1, MergeOutcome::RetestFailed { error, .. } if error.contains("the checks changed doc.txt")), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "base\n");
-            // The builder undoes the checks' rewrite before it can land.
-            std::fs::write(isos[0].path().join("doc.txt"), "edited\n").unwrap();
-            let caches = |iso: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
-                let p = iso.path().to_path_buf();
-                Box::pin(async move {
-                    std::fs::create_dir_all(p.join("__pycache__")).unwrap();
-                    std::fs::write(p.join("__pycache__/y.pyc"), "artifact").unwrap();
-                    Ok(())
-                })
-            };
-            let out = merge_all(&mut isos, "Edit doc", Some(&caches), &Landing::default()).await;
-            assert_eq!(landed_files(&out[0].1), vec!["doc.txt".to_string()]);
-            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "edited\n");
-            assert!(!f.path().join("__pycache__").exists(), "the checks' output never lands");
-        }))
-    }
-
-    /// The owner's own file named like the place a conflict's owner version
-    /// waits is never taken for it: the twin gets a free name, and the
-    /// owner's file stays.
-    #[test]
-    fn an_owner_file_named_like_a_twin_is_never_touched() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join("doc.txt"), "base\n").unwrap();
-            std::fs::write(f.path().join("doc.txt.nebo-owner"), "OWNER'S OWN FILE\n").unwrap();
-            let c = create_copy(f.path(), "sa-tw").unwrap();
-            let copy = c.path.clone();
-            std::fs::write(copy.join("doc.txt"), "child\n").unwrap();
-            std::fs::write(f.path().join("doc.txt"), "owner\n").unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
-            assert_eq!(std::fs::read_to_string(copy.join("doc.txt.nebo-owner-1")).unwrap(), "owner\n");
-            assert_eq!(std::fs::read_to_string(copy.join("doc.txt.nebo-owner")).unwrap(), "OWNER'S OWN FILE\n");
-            std::fs::write(copy.join("doc.txt"), "owner and child\n").unwrap();
-            std::fs::remove_file(copy.join("doc.txt.nebo-owner-1")).unwrap();
-            stage_resolution(&isos[0]).await;
-            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1), vec!["doc.txt".to_string()]);
-            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt.nebo-owner")).unwrap(), "OWNER'S OWN FILE\n");
-            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "owner and child\n");
-        }))
-    }
-
     /// A file git keeps in LFS: the owner's unsaved edit to it is asked
     /// about, and an untouched one lands.
     #[test]
@@ -3311,69 +2670,6 @@ mod tests {
         }))
     }
 
-    /// A scratch copy put away keeps its work where it is; held again, it
-    /// is the same copy, and it lands.
-    #[test]
-    fn a_scratch_copy_put_away_is_the_same_copy_when_held_again() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join("doc.txt"), "base\n").unwrap();
-            let c = create_copy(f.path(), "sa-pa").unwrap();
-            std::fs::write(c.path.join("doc.txt"), "half\n").unwrap();
-            let mut iso = Isolation::Copy(c);
-            assert!(put_away(&mut iso, "x").await.unwrap().contains("kept in its copy"));
-            let iso = reattach(iso).await.unwrap();
-            assert_eq!(std::fs::read_to_string(iso.path().join("doc.txt")).unwrap(), "half\n");
-            let mut isos = [iso];
-            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1), vec!["doc.txt".to_string()]);
-            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "half\n");
-        }))
-    }
-
-    /// A copy's landing a restart cut short puts every owner file back; one
-    /// cut short after every file was in place is finished.
-    #[test]
-    fn a_landing_cut_short_is_put_back_or_finished() {
-        let f = folder();
-        std::fs::write(f.path().join("doc.txt"), "base\n").unwrap();
-        let at = f.path().join("t.nebo-landing.json");
-        let target = f.path().join("doc.txt");
-        let backup = f.path().join(".doc.txt.t.nebo-backup");
-        let made = f.path().join("new.txt");
-        let new_fp = Some(tools::checkpoint::fingerprint(b"new\n"));
-        let journal = |done| Journal {
-            copy: None,
-            steps: vec![
-                Step { target: target.clone(), staged: Some(f.path().join(".doc.txt.t.nebo-landing")), backup: Some(backup.clone()), fp: new_fp, was: None },
-                Step { target: made.clone(), staged: Some(f.path().join(".new.txt.t.nebo-landing")), backup: None, fp: new_fp, was: None },
-            ],
-            done,
-        };
-        // Cut short: doc.txt replaced and new.txt made, the journal not done.
-        std::fs::rename(&target, &backup).unwrap();
-        std::fs::write(&target, "new\n").unwrap();
-        std::fs::write(&made, "new\n").unwrap();
-        journal(false).write(&at).unwrap();
-        recover_landing(&at);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "base\n", "the owner's file is back");
-        assert!(!made.exists() && !backup.exists() && !at.exists());
-        // Done: every file was in place; only the set-aside one is dropped.
-        std::fs::rename(&target, &backup).unwrap();
-        std::fs::write(&target, "new\n").unwrap();
-        journal(true).write(&at).unwrap();
-        recover_landing(&at);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
-        assert!(!backup.exists() && !at.exists());
-        // Done, with its copy: the copy goes too, everything in it landed.
-        let copy = f.path().join("the-copy");
-        std::fs::create_dir_all(&copy).unwrap();
-        let mut done = journal(true);
-        done.copy = Some(copy.clone());
-        done.write(&at).unwrap();
-        recover_landing(&at);
-        assert!(!copy.exists(), "a recovered landing that was done frees its copy");
-    }
-
     /// Review round 3 M1: conflict markers of the width a project's
     /// `.gitattributes` sets are markers too: staged with them still in,
     /// it is still a conflict.
@@ -3399,37 +2695,6 @@ mod tests {
         }))
     }
 
-    /// Review round 3 B3: only what was reviewed lands. A file the review
-    /// never saw (too big to snapshot, added after it) is refused in both
-    /// arms; build output in a scratch copy is never landed.
-    #[test]
-    fn only_the_reviewed_paths_land() {
-        with_home(|_| rt().block_on(async {
-            let r = repo().await;
-            let wt = create_worktree(r.path(), "sa-only").await.unwrap();
-            std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
-            std::fs::write(wt.path.join("video.mov"), "never reviewed").unwrap();
-            let landing = reviewed(&wt.path, &["b.txt"]).await;
-            let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add b", None, &landing).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["video.mov".to_string()]), "{:?}", out[0].1);
-            assert!(!r.path().join("b.txt").exists() && !r.path().join("video.mov").exists());
-
-            let f = folder();
-            let c = create_copy(f.path(), "sa-only-c").unwrap();
-            std::fs::write(c.path.join("b.txt"), "reviewed\n").unwrap();
-            std::fs::create_dir_all(c.path.join("node_modules/x")).unwrap();
-            std::fs::write(c.path.join("node_modules/x/index.js"), "installed").unwrap();
-            std::fs::write(c.path.join("notes.txt"), "never reviewed").unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &landing).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["notes.txt".to_string()]), "{:?}", out[0].1);
-            std::fs::remove_file(isos[0].path().join("notes.txt")).unwrap();
-            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &landing).await[0].1), vec!["b.txt".to_string()]);
-            assert!(!f.path().join("node_modules").exists(), "build output never lands");
-        }))
-    }
-
     /// Review round 3 M3: what lands is the copy's own branch, and the
     /// owner's branch must have moved to it.
     #[test]
@@ -3449,58 +2714,6 @@ mod tests {
             assert!(matches!(&out, MergeOutcome::Failed { error, .. } if error.contains("not on its own branch")), "{out:?}");
             assert!(!r.path().join("c.txt").exists());
             assert!(iso.path().exists(), "never force-removed");
-        }))
-    }
-
-    /// Review round 3 M10: discarding what is already gone succeeds.
-    #[test]
-    fn discarding_twice_succeeds() {
-        with_home(|_| rt().block_on(async {
-            let r = repo().await;
-            let iso = Isolation::Git(create_worktree(r.path(), "sa-dd").await.unwrap());
-            discard(&iso).await.unwrap();
-            discard(&iso).await.unwrap();
-            let f = folder();
-            let c = Isolation::Copy(create_copy(f.path(), "sa-dd-c").unwrap());
-            discard(&c).await.unwrap();
-            discard(&c).await.unwrap();
-        }))
-    }
-
-    /// A scratch copy keeps the executable bit, through the copy and the
-    /// landing.
-    #[cfg(unix)]
-    #[test]
-    fn the_executable_bit_is_kept() {
-        use std::os::unix::fs::PermissionsExt;
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join("run.sh"), "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(f.path().join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
-            let c = create_copy(f.path(), "sa-x").unwrap();
-            assert_eq!(std::fs::metadata(c.path.join("run.sh")).unwrap().permissions().mode() & 0o111, 0o111);
-            std::fs::write(c.path.join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1);
-            assert_eq!(std::fs::metadata(f.path().join("run.sh")).unwrap().permissions().mode() & 0o111, 0o111);
-        }))
-    }
-
-    /// A rename that only changes a name's case lands as that name, on any
-    /// disk.
-    #[test]
-    fn a_case_only_rename_lands() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join("Total.py"), "x = 1\n").unwrap();
-            let c = create_copy(f.path(), "sa-case").unwrap();
-            std::fs::remove_file(c.path.join("Total.py")).unwrap();
-            std::fs::write(c.path.join("total.py"), "x = 2\n").unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1);
-            let names: Vec<String> = std::fs::read_dir(f.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-            assert!(names.contains(&"total.py".to_string()), "{names:?}");
-            assert_eq!(std::fs::read_to_string(f.path().join("total.py")).unwrap(), "x = 2\n");
         }))
     }
 
@@ -3535,45 +2748,6 @@ mod tests {
         }))
     }
 
-    /// A file of the copy where the owner has a folder asks: the folder is
-    /// never hidden.
-    #[test]
-    fn a_file_where_the_owner_has_a_folder_asks() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let c = create_copy(f.path(), "sa-dir").unwrap();
-            std::fs::write(c.path.join("docs"), "a file\n").unwrap();
-            std::fs::create_dir_all(f.path().join("docs")).unwrap();
-            std::fs::write(f.path().join("docs/owner.md"), "mine\n").unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files == &vec!["docs".to_string()]), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(f.path().join("docs/owner.md")).unwrap(), "mine\n");
-        }))
-    }
-
-    /// The owner's edit in the instant before a file is replaced is caught
-    /// right there: every file goes back, the owner's edit stays.
-    #[test]
-    fn an_owner_edit_just_before_the_replace_is_never_overwritten() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let c = create_copy(f.path(), "sa-race").unwrap();
-            std::fs::write(c.path.join("b.txt"), "child\n").unwrap();
-            let owner_file = f.path().join("b.txt");
-            *BEFORE_REPLACE.lock().unwrap() = Some(Box::new(move |target: &Path| {
-                if target.ends_with("b.txt") {
-                    let _ = std::fs::write(target, "owner, just now\n");
-                }
-            }));
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            *BEFORE_REPLACE.lock().unwrap() = None;
-            assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { .. }), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(&owner_file).unwrap(), "owner, just now\n");
-        }))
-    }
-
     #[test]
     fn unreviewed_build_output_never_lands_from_a_worktree() {
         with_home(|_| rt().block_on(async {
@@ -3587,22 +2761,6 @@ mod tests {
             let out = merge_all(&mut isos, "Add b", None, &landing).await;
             assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["dist/app.js".to_string()]), "{:?}", out[0].1);
             assert!(!r.path().join("dist/app.js").exists(), "unreviewed build output landed on the owner's branch");
-        }))
-    }
-
-    #[test]
-    fn a_reviewed_file_under_a_build_folder_lands() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::create_dir_all(f.path().join("scripts/build")).unwrap();
-            std::fs::write(f.path().join("scripts/build/run.sh"), "old\n").unwrap();
-            let c = create_copy(f.path(), "sa-build-folder").unwrap();
-            std::fs::write(c.path.join("scripts/build/run.sh"), "new\n").unwrap();
-            let landing = reviewed(&c.path, &["scripts/build/run.sh"]).await;
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &landing).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
-            assert_eq!(std::fs::read_to_string(f.path().join("scripts/build/run.sh")).unwrap(), "new\n", "reviewed work silently dropped");
         }))
     }
 
@@ -3657,68 +2815,6 @@ mod tests {
         }))
     }
 
-    /// Review round 5: a copy whose build folder the builder removed
-    /// (a clean build) is not a change nobody reviewed; the folder is
-    /// ignored whether or not it is there now.
-    #[test]
-    fn a_removed_build_folder_is_not_unreviewed() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join(".gitignore"), "dist/\n").unwrap();
-            std::fs::create_dir_all(f.path().join("dist")).unwrap();
-            std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
-            let c = create_copy(f.path(), "sa-removed-build").unwrap();
-            std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
-            std::fs::remove_dir_all(c.path.join("dist")).unwrap();
-            let landing = reviewed(&c.path, &["b.txt"]).await;
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &landing).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
-        }))
-    }
-
-    /// Review round 5: landing a copy as it is (the owner's word) never
-    /// deletes the owner's ignored files because the copy no longer has them.
-    #[test]
-    fn landing_as_is_never_deletes_the_owners_ignored_files() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            std::fs::write(f.path().join(".gitignore"), "dist/\n.env\n").unwrap();
-            std::fs::create_dir_all(f.path().join("dist")).unwrap();
-            std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
-            let c = create_copy(f.path(), "sa-as-is").unwrap();
-            std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
-            std::fs::remove_dir_all(c.path.join("dist")).unwrap();
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string()], "only the change, never the deletion of ignored files");
-            assert!(f.path().join("dist/app.js").exists(), "the owner's ignored build output was deleted");
-        }))
-    }
-
-    /// Review round 5 M1: a landing never deletes an ignored file of the
-    /// owner's, under any option: as it is, or with the deletion reviewed.
-    #[test]
-    fn a_landing_never_deletes_an_ignored_owner_file() {
-        with_home(|_| rt().block_on(async {
-            for as_is in [true, false] {
-                let f = folder();
-                std::fs::write(f.path().join(".gitignore"), "dist/\n.env\n").unwrap();
-                std::fs::create_dir_all(f.path().join("dist")).unwrap();
-                std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
-                std::fs::write(f.path().join(".env"), "KEY=1\n").unwrap();
-                let c = create_copy(f.path(), &format!("sa-r5-del-{as_is}")).unwrap();
-                std::fs::remove_dir_all(c.path.join("dist")).unwrap();
-                std::fs::remove_file(c.path.join(".env")).unwrap();
-                let landing = if as_is { Landing::default() } else { reviewed(&c.path, &["dist/app.js", ".env"]).await };
-                let mut isos = [Isolation::Copy(c)];
-                let out = merge_all(&mut isos, "m", None, &landing).await;
-                assert_eq!(out[0].1, MergeOutcome::NoChanges, "as is: {as_is}");
-                assert!(f.path().join("dist/app.js").exists() && f.path().join(".env").exists(), "as is: {as_is}");
-            }
-        }))
-    }
-
     /// Review round 5: the git Nebo needs is checked by version, and the
     /// owner reads what to do: install when it is missing, update when old.
     #[test]
@@ -3729,84 +2825,6 @@ mod tests {
         assert!(GitProblem::TooOld("2.20.1".into()).words().0.starts_with("Update git"));
     }
 
-
-    /// Review round 6: an ignored owner file whose name git quotes
-    /// (a quote, a backslash, a tab, a newline) is never deleted by a landing.
-    #[test]
-    fn a_landing_never_deletes_an_ignored_file_git_quotes() {
-        with_home(|_| rt().block_on(async {
-            for name in ["a\"b.log", "back\\slash.log", "tab\there.log", "new\nline.log"] {
-                let f = folder();
-                std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
-                std::fs::write(f.path().join(name), "secret\n").unwrap();
-                let c = create_copy(f.path(), "sa-quoted").unwrap();
-                std::fs::remove_file(c.path.join(name)).unwrap();
-                let mut isos = [Isolation::Copy(c)];
-                let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-                assert!(f.path().join(name).exists(), "{name:?} deleted: {:?}", out[0].1);
-            }
-        }))
-    }
-
-    /// Review round 6: a non-ASCII ignored name, as macOS writes it
-    /// (decomposed, NFD) and as most tools write it (NFC).
-    #[test]
-    fn a_landing_never_deletes_an_ignored_non_ascii_file() {
-        with_home(|_| rt().block_on(async {
-            for name in ["caf\u{e9}.log", "cafe\u{301}.log", "-dash.log", "with space.log"] {
-                let f = folder();
-                std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
-                std::fs::write(f.path().join(name), "secret\n").unwrap();
-                let c = create_copy(f.path(), "sa-non-ascii").unwrap();
-                std::fs::remove_file(c.path.join(name)).unwrap();
-                let mut isos = [Isolation::Copy(c)];
-                let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-                assert!(f.path().join(name).exists(), "{name:?} deleted: {:?}", out[0].1);
-            }
-        }))
-    }
-
-    /// Review round 6: names git would quote or rewrite (a quote, a
-    /// backslash, a tab, a newline, decomposed and composed accents, a
-    /// leading dash, spaces, glob characters) land whole in both arms, held
-    /// to what was reviewed.
-    #[test]
-    fn names_git_would_quote_or_rewrite_land_in_both_arms() {
-        let names = ["a\"b.txt", "back\\slash.txt", "tab\there.txt", "new\nline.txt", "caf\u{e9}.txt", "cafe\u{301}x.txt", "-dash.txt", "with space.txt", "routes/[id]/page.txt"];
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let c = create_copy(f.path(), "sa-r6-names-c").unwrap();
-            for n in names {
-                let p = c.path.join(n);
-                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-                std::fs::write(p, format!("{n}\n")).unwrap();
-            }
-            let landing = reviewed(&c.path, &names).await;
-            let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "m", None, &landing).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
-            for n in names {
-                assert_eq!(std::fs::read_to_string(f.path().join(n)).unwrap(), format!("{n}\n"), "{n:?}");
-            }
-
-            let r = repo().await;
-            let wt = create_worktree(r.path(), "sa-r6-names-g").await.unwrap();
-            for n in names {
-                let p = wt.path.join(n);
-                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-                std::fs::write(p, format!("{n}\n")).unwrap();
-            }
-            let paths: Vec<String> = z_paths(&wt.path, &["ls-files", "-z", "--others", "--exclude-standard"]).await;
-            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-            let landing = reviewed(&wt.path, &refs).await;
-            let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "m", None, &landing).await;
-            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
-            for n in names {
-                assert!(r.path().join(n).exists(), "{n:?}");
-            }
-        }))
-    }
 
 
     /// 50,000 paths go to git on its input while it writes as many back,
@@ -3865,4 +2883,351 @@ mod tests {
         }))
     }
 
+
+    /// Review round 6: names git would quote or rewrite (a quote, a
+    /// backslash, a tab, a newline, decomposed and composed accents, a
+    /// leading dash, spaces, glob characters) land whole, held to what was
+    /// reviewed.
+    #[test]
+    fn names_git_would_quote_or_rewrite_land() {
+        let names = ["a\"b.txt", "back\\slash.txt", "tab\there.txt", "new\nline.txt", "caf\u{e9}.txt", "cafe\u{301}x.txt", "-dash.txt", "with space.txt", "routes/[id]/page.txt"];
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-r6-names-g").await.unwrap();
+            for n in names {
+                let p = wt.path.join(n);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, format!("{n}\n")).unwrap();
+            }
+            let paths: Vec<String> = z_paths(&wt.path, &["ls-files", "-z", "--others", "--exclude-standard"]).await;
+            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let landing = reviewed(&wt.path, &refs).await;
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "m", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+            for n in names {
+                assert!(r.path().join(n).exists(), "{n:?}");
+            }
+        }))
+    }
+
+    /// Review round 3 B3: only what was reviewed lands. A file the review
+    /// never saw (too big to snapshot, added after it) is refused.
+    #[test]
+    fn only_the_reviewed_paths_land() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-only").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
+            std::fs::write(wt.path.join("video.mov"), "never reviewed").unwrap();
+            let landing = reviewed(&wt.path, &["b.txt"]).await;
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add b", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["video.mov".to_string()]), "{:?}", out[0].1);
+            assert!(!r.path().join("b.txt").exists() && !r.path().join("video.mov").exists());
+        }))
+    }
+
+    /// Review round 3 M10: discarding what is already gone succeeds.
+    #[test]
+    fn discarding_twice_succeeds() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let iso = Isolation::Git(create_worktree(r.path(), "sa-dd").await.unwrap());
+            discard(&iso).await.unwrap();
+            discard(&iso).await.unwrap();
+        }))
+    }
+
+    /// A helper's copy is a git worktree in its repository's own Nebo
+    /// folder, which git is told to ignore, so the owner's `git status`
+    /// never shows it; a folder that is no repository gets no copy.
+    #[test]
+    fn a_helpers_copy_lives_in_the_repositorys_nebo_folder() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let iso = create(r.path(), "h-place").await.unwrap();
+            let root = std::fs::canonicalize(r.path()).unwrap();
+            assert_eq!(std::fs::canonicalize(iso.path()).unwrap(), root.join(".nebo/worktrees/h-place"));
+            let exclude = std::fs::read_to_string(r.path().join(".git/info/exclude")).unwrap();
+            for own in [".nebo/worktrees/", ".nebo/verify/", ".nebo/build/"] {
+                assert!(exclude.lines().any(|l| l == own), "{exclude}");
+            }
+            assert!(!exclude.lines().any(|l| l == ".nebo/"), "the owner's own Nebo files are never hidden: {exclude}");
+            assert_eq!(git(r.path(), &["status", "--porcelain"]).await.unwrap(), "", "the owner's status shows nothing of it");
+            // A copy of that copy is made beside it, never inside it.
+            let again = create(iso.path(), "h-inner").await.unwrap();
+            assert_eq!(std::fs::canonicalize(again.path()).unwrap(), root.join(".nebo/worktrees/h-inner"));
+            assert!(create(folder().path(), "h-none").await.is_err(), "no repository: no copy");
+        }))
+    }
+
+    /// The stale sweep removes only Nebo's own copies, old enough, holding
+    /// nothing that hasn't landed; a copy with uncommitted work or a commit
+    /// only it holds is kept, and so is a folder Nebo didn't name.
+    #[test]
+    fn the_stale_sweep_removes_only_nebos_copies_with_nothing_unlanded() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let clean = create(r.path(), "h-clean").await.unwrap();
+            let dirty = create(r.path(), "h-dirty").await.unwrap();
+            std::fs::write(dirty.path().join("work.txt"), "unsaved\n").unwrap();
+            let ahead = create(r.path(), "h-ahead").await.unwrap();
+            std::fs::write(ahead.path().join("done.txt"), "done\n").unwrap();
+            git(ahead.path(), &["add", "-A"]).await.unwrap();
+            git(ahead.path(), &["commit", "-q", "-m", "done"]).await.unwrap();
+            let theirs = r.path().join(".nebo/worktrees/notes");
+            std::fs::create_dir_all(&theirs).unwrap();
+            let removed = cleanup_stale(&[r.path().to_path_buf()], 0).await;
+            assert_eq!(removed.len(), 1, "{removed:?}");
+            assert!(!clean.path().exists());
+            assert!(dirty.path().join("work.txt").exists() && ahead.path().join("done.txt").exists() && theirs.exists());
+        }))
+    }
+
+    /// The copies the verify loop made in Nebo's data folder before it
+    /// worked in place: a worktree holding work is moved beside its project
+    /// by git, a folder's copy that differs from its project stays where it
+    /// is, and each one's row says where; one holding nothing is removed.
+    #[test]
+    fn old_copies_with_work_move_beside_their_project_and_empty_ones_go() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let r = repo().await;
+            let mut rows = Vec::new();
+            for id in ["v-oldwork", "v-oldclean"] {
+                let path = old.join("site").join(id);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                git(r.path(), &["worktree", "add", "-q", "-b", &format!("nebo/{id}"), &path.to_string_lossy()]).await.unwrap();
+                rows.push((id, path));
+            }
+            std::fs::write(rows[0].1.join("feature.txt"), "the owner's real work\n").unwrap();
+            let f = folder();
+            let copy = old.join("letters").join("v-oldcopy");
+            std::fs::create_dir_all(copy.join("src")).unwrap();
+            std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+            std::fs::write(copy.join("b.txt"), "b1, changed\n").unwrap();
+            let unchanged = old.join("letters").join("v-oldsame");
+            std::fs::create_dir_all(unchanged.join("src")).unwrap();
+            std::fs::write(unchanged.join("src/a.txt"), "a0\n").unwrap();
+            std::fs::write(unchanged.join("b.txt"), "b0\n").unwrap();
+            let fp = |t: &str| tools::checkpoint::fingerprint(t.as_bytes());
+            let snapshot = serde_json::json!({"src/a.txt": fp("a0\n"), "b.txt": fp("b0\n")});
+            for (id, root, path, isolation) in [
+                (rows[0].0, r.path().to_path_buf(), rows[0].1.clone(), "worktree"),
+                (rows[1].0, r.path().to_path_buf(), rows[1].1.clone(), "worktree"),
+                ("v-oldcopy", f.path().to_path_buf(), copy.clone(), "copy"),
+                ("v-oldsame", f.path().to_path_buf(), unchanged.clone(), "copy"),
+            ] {
+                let state = if isolation == "copy" {
+                    serde_json::json!({"Copy": {"task_id": id, "root": root, "path": path, "snapshot": snapshot, "skipped": [], "pending": []}})
+                } else {
+                    serde_json::json!({"Git": {"path": path}})
+                };
+                store
+                    .create_verification(
+                        &db::NewVerification {
+                            id,
+                            session_key: "agent:dev:web",
+                            project_root: &root.to_string_lossy(),
+                            work_dir: &path.to_string_lossy(),
+                            isolation,
+                            work_kind: "isolated",
+                            isolation_state: Some(&state),
+                            ..Default::default()
+                        },
+                        1,
+                    )
+                    .unwrap();
+            }
+            let done = adopt_old_copies(&store).await;
+            let said: Vec<String> = ["v-oldwork", "v-oldclean", "v-oldcopy", "v-oldsame"].iter().map(|id| { let v = store.get_verification(id).unwrap().unwrap(); format!("{id} {} {}", v.work_dir, v.reason) }).collect();
+            assert_eq!(done, (2, 2), "{said:#?}");
+            let moved = store.get_verification("v-oldwork").unwrap().unwrap();
+            let to = std::fs::canonicalize(r.path()).unwrap().join(".nebo/worktrees/v-oldwork");
+            assert_eq!(std::fs::canonicalize(&moved.work_dir).unwrap(), to);
+            assert_eq!(std::fs::read_to_string(to.join("feature.txt")).unwrap(), "the owner's real work\n");
+            assert!(moved.reason.contains("kept_in_copy"), "{}", moved.reason);
+            let kept = store.get_verification("v-oldcopy").unwrap().unwrap();
+            assert_eq!(PathBuf::from(&kept.work_dir), copy, "a folder's copy is never moved");
+            assert_eq!(std::fs::read_to_string(copy.join("b.txt")).unwrap(), "b1, changed\n");
+            assert!(kept.reason.contains("kept_in_copy") && kept.reason.contains("v-oldcopy"), "{}", kept.reason);
+            assert!(!f.path().join(".nebo/copies").exists(), "no new home for it");
+            assert!(!rows[1].1.exists() && !unchanged.exists() && !rows[0].1.exists(), "the empty ones went, and the worktree with work moved");
+            // Run again: nothing is left to do.
+            assert_eq!(adopt_old_copies(&store).await, (0, 0));
+        }))
+    }
+
+    /// Review dl1055 A: an old copy of a folder that was no repository
+    /// then, whose project is one now, is never moved into the project
+    /// (where the owner's `git clean -fdx` would take it): it stays in
+    /// Nebo's data folder, its row says where, and nothing the owner runs in
+    /// the project touches it.
+    #[test]
+    fn an_old_folder_copy_is_never_moved_where_git_clean_takes_it() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            let copy = old.join("letters").join("v-dlcopy");
+            std::fs::create_dir_all(copy.join("src")).unwrap();
+            std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+            std::fs::write(copy.join("b.txt"), "b1, the unlanded work\n").unwrap();
+            for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                git(f.path(), &args).await.unwrap();
+            }
+            git(f.path(), &["add", "-A"]).await.unwrap();
+            git(f.path(), &["commit", "-q", "-m", "base"]).await.unwrap();
+            let state = serde_json::json!({"Copy": {"task_id": "v-dlcopy", "root": f.path(), "path": copy, "snapshot": {}, "skipped": [], "pending": []}});
+            store.create_verification(&db::NewVerification { id: "v-dlcopy", session_key: "agent:dev:web", project_root: &f.path().to_string_lossy(), work_dir: &copy.to_string_lossy(), isolation: "copy", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() }, 1).unwrap();
+            assert_eq!(adopt_old_copies(&store).await, (1, 0));
+            assert_eq!(std::fs::read_to_string(copy.join("b.txt")).unwrap(), "b1, the unlanded work\n", "kept where it was");
+            let row = store.get_verification("v-dlcopy").unwrap().unwrap();
+            assert!(row.reason.contains("kept_in_copy") && row.reason.contains(&copy.to_string_lossy().into_owned()), "{}", row.reason);
+            git(f.path(), &["clean", "-fdx"]).await.unwrap();
+            assert!(copy.join("b.txt").exists(), "the owner's clean never reaches it");
+            assert_eq!(adopt_old_copies(&store).await, (0, 0), "settled once");
+        }))
+    }
+
+    /// Review dl1055 B: a folder's copy is compared with its project link
+    /// for link, never followed or skipped: one that differs only by a
+    /// link is kept with the link as it was; one identical to its project,
+    /// links included, is removed.
+    #[test]
+    fn an_old_folder_copy_is_compared_link_for_link() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            std::os::unix::fs::symlink("b.txt", f.path().join("same")).unwrap();
+            let mut rows = Vec::new();
+            for (id, extra) in [("v-dllink", Some("current")), ("v-dlsame", None)] {
+                let copy = old.join("letters").join(id);
+                std::fs::create_dir_all(copy.join("src")).unwrap();
+                std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+                std::fs::write(copy.join("b.txt"), "b0\n").unwrap();
+                std::os::unix::fs::symlink("b.txt", copy.join("same")).unwrap();
+                if let Some(link) = extra {
+                    std::os::unix::fs::symlink("b.txt", copy.join(link)).unwrap();
+                }
+                let state = serde_json::json!({"Copy": {"task_id": id, "root": f.path(), "path": copy, "snapshot": {}, "skipped": [], "pending": []}});
+                store.create_verification(&db::NewVerification { id, session_key: "agent:dev:web", project_root: &f.path().to_string_lossy(), work_dir: &copy.to_string_lossy(), isolation: "copy", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() }, 1).unwrap();
+                rows.push(copy);
+            }
+            assert_eq!(adopt_old_copies(&store).await, (1, 1));
+            assert_eq!(std::fs::read_link(rows[0].join("current")).unwrap(), PathBuf::from("b.txt"), "the link is kept as it was");
+            assert!(!rows[1].exists(), "identical, links included: removed");
+        }))
+    }
+
+    /// Review dl1055 D: `.nebo/hooks.yaml` is the owner's own, committed
+    /// project file (`shell_hooks`). Only Nebo's own folders in `.nebo` are
+    /// hidden from git: his file shows and is staged, and a change's
+    /// snapshot holds it.
+    #[test]
+    fn the_owners_own_nebo_files_are_never_hidden_from_git() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            nebo_dir(r.path()).unwrap();
+            std::fs::create_dir_all(r.path().join(".nebo/verify/v-1")).unwrap();
+            std::fs::write(r.path().join(".nebo/verify/v-1/change.patch"), "+x\n").unwrap();
+            std::fs::write(r.path().join(".nebo/hooks.yaml"), "post_tool:\n  - name: fmt\n    command: cargo fmt\n").unwrap();
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            let staged = git(r.path(), &["diff", "--cached", "--name-only"]).await.unwrap();
+            assert_eq!(staged, ".nebo/hooks.yaml", "his file is staged, Nebo's are not");
+            let shadows = tempfile::tempdir().unwrap();
+            let shadow = crate::harness::verify::shadow::Shadow::open(&shadows.path().join("s.git"), r.path()).await.unwrap();
+            let base = shadow.snapshot().await.unwrap();
+            std::fs::write(r.path().join(".nebo/hooks.yaml"), "post_tool: []\n").unwrap();
+            std::fs::write(r.path().join(".nebo/verify/v-1/change.patch"), "+y\n").unwrap();
+            let change = shadow.diff(&base, &shadow.snapshot().await.unwrap()).await.unwrap();
+            assert_eq!(change.paths(), [".nebo/hooks.yaml"], "the snapshot holds his file and none of Nebo's");
+        }))
+    }
+
+    fn dl_row(store: &db::Store, id: &str, root: &Path, copy: &Path) {
+        let state = serde_json::json!({"Copy": {"task_id": id, "root": root, "path": copy, "snapshot": {}, "skipped": [], "pending": []}});
+        store.create_verification(&db::NewVerification { id, session_key: "agent:dev:web", project_root: &root.to_string_lossy(), work_dir: &copy.to_string_lossy(), isolation: "copy", work_kind: "isolated", isolation_state: Some(&state), ..Default::default() }, 1).unwrap();
+    }
+
+    /// Review dl1055b A: the old folder copy is kept where it is, and the
+    /// owner's `git clean -ffdx` in the (now git) project never reaches it,
+    /// at this start or the next.
+    #[test]
+    fn an_old_folder_copy_survives_any_git_clean_in_its_project() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            let copy = old.join("letters").join("v-dlcopy");
+            std::fs::create_dir_all(copy.join("src")).unwrap();
+            std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+            std::fs::write(copy.join("b.txt"), "b1, the unlanded work\n").unwrap();
+            for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                git(f.path(), &args).await.unwrap();
+            }
+            git(f.path(), &["add", "-A"]).await.unwrap();
+            git(f.path(), &["commit", "-q", "-m", "base"]).await.unwrap();
+            dl_row(&store, "v-dlcopy", f.path(), &copy);
+            adopt_old_copies(&store).await;
+            git(f.path(), &["clean", "-ffdx"]).await.unwrap();
+            assert_eq!(std::fs::read_to_string(copy.join("b.txt")).unwrap(), "b1, the unlanded work\n");
+            adopt_old_copies(&store).await;
+            assert!(copy.join("b.txt").exists(), "kept at a second boot");
+        }))
+    }
+
+    /// Review dl1055b B: a copy that differs from its project only in a
+    /// link's target, or only in a file's executable bit, holds work: it is
+    /// never removed as identical.
+    #[test]
+    fn a_link_target_or_an_executable_bit_is_work_to_keep() {
+        use std::os::unix::fs::PermissionsExt;
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let old = config::data_dir().unwrap().join("worktrees");
+            let f = folder();
+            std::fs::write(f.path().join("run.sh"), "echo hi\n").unwrap();
+            std::os::unix::fs::symlink("b.txt", f.path().join("current")).unwrap();
+            let make = |id: &str| {
+                let copy = old.join("letters").join(id);
+                std::fs::create_dir_all(copy.join("src")).unwrap();
+                std::fs::write(copy.join("src/a.txt"), "a0\n").unwrap();
+                std::fs::write(copy.join("b.txt"), "b0\n").unwrap();
+                std::fs::write(copy.join("run.sh"), "echo hi\n").unwrap();
+                copy
+            };
+            let link = make("v-dltarget");
+            std::os::unix::fs::symlink("src/a.txt", link.join("current")).unwrap();
+            let mode = make("v-dlmode");
+            std::os::unix::fs::symlink("b.txt", mode.join("current")).unwrap();
+            std::fs::set_permissions(mode.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            dl_row(&store, "v-dltarget", f.path(), &link);
+            dl_row(&store, "v-dlmode", f.path(), &mode);
+            assert_eq!(adopt_old_copies(&store).await, (2, 0));
+            assert!(link.exists(), "a copy whose only change is a link's target is kept");
+            assert!(mode.exists(), "a copy whose only change is run.sh made executable is kept");
+        }))
+    }
+
+    /// Review dl1055b D: the owner's `.nebo/hooks.yaml` is seen by git, and
+    /// none of Nebo's own folders beside it are.
+    #[test]
+    fn only_nebos_own_folders_in_nebo_are_hidden_from_git() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            nebo_dir(r.path()).unwrap();
+            std::fs::write(r.path().join(".nebo/hooks.yaml"), "post_tool: []\n").unwrap();
+            for own in NEBO_OWN {
+                std::fs::create_dir_all(r.path().join(".nebo").join(own)).unwrap();
+                std::fs::write(r.path().join(".nebo").join(own).join("x"), "nebo's\n").unwrap();
+            }
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            let staged = git(r.path(), &["diff", "--cached", "--name-only"]).await.unwrap();
+            assert_eq!(staged, ".nebo/hooks.yaml", "only the owner's file is staged");
+        }))
+    }
 }

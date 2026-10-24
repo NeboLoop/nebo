@@ -1143,14 +1143,21 @@ impl Helpers {
         let parent_seat = &turn.seat;
 
         // An isolated helper's copy is of the project its parent works on;
-        // with none, there is nothing to copy and it gets no copy.
-        let mut isolation = match (spec.isolation, active_project(&self.store, parent_key, parent_seat)) {
-            (Some(Isolation::Worktree), Some(project)) => Some(isolate(&self.store, grant, &task_id, project).await?),
-            _ => None,
-        };
+        // with none, there is nothing to copy and it gets no copy. A copy
+        // git can't make leaves it working in the project itself.
         let mut brief = spec.prompt.clone();
-        if let Some(iso) = &isolation {
-            brief = format!("{}{brief}", crate::worktree::preamble(iso));
+        let mut isolation = None;
+        if let (Some(Isolation::Worktree), Some(project)) = (spec.isolation, active_project(&self.store, parent_key, parent_seat)) {
+            match isolate(&self.store, grant, &task_id, &project).await? {
+                Ok(iso) => {
+                    brief = format!("{}{brief}", crate::worktree::preamble(&iso));
+                    isolation = Some(iso);
+                }
+                Err(why) => {
+                    warn!(task_id = %task_id, project = %project.display(), error = %why, "a helper's copy could not be made; it works in the project");
+                    brief = format!("{}{brief}", in_place_preamble(&project, &why));
+                }
+            }
         }
         let copy = isolation.as_ref().map(|iso| iso.path().to_string_lossy().into_owned());
 
@@ -1620,7 +1627,10 @@ impl Helpers {
                     let project = row_inputs(&self.store, &row)
                         .and_then(|v| v.get("project")?.as_str().map(std::path::PathBuf::from))
                         .ok_or_else(|| format!("Helper {task_id} has no project to copy again."))?;
-                    Held { iso: isolate(&self.store, grant, task_id, project).await?, unfinished: None }
+                    let iso = isolate(&self.store, grant, task_id, &project)
+                        .await?
+                        .map_err(|why| format!("Helper {task_id}'s project can't be copied again ({why}); start a new helper for it."))?;
+                    Held { iso, unfinished: None }
                 }
             };
             // A landing or discard that began meanwhile owns the copy: it
@@ -1921,9 +1931,6 @@ impl Helpers {
             Ok(held) => {
                 for (id, copy) in held {
                     match serde_json::from_str::<Held>(&copy) {
-                        // A scratch copy whose landing finished at boot (its
-                        // journal done) is landed: nothing is held any more.
-                        Ok(held) if matches!(&held.iso, crate::worktree::Isolation::Copy(c) if !c.path.exists()) => self.release(&id),
                         Ok(held) => {
                             self.state().copies.insert(id, held);
                         }
@@ -2947,13 +2954,15 @@ fn active_project(store: &db::Store, session_key: &str, parent: &SeatRequest) ->
 
 /// Fence an isolated helper to its own copy of `project`. A fenced parent
 /// may only isolate a project inside its fence: the copy is merged back
-/// there.
+/// there (`Err`, refused). `Ok(Err(why))`: git could not make the copy
+/// (the project is no repository, or git failed), and the helper works in
+/// the project itself.
 async fn isolate(
     store: &db::Store,
     grant: Option<&Grant>,
     task_id: &str,
-    workspace: std::path::PathBuf,
-) -> Result<crate::worktree::Isolation, String> {
+    workspace: &std::path::Path,
+) -> Result<Result<crate::worktree::Isolation, String>, String> {
     // Code work begins: the owner hears once if git can't do it.
     crate::worktree::git_notice(store, std::path::Path::new("git")).await;
     let strings = |v: &[std::path::PathBuf]| -> Vec<String> { v.iter().map(|p| p.to_string_lossy().into_owned()).collect() };
@@ -2965,9 +2974,17 @@ async fn isolate(
     {
         return Err(blocked);
     }
-    crate::worktree::create(&workspace, task_id)
-        .await
-        .map_err(|e| format!("Could not isolate {}: {e}", workspace.display()))
+    Ok(crate::worktree::create(workspace, task_id).await)
+}
+
+/// The lines a helper with no copy of its own sees at the top of its
+/// prompt: it works in the project itself, beside whoever else does.
+fn in_place_preamble(project: &std::path::Path, why: &str) -> String {
+    format!(
+        "Working in the project itself at {}, without a copy of your own ({why}). Others may be working in it too: \
+         change only the files your task needs, and say which ones you changed when you finish.\n\n",
+        project.display()
+    )
 }
 
 /// The inputs a helper's row was stored with.
@@ -4149,7 +4166,7 @@ mod tests {
                 let root = repo.to_string_lossy().into_owned();
                 rig.store
                     .create_verification(
-                        &db::NewVerification { id: "v-1", agent_id: "bookkeeper", session_key: key, project_root: &root, work_dir: &root, isolation: "worktree", work_kind: "isolated", ..Default::default() },
+                        &db::NewVerification { id: "v-1", agent_id: "bookkeeper", session_key: key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
                         1,
                     )
                     .unwrap();
@@ -4209,6 +4226,71 @@ mod tests {
                 assert!(repo.join("c.txt").exists());
                 assert!(!copy.exists(), "the copy is gone once it landed");
                 assert!(rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.is_err(), "nothing left to land");
+            })
+        })
+    }
+
+    /// Two helpers fanned out on one project: each works in its own git
+    /// worktree in the repository's Nebo folder, each change is landed held
+    /// to what was reviewed, both reach the project, and both copies are
+    /// gone once they landed.
+    #[test]
+    fn two_fanned_out_helpers_are_reviewed_merged_and_their_copies_removed() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let mut helpers = Vec::new();
+                for (name, file) in [("add b", "b.txt"), ("add c", "c.txt")] {
+                    let Launch::Background { task_id } = rig.helpers.launch(&owner, None, &[], isolated_spec(name)).await.unwrap() else {
+                        panic!("background")
+                    };
+                    let child = rig.next_turn().await;
+                    let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                    let copies = std::fs::canonicalize(&repo).unwrap().join(".nebo/worktrees");
+                    assert_eq!(std::fs::canonicalize(&copy).unwrap(), copies.join(&task_id), "its own worktree in the project's Nebo folder");
+                    std::fs::write(copy.join(file), format!("from {name}\n")).unwrap();
+                    rig.heard(&child.request.session_key);
+                    child.answer("Done.").await;
+                    rig.next_wake().await;
+                    helpers.push((task_id, copy, file));
+                }
+                for (task_id, copy, file) in &helpers {
+                    let mut only = crate::worktree::Reviewed::new();
+                    only.insert(file.to_string(), crate::worktree::content_id(copy, file).await.unwrap());
+                    let landing = crate::worktree::Landing { only: Some(only), ..Default::default() };
+                    let landed = rig.helpers.settle(key, task_id, Decision::Land, None, landing).await.unwrap();
+                    assert!(landed.contains("landed as one commit"), "{landed}");
+                    assert!(!copy.exists(), "{task_id}'s copy is gone once it landed");
+                }
+                assert!(repo.join("b.txt").exists() && repo.join("c.txt").exists(), "both changes reached the project");
+                let left: Vec<_> = std::fs::read_dir(repo.join(".nebo/worktrees")).unwrap().flatten().collect();
+                assert!(left.is_empty(), "no copy left: {left:?}");
+                assert_eq!(crate::worktree::git(&repo, &["status", "--porcelain"]).await.unwrap(), "", "Nebo's folder never shows in the owner's status");
+            })
+        })
+    }
+
+    /// A copy git can't make (the project is no repository) never stops the
+    /// helper: it works in the project itself, and is told so.
+    #[test]
+    fn a_helper_whose_copy_cant_be_made_works_in_the_project() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                std::fs::write(folder.path().join("package.json"), "{}").unwrap();
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let mut owner = rig.owner_turn("agent:bookkeeper:web");
+                owner.seat.cwd = Some(folder.path().to_string_lossy().into_owned());
+                rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.expect("it starts");
+                let child = rig.next_turn().await;
+                assert_eq!(child.request.seat.cwd.as_deref(), Some(folder.path().to_string_lossy().as_ref()), "in the project itself");
+                let TurnInput::Platform { text } = &child.request.input else { panic!("a brief") };
+                assert!(text.starts_with("Working in the project itself at") && text.contains("without a copy of your own"), "{text}");
+                child.answer("Done.").await;
             })
         })
     }

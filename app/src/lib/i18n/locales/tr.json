@@ -4535,6 +4535,7 @@
 			"step_limit": "Çalıştırma, kontrol bitmeden adım sınırına ulaştı",
 			"turn_ended": "Çalıştırma, kontrol bitmeden sona erdi",
 			"restarted": "Nebo kontrol sırasında yeniden başladı",
+			"kept_in_copy": "Önceki çalışma {path} konumundaki kopyasında saklanıyor",
 			"unreviewed": "Aktarılmadı: kopyada kimsenin incelemediği değişiklikler var ({files})",
 			"needs_review": "Aktarılacak olan, {files} içinde incelenenden farklı; önce yeniden incelenir",
 			"changed_after_review": "Kopya incelendikten sonra değişti; önce yeniden incelenir",
@@ -4555,7 +4556,6 @@
 			"checks": "Projenin kendi kontrolleri çalışıyor.",
 			"reviewers": "İnceleyiciler değişikliği okuyor.",
 			"fixing": "İnceleyicilerin bulduğu sorunlar düzeltiliyor. Sonraki tur düzeltmeleri kontrol eder.",
-			"landing": "Değişiklik projeye ekleniyor.",
 			"live": "Canlı kontrol ediliyor."
 		},
 		"sheet": {
@@ -4588,16 +4588,8 @@
 		"ask": {
 			"stalled": "{project} incelemesi sorun bulmaya devam ediyor: {rounds} turdan sonra hâlâ açık engelleyici sorun sayısı {open} ve azalmıyor. Ne yapılsın?",
 			"reviewFailed": "{project} incelemesi tamamlanamadı: {count} inceleyici {tries} kez başarısız oldu. Yeniden çalıştırılsın mı?",
-			"noChecks": "{project} üzerindeki değişiklik incelendi, ancak projede çalıştırılabilecek bir derleme veya test yok, bu yüzden doğrulanmadı. Yine de aktarılsın mı?",
-			"ownerEdits": "Bu değişiklik doğrulandı ve {files} içinde onun da dokunduğu kendi düzenlemeleriniz var. Sizin hiçbir şeyinizin üzerine yazılmadı. Ne yapılsın?",
-			"ownerEditsContext": "Değişiklik {path} konumundaki kopyasında bekliyor.",
-			"cantLand": "{project} üzerindeki değişiklik incelemeden geçti, ancak incelendiği hâliyle aktarılamıyor ve son {tries} denemede bu hedefe yaklaşmadı. Ne yapılsın?",
 			"keepGoing": "Devam et",
-			"landAnyway": "Yine de aktar",
-			"stopHere": "Burada dur",
-			"keepInCopy": "Kopyasında tut",
-			"landAfterMine": "Benimkileri commit ettikten sonra aktar",
-			"keepMine": "Benimkileri koru, aktarma"
+			"stopHere": "Burada dur"
 		}
 	},
 	"appPermissions": {

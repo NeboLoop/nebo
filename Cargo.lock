@@ -6035,7 +6035,6 @@ version = "0.16.16"
 dependencies = [
  "dirs",
  "hex",
- "libc",
  "nebo-command",
  "nebo-types",
  "rand 0.8.5",

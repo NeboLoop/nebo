@@ -1049,12 +1049,19 @@ mod tests {
                 &provider,
                 CheckpointReason::Threshold,
                 &[],
-                RestoreState { goal: Some(&goal), running: &running, tasks: &tasks, plan_mode: true },
+                RestoreState {
+                    goal: Some(&goal),
+                    running: &running,
+                    tasks: &tasks,
+                    plan_mode: true,
+                    open_findings: Some("F1 [blocker] the total is wrong"),
+                },
             )
             .await
             .unwrap();
 
-        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "running_work", "task_list", "plan_mode"]);
+        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "running_work", "task_list", "plan_mode", "verify"]);
+        assert!(s.conversation().iter().any(|m| kind(m) == "verify" && m.content.contains("F1 [blocker] the total is wrong")), "open findings are kept");
         let rows = s.conversation();
         let text = |k: &str| rows.iter().find(|m| kind(m) == k).unwrap().content.clone();
         let skills = text("invoked_skills");

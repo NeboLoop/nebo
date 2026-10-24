@@ -1,22 +1,25 @@
-//! The code work of a turn: which projects it changes, where, and from what.
+//! The code work of a turn: which projects it changes, and from what.
 //!
-//! The builder never works in the owner's own copy of a project. The first
-//! call of a turn that would change a project folder (`verify::code_folders`)
-//! moves the work into an isolated copy of it (`worktree::create`: a git
-//! worktree, or a scratch copy of a folder that is no repository), and from
-//! then on every call of the turn that names a path in the project is
-//! pointed at the copy instead ([`TurnWork::route`]). The copy lands on the
-//! project only once the work is verified, or when the owner chooses to land
-//! it anyway (`verify::engine`).
+//! The builder works in the project itself. The first call of a turn that
+//! would change a project folder (`verify::code_folders`) starts its work
+//! there: the project as it is is snapshotted (`shadow`, a repository of
+//! Nebo's own, never a commit in the owner's history) as the change's
+//! base, and its verification is recorded. When the turn ends, the change
+//! since the base is checked and reviewed (`verify::engine`), and the
+//! builder fixes what was found where it is, until the change is clean or
+//! the round cap is reached. There is no copy and nothing to land.
 //!
-//! Three kinds of work are not copied: an app's own pages (its app history
-//! is the undo, so they are checked where they are), a helper already
-//! working in its own copy (its parent lands it), and a linked coding agent's
-//! own folder (it runs its own tools). Each is still verified.
+//! Copies are only for helpers that fan out (`delegation::isolate`): each
+//! works in a git worktree of the project and its parent lands it. A
+//! helper's turn starts its work in its copy ([`WorkKind::HelperCopy`]).
 //!
-//! A work is recorded (its verification row) when it starts, with its copy's
-//! whole state, so a later turn of the same conversation resumes it exactly
-//! where it was ([`TurnWork::load`]).
+//! An app's own pages are checked where they are too ([`WorkKind::AppPages`]),
+//! and so is a linked coding agent's own folder, which it changes with its
+//! own tools ([`WorkKind::Folder`]).
+//!
+//! A work is recorded (its verification row) when it starts, so a later
+//! turn of the same conversation resumes it exactly where it was
+//! ([`TurnWork::load`]).
 //!
 //! An app built in a source project of its own (a repository whose build
 //! is copied into the app's pages by a deploy script) changes its pages
@@ -37,32 +40,33 @@ use crate::worktree;
 /// What kind of work a project's change is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkKind {
-    /// Moved into an isolated copy by this loop, which lands it.
-    Isolated,
     /// An app's own pages, checked where they are.
     AppPages,
     /// A helper's own copy; its parent lands it.
     HelperCopy,
-    /// A linked coding agent's own folder.
+    /// A project, worked on where it is: by the builder's own tools, or a
+    /// linked coding agent's.
     Folder,
 }
 
 impl WorkKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            WorkKind::Isolated => "isolated",
             WorkKind::AppPages => "app_pages",
             WorkKind::HelperCopy => "helper_copy",
             WorkKind::Folder => "folder",
         }
     }
 
-    pub fn parse(s: &str) -> Self {
+    /// The kind a row names; `None` for a copy the loop itself made before
+    /// the builder worked in place (`worktree::adopt_old_copies` keeps or
+    /// removes those).
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "app_pages" => WorkKind::AppPages,
-            "helper_copy" => WorkKind::HelperCopy,
-            "folder" => WorkKind::Folder,
-            _ => WorkKind::Isolated,
+            "app_pages" => Some(WorkKind::AppPages),
+            "helper_copy" => Some(WorkKind::HelperCopy),
+            "folder" => Some(WorkKind::Folder),
+            _ => None,
         }
     }
 }
@@ -75,10 +79,8 @@ pub struct Work {
     pub kind: WorkKind,
     /// The owner's project folder.
     pub project_root: PathBuf,
-    /// Where the work happens.
+    /// Where the work happens: the project itself, or a helper's copy.
     pub work_dir: PathBuf,
-    /// The isolated copy this loop made (`Isolated` only).
-    pub iso: Option<worktree::Isolation>,
     pub shadow: Shadow,
     /// The project as it was before the work.
     pub base: Snapshot,
@@ -97,18 +99,18 @@ impl Work {
             .join(id)
     }
 
-    /// Where a verification keeps what its reviewers work in, with the
-    /// working copies (`config::copies_dir`): each round's read-only copy of
-    /// the change and its patch, and the one build folder its reviewers
-    /// share (`review::build_dir`).
-    /// `<copies>/verify/<id>`.
-    pub fn copies(id: &str) -> Result<PathBuf, String> {
-        config::copies_dir().map(|root| root.join("verify").join(id)).map_err(|e| e.to_string())
+    /// Where a verification keeps what its reviewers work in, in the
+    /// project's own Nebo folder (`worktree::nebo_dir`, which git never
+    /// shows): each round's read-only copy of the change and its patch, and
+    /// the one build folder its reviewers share (`review::build_dir`).
+    /// `<project>/.nebo/verify/<id>`.
+    pub fn copies(project: &Path, id: &str) -> Result<PathBuf, String> {
+        worktree::nebo_dir(project).map(|d| d.join("verify").join(id))
     }
 
     /// The shadow repository a work snapshots its folder with: its own, or
-    /// for a coding agent's own folder the folder's, kept across turns so a
-    /// snapshot only rehashes what changed since the last one.
+    /// for a project worked on where it is the folder's, kept across turns
+    /// so a snapshot only rehashes what changed since the last one.
     pub fn shadow_dir(id: &str, kind: WorkKind, root: &Path) -> PathBuf {
         match kind {
             WorkKind::Folder => config::data_dir()
@@ -121,19 +123,19 @@ impl Work {
         }
     }
 
-    /// Remove the verification's own files and its reviewers'. The copy
-    /// itself is the landing's to remove.
+    /// Remove the verification's own files and its reviewers'. A helper's
+    /// copy is its landing's to remove.
     pub fn clean_up(&self) {
         remove_files(&Self::home(&self.id));
-        Self::clean_up_reviewers(&self.id);
+        Self::clean_up_reviewers(&self.project_root, &self.id);
     }
 
     /// Remove what the verification's reviewers work in ([`Work::copies`]):
     /// the rounds' copies and the build folder they share. Done the moment
     /// the verification ends, whatever its verdict, so a build's gigabytes
     /// never wait for the sweep; one checked again builds anew.
-    pub fn clean_up_reviewers(id: &str) {
-        if let Ok(dir) = Self::copies(id) {
+    pub fn clean_up_reviewers(project: &Path, id: &str) {
+        if let Ok(dir) = Self::copies(project, id) {
             remove_files(&dir);
         }
     }
@@ -173,8 +175,8 @@ pub struct Starting<'a> {
     pub activity_id: Option<&'a str>,
 }
 
-/// The code work of one turn, shared by its tool calls (which route paths
-/// into the copies) and its end check (which verifies them).
+/// The code work of one turn, shared by its tool calls (which start it)
+/// and its end check (which verifies it).
 #[derive(Clone, Default)]
 pub struct TurnWork {
     works: Arc<tokio::sync::Mutex<Vec<Work>>>,
@@ -243,11 +245,9 @@ async fn written(watched: Vec<(PathBuf, u64)>) -> Vec<PathBuf> {
     .unwrap_or_default()
 }
 
-/// What routing a call did.
+/// What starting a call's work did.
 #[derive(Debug, Default)]
-pub struct Routed {
-    /// The call's paths in a project now point into its copy.
-    pub rewrote: bool,
+pub struct Begun {
     /// Work started by this call: the note the builder reads beside the
     /// call's result.
     pub started: Option<String>,
@@ -258,7 +258,7 @@ pub struct Routed {
 }
 
 /// Apps' pages as they were before one command ran, and the works (ids)
-/// it runs in ([`Routed::watched`]).
+/// it runs in ([`Begun::watched`]).
 #[derive(Debug, Default)]
 pub struct Watched {
     pages: Vec<(PathBuf, u64)>,
@@ -270,8 +270,7 @@ impl TurnWork {
         self.works.lock().await.clone()
     }
 
-    /// Replace one work's state (its last round's snapshot, its copy after
-    /// catching up).
+    /// Replace one work's state (its last round's snapshot).
     pub async fn put(&self, work: Work) {
         let mut works = self.works.lock().await;
         if let Some(w) = works.iter_mut().find(|w| w.id == work.id) {
@@ -291,9 +290,10 @@ impl TurnWork {
     }
 
     /// The conversation's code work still in hand, as its rows left it: work
-    /// being checked or paused on the owner, and finished work whose copy
-    /// still waits (not landed). A turn of a helper working in its own copy
-    /// starts its work here too, before its first write.
+    /// being checked or paused on the owner, a project's change that ended
+    /// unverified (stopped, or not verified), and a helper's finished work
+    /// whose copy still waits (not landed). A turn of a helper working in its
+    /// own copy starts its work here too, before its first write.
     pub async fn load(who: &Starting<'_>, cwd: Option<&str>, linked: bool) -> Self {
         let turn = Self::default();
         let rows = who
@@ -304,14 +304,15 @@ impl TurnWork {
             })
             .unwrap_or_default();
         for row in rows {
-            // Work still in hand: being checked, waiting on the owner, or
-            // ended in a copy (this loop's, or a helper's own) that hasn't
-            // landed, a stop included: a change to it is checked again over
-            // the whole change, never landed or reported on the old verdict.
+            // Work still in hand: being checked, waiting on the owner, a
+            // project's change that ended unverified, or a helper's ended in
+            // its copy that hasn't landed, a stop included: a change to it is
+            // checked again over the whole change, never reported on the old
+            // verdict (owner, 10-23: a stop never ends code work for good).
+            let unverified = row.work_kind == WorkKind::Folder.as_str() && matches!(row.state.as_str(), "stopped" | "not_verified");
+            let held = row.work_kind == WorkKind::HelperCopy.as_str() && row.landed_ref.is_empty();
             let open = matches!(row.state.as_str(), "running" | "paused")
-                || (row.landed_ref.is_empty()
-                    && (row.isolation != "none" || row.work_kind == WorkKind::HelperCopy.as_str())
-                    && Path::new(&row.work_dir).is_dir());
+                || ((unverified || held) && Path::new(&row.work_dir).is_dir());
             if !open
                 || turn
                     .works
@@ -357,34 +358,32 @@ impl TurnWork {
             Some(Folder::Copy(copy)) => Some(copy),
             _ => None,
         }) && !turn.works.lock().await.iter().any(|w| w.work_dir == copy)
-            && let Ok(work) = start_work(who, WorkKind::HelperCopy, &copy, &copy, None, None).await
+            && let Ok(work) = start_work(who, WorkKind::HelperCopy, &copy, &copy, None).await
         {
             turn.works.lock().await.push(work);
         }
         turn
     }
 
-    /// Point a call at the copies: every path in its input inside a project
-    /// this turn works on in a copy is rewritten to the copy, and so is the
-    /// call's working directory. A call that changes something (`changes`)
-    /// in a code folder not yet worked on first starts the work there: a
-    /// copy of a project, or the app's pages where they are. A command's
-    /// apps' pages are watched for a deploy while it runs
-    /// ([`TurnWork::after_call`]).
-    pub async fn route(
+    /// Start the work a call begins: a call that changes something
+    /// (`changes`) in a code folder not yet worked on starts its work there,
+    /// a project or an app's pages, where it is. A command's apps' pages
+    /// are watched for a deploy while it runs ([`TurnWork::after_call`]).
+    /// The call itself runs as it was made.
+    pub async fn work_on(
         &self,
-        input: &mut serde_json::Value,
-        cwd: &mut Option<String>,
+        input: &serde_json::Value,
+        cwd: Option<&str>,
         changes: bool,
         who: &Starting<'_>,
-    ) -> Result<Routed, String> {
-        let mut routed = Routed::default();
+    ) -> Result<Begun, String> {
+        let mut begun = Begun::default();
         let app_pages = app_pages_of(who.store, who.agent_id);
         let command = changes && input.get("command").is_some_and(|c| c.is_string());
         // Taken before the works are locked: side-by-side calls never wait
         // on each other's walk of the pages.
         if command {
-            routed.watched.pages = watch(app_pages.clone()).await;
+            begun.watched.pages = watch(app_pages.clone()).await;
         }
         let mut works = self.works.lock().await;
         if changes && super::writes_app_pages(input) {
@@ -394,8 +393,8 @@ impl TurnWork {
                 Some(dir)
                     if app_pages.contains(&dir) && !works.iter().any(|w| w.work_dir == dir) =>
                 {
-                    let work = start_work(who, WorkKind::AppPages, &dir, &dir, None, None).await?;
-                    routed.started = Some(started_note(&work, who));
+                    let work = start_work(who, WorkKind::AppPages, &dir, &dir, None).await?;
+                    begun.started = Some(started_note(&work, who));
                     works.push(work);
                 }
                 Some(_) => {}
@@ -406,70 +405,29 @@ impl TurnWork {
                 }
             }
         }
-        for folder in super::code_folders(input, cwd.as_deref(), changes, &app_pages) {
+        for folder in super::code_folders(input, cwd, changes, &app_pages) {
             let dir = folder.path().to_path_buf();
             if let Some(w) = works.iter().find(|w| w.project_root == dir || w.work_dir == dir) {
                 if command {
-                    routed.watched.works.push(w.id.clone());
+                    begun.watched.works.push(w.id.clone());
                 }
                 continue;
             }
             let work = match folder {
                 Folder::AppPages(pages) => {
-                    start_work(who, WorkKind::AppPages, &pages, &pages, None, None).await?
+                    start_work(who, WorkKind::AppPages, &pages, &pages, None).await?
                 }
                 // Nebo's own copies are a helper's; its turn started their work.
                 Folder::Copy(_) => continue,
-                Folder::Project(root) => {
-                    let id = new_id();
-                    // Code work begins: the owner hears once if git can't do it.
-                    worktree::git_notice(who.store, Path::new("git")).await;
-                    let iso = worktree::create(&root, &id).await.map_err(|e| {
-                        format!("Could not make a working copy of {}: {e}", root.display())
-                    })?;
-                    let copy = iso.path().to_path_buf();
-                    match start_work_with_id(
-                        who,
-                        &id,
-                        WorkKind::Isolated,
-                        &root,
-                        &copy,
-                        Some(iso.clone()),
-                        None,
-                    )
-                    .await
-                    {
-                        Ok(w) => w,
-                        Err(e) => {
-                            let mut iso = iso;
-                            worktree::put_away(&mut iso, "Not started").await;
-                            return Err(e);
-                        }
-                    }
-                }
+                Folder::Project(root) => start_work(who, WorkKind::Folder, &root, &root, None).await?,
             };
-            routed.started = Some(started_note(&work, who));
+            begun.started = Some(started_note(&work, who));
             if command {
-                routed.watched.works.push(work.id.clone());
+                begun.watched.works.push(work.id.clone());
             }
             works.push(work);
         }
-        for work in works.iter().filter(|w| w.kind == WorkKind::Isolated) {
-            let (from, to) = (
-                work.project_root.to_string_lossy().into_owned(),
-                work.work_dir.to_string_lossy().into_owned(),
-            );
-            if rewrite(input, &from, &to) {
-                routed.rewrote = true;
-            }
-            if let Some(c) = cwd.as_mut()
-                && let Some(mapped) = mapped(c, &from, &to)
-            {
-                *c = mapped;
-                routed.rewrote = true;
-            }
-        }
-        Ok(routed)
+        Ok(begun)
     }
 
     /// A turn in which the linked agent ran no tools of its own: what
@@ -491,7 +449,7 @@ impl TurnWork {
             && let Ok(shadow) = Shadow::open(&Work::shadow_dir("", WorkKind::Folder, &root), &root).await
             && (!deployed.is_empty() || shadow.snapshot().await.is_ok_and(|now| now != base))
         {
-            match start_work(who, WorkKind::Folder, &root, &root, None, Some(base)).await {
+            match start_work(who, WorkKind::Folder, &root, &root, Some(base)).await {
                 Ok(work) => {
                     on.push(work.id.clone());
                     self.works.lock().await.push(work);
@@ -503,7 +461,7 @@ impl TurnWork {
     }
 
     /// After a call ran: an app's pages a command wrote while it ran
-    /// (`watched`, from its [`Routed`]) are a deploy (the builder hears
+    /// (`watched`, from its [`Begun`]) are a deploy (the builder hears
     /// that their live check joins its checks), and a new app it made
     /// starts its pages' work, from nothing (every page is the change).
     pub async fn after_call(&self, who: &Starting<'_>, watched: Watched) -> Option<String> {
@@ -535,7 +493,7 @@ impl TurnWork {
                 if works.iter().any(|w| w.kind == WorkKind::AppPages && w.work_dir == pages) {
                     continue;
                 }
-                match start_work(who, WorkKind::AppPages, &pages, &pages, None, None).await {
+                match start_work(who, WorkKind::AppPages, &pages, &pages, None).await {
                     Ok(work) => {
                         notes.push(started_note(&work, who));
                         gated.push(work.id.clone());
@@ -595,7 +553,6 @@ impl TurnWork {
             WorkKind::AppPages,
             &dir,
             &dir,
-            None,
             Some(Snapshot(EMPTY_TREE.into())),
         )
         .await
@@ -606,42 +563,24 @@ impl TurnWork {
     }
 }
 
+/// Snapshot the work's folder (or take `base`) and record its verification.
 async fn start_work(
     who: &Starting<'_>,
     kind: WorkKind,
     root: &Path,
     work_dir: &Path,
-    iso: Option<worktree::Isolation>,
     base: Option<Snapshot>,
 ) -> Result<Work, String> {
-    start_work_with_id(who, &new_id(), kind, root, work_dir, iso, base).await
-}
-
-/// Snapshot the work's folder (or take `base`) and record its verification.
-async fn start_work_with_id(
-    who: &Starting<'_>,
-    id: &str,
-    kind: WorkKind,
-    root: &Path,
-    work_dir: &Path,
-    iso: Option<worktree::Isolation>,
-    base: Option<Snapshot>,
-) -> Result<Work, String> {
-    let shadow = Shadow::open(&Work::shadow_dir(id, kind, root), work_dir).await?;
+    let id = new_id();
+    let shadow = Shadow::open(&Work::shadow_dir(&id, kind, root), work_dir).await?;
     let base = match base {
         Some(b) => b,
         None => shadow.snapshot().await?,
     };
-    let (isolation, branch) = match &iso {
-        Some(worktree::Isolation::Git(wt)) => ("worktree", wt.branch.clone()),
-        Some(worktree::Isolation::Copy(_)) => ("copy", String::new()),
-        None => ("none", String::new()),
-    };
-    let state = iso.as_ref().and_then(|i| serde_json::to_value(i).ok());
     who.store
         .create_verification(
             &db::NewVerification {
-                id,
+                id: &id,
                 agent_id: who.agent_id,
                 session_key: who.session_key,
                 chat_id: who.chat_id,
@@ -650,27 +589,16 @@ async fn start_work_with_id(
                 spec: who.spec,
                 project_root: &root.to_string_lossy(),
                 work_dir: &work_dir.to_string_lossy(),
-                isolation,
+                isolation: "none",
                 work_kind: kind.as_str(),
-                isolation_state: state.as_ref(),
-                branch: &branch,
                 base_ref: &base.0,
-                reviewer_prefix: &reviewer_prefix(who.session_key, id),
+                reviewer_prefix: &reviewer_prefix(who.session_key, &id),
                 ..Default::default()
             },
             chrono::Utc::now().timestamp(),
         )
         .map_err(|e| format!("Could not record the work: {e}"))?;
-    Ok(Work {
-        id: id.to_string(),
-        kind,
-        project_root: root.to_path_buf(),
-        work_dir: work_dir.to_path_buf(),
-        iso,
-        shadow,
-        base,
-        last: None,
-    })
+    Ok(Work { id, kind, project_root: root.to_path_buf(), work_dir: work_dir.to_path_buf(), shadow, base, last: None })
 }
 
 /// What `v`'s change was reviewed as (each path it touches, with what the
@@ -685,7 +613,7 @@ pub async fn reviewed(store: &db::Store, v: &db::Verification) -> Option<worktre
         .rev()
         .find(|r| r.kind == "review" && !r.head_ref.is_empty())
         .map(|r| Snapshot(r.head_ref))?;
-    let kind = WorkKind::parse(&v.work_kind);
+    let kind = WorkKind::parse(&v.work_kind)?;
     let shadow = Shadow::open(&Work::shadow_dir(&v.id, kind, Path::new(&v.project_root)), Path::new(&v.work_dir)).await.ok()?;
     if shadow.snapshot().await.ok()? != reviewed {
         return None;
@@ -696,17 +624,13 @@ pub async fn reviewed(store: &db::Store, v: &db::Verification) -> Option<worktre
 
 /// A work as its row left it.
 async fn resume(store: &db::Store, row: &db::Verification) -> Option<Work> {
-    let kind = WorkKind::parse(&row.work_kind);
+    let kind = WorkKind::parse(&row.work_kind)?;
     let shadow = Shadow::open(
         &Work::shadow_dir(&row.id, kind, Path::new(&row.project_root)),
         Path::new(&row.work_dir),
     )
     .await
     .ok()?;
-    let iso = row
-        .isolation_state
-        .clone()
-        .and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok());
     let last = store
         .verification_rounds(&row.id)
         .unwrap_or_default()
@@ -719,7 +643,6 @@ async fn resume(store: &db::Store, row: &db::Verification) -> Option<Work> {
         kind,
         project_root: PathBuf::from(&row.project_root),
         work_dir: PathBuf::from(&row.work_dir),
-        iso,
         shadow,
         base: Snapshot(row.base_ref.clone()),
         last,
@@ -729,20 +652,11 @@ async fn resume(store: &db::Store, row: &db::Verification) -> Option<Work> {
 /// What the builder is told when its work starts: where it works now, the
 /// rules it works by, and who else is working there.
 fn started_note(work: &Work, who: &Starting<'_>) -> String {
-    let mut note = match work.kind {
-        WorkKind::Isolated => format!(
-            "This project ({}) is code, so your changes to it go to your own working copy at {}: every path in the project \
-             points there. They land on the project when independent reviewers and the project's own checks have verified \
-             them, or when the owner chooses to land them anyway. Never change the owner's own copy.",
-            work.project_root.display(),
-            work.work_dir.display()
-        ),
-        _ => format!(
-            "This is code ({}): when you finish, independent reviewers and the project's own checks verify it before it is \
-             reported done.",
-            work.project_root.display()
-        ),
-    };
+    let mut note = format!(
+        "This is code ({}): when you finish, independent reviewers and the project's own checks verify it before it is \
+         reported done, and you fix what they find where it is.",
+        work.project_root.display()
+    );
     let others = who
         .store
         .list_verifications(&db::VerificationQuery {
@@ -813,243 +727,69 @@ fn existing_app(store: &db::Store, input: &serde_json::Value) -> Option<db::mode
         .find(|a| a.is_app.unwrap_or(0) != 0 && a.name == name)
 }
 
-/// `value` with `from` (a folder) rewritten to `to` where it is a path or
-/// the start of one.
-fn mapped(value: &str, from: &str, to: &str) -> Option<String> {
-    let rest = value.strip_prefix(from)?;
-    (rest.is_empty() || rest.starts_with('/')).then(|| format!("{to}{rest}"))
-}
-
-/// Rewrite every occurrence of the folder `from` as a path (followed by the
-/// end, a separator, a quote or a space) in every string of `input` to `to`.
-/// A command (`command`) is shell text: `to` is quoted there when the
-/// shell would otherwise split or read it ([`shell_safe`]); a file path is
-/// taken as it is.
-fn rewrite(input: &mut serde_json::Value, from: &str, to: &str) -> bool {
-    rewrite_in(input, from, to, false)
-}
-
-fn rewrite_in(input: &mut serde_json::Value, from: &str, to: &str, shell: bool) -> bool {
-    match input {
-        serde_json::Value::String(s) => {
-            let mut out = String::with_capacity(s.len());
-            let mut rest = s.as_str();
-            let mut changed = false;
-            // The quoting the text so far leaves the next character in.
-            let mut quote = Quote::None;
-            while let Some(at) = rest.find(from) {
-                let after = &rest[at + from.len()..];
-                let boundary =
-                    after.is_empty() || after.starts_with(['/', '"', '\'', ' ', '\n', ';', ')']);
-                let before_ok = at == 0
-                    || !rest[..at].ends_with(|c: char| {
-                        c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
-                    });
-                out.push_str(&rest[..at]);
-                quote = quote.after(&rest[..at]);
-                if !(boundary && before_ok) {
-                    out.push_str(from);
-                    quote = quote.after(from);
-                    rest = after;
-                    continue;
-                }
-                changed = true;
-                rest = after;
-                if !shell || shell_safe(to) {
-                    out.push_str(to);
-                    continue;
-                }
-                match quote {
-                    Quote::Single => out.push_str(&to.replace('\'', "'\\''")),
-                    Quote::Double => out.push_str(&double_quoted(to)),
-                    // A bare word: the copy's path and the rest of the word
-                    // up to anything the shell reads itself (a space, an
-                    // operator, a quote, a pattern), in double quotes.
-                    Quote::None => {
-                        let end = rest
-                            .find(|c: char| c.is_whitespace() || ";&|()<>'\"`*?[{".contains(c))
-                            .unwrap_or(rest.len());
-                        out.push('"');
-                        out.push_str(&double_quoted(to));
-                        out.push_str(&double_quoted(&rest[..end]));
-                        out.push('"');
-                        rest = &rest[end..];
-                    }
-                }
-            }
-            out.push_str(rest);
-            if changed {
-                *s = out;
-            }
-            changed
-        }
-        serde_json::Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |acc, v| rewrite_in(v, from, to, shell) || acc),
-        serde_json::Value::Object(map) => map
-            .iter_mut()
-            .fold(false, |acc, (k, v)| rewrite_in(v, from, to, shell || k == "command") || acc),
-        _ => false,
-    }
-}
-
-/// Whether `path` reads as one word in a shell, unquoted: only characters
-/// no shell gives a meaning to (a Windows path's `\` included, as
-/// PowerShell reads it).
-fn shell_safe(path: &str) -> bool {
-    path.chars().all(|c| c.is_alphanumeric() || "/._-+:@%,=~\\".contains(c))
-}
-
-/// `text` as it is written inside double quotes: what the shell would
-/// still read there escaped.
-fn double_quoted(text: &str) -> String {
-    text.replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`")
-}
-
-/// The quoting a point in shell text is in.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Quote {
-    None,
-    Single,
-    Double,
-}
-
-impl Quote {
-    /// The quoting after `text`, from this one.
-    fn after(self, text: &str) -> Quote {
-        let mut q = self;
-        let mut chars = text.chars();
-        while let Some(c) = chars.next() {
-            q = match (q, c) {
-                (Quote::None | Quote::Double, '\\') => {
-                    chars.next();
-                    q
-                }
-                (Quote::None, '\'') => Quote::Single,
-                (Quote::Single, '\'') => Quote::None,
-                (Quote::None, '"') => Quote::Double,
-                (Quote::Double, '"') => Quote::None,
-                _ => q,
-            };
-        }
-        q
-    }
-}
-
 /// How long a finished verification's own files (its shadow, its patches)
 /// are kept, and how long a build folder or a folder's shadow may sit
 /// unused before it goes.
 pub const KEEP_FINISHED_SECS: u64 = 7 * 24 * 3600;
-/// The most the verify loop's build folders may hold together; past it the
-/// least recently used go first.
-pub const BUILD_CAP_BYTES: u64 = 20 * 1024 * 1024 * 1024;
-
-/// Hold the build folders to [`BUILD_CAP_BYTES`] now, least recently used
-/// first: run before checks write into them, so the cap holds as they are
-/// written, not only at the daily sweep. Returns how many it removed.
-pub fn cap_builds() -> usize {
-    let Some(root) = super::checks::builds_root() else { return 0 };
-    let mut builds: Vec<(std::time::SystemTime, u64, PathBuf)> = std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| {
-            let at = std::fs::metadata(e.path()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            (at, size_of(&e.path()), e.path())
-        })
-        .collect();
-    builds.sort();
-    let mut total: u64 = builds.iter().map(|(_, n, _)| n).sum();
-    let mut removed = 0;
-    for (_, n, path) in builds {
-        if total <= BUILD_CAP_BYTES {
-            break;
-        }
-        if std::fs::remove_dir_all(&path).is_ok() {
-            total = total.saturating_sub(n);
-            removed += 1;
-        }
-    }
-    removed
-}
 
 /// Reclaim the verify loop's disk (run at boot and daily): the files of a
 /// verification finished more than [`KEEP_FINISHED_SECS`] ago (or with no
-/// row), a finished worktree copy that never landed put away on its branch
-/// (its work kept, the disk freed), build folders and folder shadows unused
-/// that long, and the build folders over [`BUILD_CAP_BYTES`], least recently
-/// used first. A scratch copy is never removed: its work lives only there.
+/// row) and its reviewers' copies in its project, and the folders'
+/// shadows and the projects' build folders unused that long. A shadow or a
+/// build folder a work still in hand reads is never removed.
 /// Returns how many folders it removed.
 pub async fn sweep(store: &db::Store, now: i64) -> usize {
     let root = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("verify");
-    // A verification's own files, and its reviewers' with the working copies.
-    let reviewers = config::copies_dir().ok().map(|c| c.join("verify"));
-    let entries: Vec<std::fs::DirEntry> =
-        std::iter::once(&root).chain(reviewers.as_ref()).flat_map(|dir| std::fs::read_dir(dir).into_iter().flatten().flatten()).collect();
-    let old = |at: i64| now.saturating_sub(at) as u64 > KEEP_FINISHED_SECS;
+    let rows = store.list_verifications(&db::VerificationQuery::default()).unwrap_or_default();
+    let live = |v: &db::Verification| matches!(v.state.as_str(), "running" | "paused");
+    let finished = |v: &db::Verification| !live(v) && now.saturating_sub(v.finished_at.unwrap_or(v.created_at)) as u64 > KEEP_FINISHED_SECS;
+    let unused = |p: &Path| {
+        std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age.as_secs() > KEEP_FINISHED_SECS)
+    };
     let mut removed = 0;
-    for entry in entries {
+    // A verification's own files: an orphan once nothing has touched it
+    // for as long.
+    for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("v-") {
             continue;
         }
-        let idle = std::fs::metadata(entry.path())
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|m| m.elapsed().ok())
-            .is_some_and(|age| age.as_secs() > KEEP_FINISHED_SECS);
-        let finished = match store.get_verification(&name).ok().flatten() {
-            // No row: an orphan, once nothing has touched it for as long.
-            None => idle,
-            Some(v) if matches!(v.state.as_str(), "running" | "paused") => false,
-            Some(v) => {
-                if !old(v.finished_at.unwrap_or(v.created_at)) {
-                    false
-                } else {
-                    // Its copy, never landed: put away on its branch.
-                    if v.landed_ref.is_empty()
-                        && let Some(mut iso) = v.isolation_state.clone().and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok())
-                        && matches!(iso, worktree::Isolation::Git(_))
-                        && iso.path().exists()
-                    {
-                        worktree::put_away(&mut iso, "Verified work never landed, put away to free the disk").await;
-                        let _ = store.set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
-                    }
-                    true
-                }
-            }
+        let gone = match rows.iter().find(|v| v.id == name) {
+            None => unused(&entry.path()),
+            Some(v) => finished(v),
         };
-        if finished && std::fs::remove_dir_all(entry.path()).is_ok() {
+        if gone && std::fs::remove_dir_all(entry.path()).is_ok() {
             removed += 1;
         }
     }
-    let unused = |p: &Path| {
-        std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age.as_secs() > KEEP_FINISHED_SECS)
-    };
-    for dir in std::iter::once(root.join("folders")).chain(super::checks::builds_root()) {
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            if unused(&entry.path()) && std::fs::remove_dir_all(entry.path()).is_ok() {
-                removed += 1;
-            }
+    // Its reviewers' copies, in its project's Nebo folder.
+    for v in rows.iter().filter(|v| finished(v)) {
+        let Ok(dir) = Work::copies(Path::new(&v.project_root), &v.id) else { continue };
+        if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
+            removed += 1;
         }
     }
-    removed + cap_builds()
-}
-
-/// The bytes the files under `dir` hold.
-fn size_of(dir: &Path) -> u64 {
-    let mut total = 0;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            match e.metadata() {
-                Ok(m) if m.is_dir() => stack.push(e.path()),
-                Ok(m) => total += m.len(),
-                Err(_) => {}
-            }
+    let in_hand: Vec<&Path> = rows.iter().filter(|v| live(v)).map(|v| Path::new(v.project_root.as_str())).collect();
+    let shadows: Vec<PathBuf> = in_hand
+        .iter()
+        .filter_map(|r| Work::shadow_dir("", WorkKind::Folder, r).parent().map(Path::to_path_buf))
+        .collect();
+    for entry in std::fs::read_dir(root.join("folders")).into_iter().flatten().flatten() {
+        if !shadows.contains(&entry.path()) && unused(&entry.path()) && std::fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
         }
     }
-    total
+    let mut projects: Vec<&str> = rows.iter().map(|v| v.project_root.as_str()).collect();
+    projects.sort();
+    projects.dedup();
+    for project in projects.into_iter().map(Path::new).filter(|p| !in_hand.contains(p)) {
+        let build = project.join(worktree::NEBO_DIR).join("build");
+        if project.components().all(|c| c.as_os_str() != worktree::NEBO_DIR)
+            && build.is_dir() && unused(&build) && std::fs::remove_dir_all(&build).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -1057,86 +797,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A copy whose path has a space ("Application Support"): a command
-    /// gets it quoted where the shell would split it, as one word with the
-    /// rest of the path; a file path gets it as it is. Live 2026-10-21:
-    /// `cd <copy> && …` failed with "cd: too many arguments".
-    #[test]
-    fn a_copy_path_with_a_space_is_quoted_in_a_command() {
-        let to = "/Users/o/Library/Application Support/Nebo/worktrees/site/v-1";
-        let cases = [
-            ("cd /x/site && ls", "cd \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\" && ls"),
-            ("cat /x/site/src/a.ts", "cat \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1/src/a.ts\""),
-            ("ls /x/site/src/*.ts", "ls \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1/src/\"*.ts"),
-            ("cd \"/x/site\" && ls", "cd \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\" && ls"),
-            ("cd '/x/site/web' && ls", "cd '/Users/o/Library/Application Support/Nebo/worktrees/site/v-1/web' && ls"),
-            ("pnpm --dir=/x/site build", "pnpm --dir=\"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\" build"),
-            ("echo $(ls /x/site)", "echo $(ls \"/Users/o/Library/Application Support/Nebo/worktrees/site/v-1\")"),
-        ];
-        for (command, want) in cases {
-            let mut input = json!({"command": command, "path": "/x/site/src/a.ts"});
-            assert!(rewrite(&mut input, "/x/site", to));
-            assert_eq!(input["command"], want, "{command}");
-            assert_eq!(input["path"], format!("{to}/src/a.ts"), "a file path is not shell text");
-        }
-        // A copy path the shell reads as one word stays bare.
-        let mut input = json!({"command": "cd /x/site && ls"});
-        assert!(rewrite(&mut input, "/x/site", "/private/tmp/nebo-501/worktrees/site/v-1"));
-        assert_eq!(input["command"], "cd /private/tmp/nebo-501/worktrees/site/v-1 && ls");
-        // What the shell makes of the quoted command is the copy's path.
-        let dir = tempfile::tempdir().unwrap();
-        let copy = dir.path().join("Application Support/v-1");
-        std::fs::create_dir_all(copy.join("src")).unwrap();
-        std::fs::write(copy.join("src/a.ts"), "x").unwrap();
-        let mut input = json!({"command": "cd /x/site && ls src/*.ts && cat /x/site/src/a.ts"});
-        assert!(rewrite(&mut input, "/x/site", &copy.to_string_lossy()));
-        if cfg!(unix) {
-            let out = command::new::<std::process::Command>("sh", command::Console::Hidden).arg("-c").arg(input["command"].as_str().unwrap()).output().unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-            assert_eq!(String::from_utf8_lossy(&out.stdout), "src/a.ts\nx");
-        }
-    }
-
-    #[test]
-    fn a_projects_paths_point_into_its_copy_and_nothing_else_moves() {
-        let mut input = json!({
-            "path": "/work/site/src/app.ts",
-            "command": "cd /work/site && pnpm test > /work/site-notes.txt",
-            "other": ["/work/site", "/work/sitemap/x"]
-        });
-        assert!(rewrite(&mut input, "/work/site", "/copies/v-1"));
-        assert_eq!(input["path"], "/copies/v-1/src/app.ts");
-        assert_eq!(
-            input["command"],
-            "cd /copies/v-1 && pnpm test > /work/site-notes.txt"
-        );
-        assert_eq!(
-            input["other"],
-            json!(["/copies/v-1", "/work/sitemap/x"]),
-            "a neighbour with the same prefix stays"
-        );
-        assert_eq!(
-            mapped("/work/site/src", "/work/site", "/c"),
-            Some("/c/src".into())
-        );
-        assert_eq!(mapped("/work/sitemap", "/work/site", "/c"), None);
-    }
-
     /// The build folder a verification's reviewers share goes when it ends,
-    /// with their copies; its own files (the shadow) stay for the landing.
+    /// with their copies, from the project's Nebo folder; its own files (the
+    /// shadow) stay.
     #[test]
     fn an_ended_verification_leaves_no_build_behind() {
         crate::test_home::with_home(|_| {
-            let scratch = Work::copies("v-ended").unwrap();
+            let site = tempfile::tempdir().unwrap();
+            let scratch = Work::copies(site.path(), "v-ended").unwrap();
             let build = crate::harness::verify::review::build_dir(&scratch);
             std::fs::create_dir_all(build.join("debug/deps")).unwrap();
             std::fs::create_dir_all(scratch.join("round-1/project")).unwrap();
             std::fs::create_dir_all(Work::home("v-ended")).unwrap();
-            Work::clean_up_reviewers("v-ended");
+            Work::clean_up_reviewers(site.path(), "v-ended");
             assert!(!scratch.exists(), "{}", scratch.display());
             assert!(Work::home("v-ended").is_dir());
             // Ended again (nothing left): nothing to do.
-            Work::clean_up_reviewers("v-ended");
+            Work::clean_up_reviewers(site.path(), "v-ended");
         })
     }
 
@@ -1160,10 +837,10 @@ mod tests {
         }
     }
 
-    /// `git init` and nothing after: the project's first write, its first
-    /// commit command included, goes to a copy instead of being refused.
+    /// `git init` and nothing after: the project's first write starts its
+    /// work in the project itself, and its commit runs there too.
     #[test]
-    fn a_brand_new_repository_takes_its_first_change_in_a_copy() {
+    fn a_brand_new_repository_takes_its_first_change_in_place() {
         crate::test_home::with_home(|home| {
             rt().block_on(async {
                 let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
@@ -1174,28 +851,25 @@ mod tests {
                 let work = TurnWork::default();
                 let who = who(&store);
 
-                let mut write = json!({"path": project.join(".gitignore").to_string_lossy(), "content": "target/\n"});
-                let r = work.route(&mut write, &mut None, true, &who).await.unwrap();
-                assert!(r.started.is_some(), "the work started");
-                let copy = work.snapshot().await[0].work_dir.clone();
-                assert_eq!(write["path"], copy.join(".gitignore").to_string_lossy().as_ref());
-                assert!(copy.join(".git").exists(), "the copy exists");
-
-                let mut commit = json!({"command": format!("cd {} && git add .gitignore && git commit -m start", project.display())});
-                let r = work.route(&mut commit, &mut None, true, &who).await.unwrap();
-                assert!(r.rewrote, "the commit runs in the copy");
-                assert_eq!(work.snapshot().await.len(), 1, "no second copy");
+                let write = json!({"path": project.join(".gitignore").to_string_lossy(), "content": "target/\n"});
+                assert!(work.work_on(&write, None, true, &who).await.unwrap().started.is_some(), "the work started");
+                assert_eq!(work.snapshot().await[0].work_dir, project, "in the project itself");
+                let commit = json!({"command": format!("cd {} && git add .gitignore && git commit -m start", project.display())});
+                assert!(work.work_on(&commit, None, true, &who).await.unwrap().started.is_none());
+                assert_eq!(work.snapshot().await.len(), 1, "one work");
             })
         })
     }
 
-
+    /// The first change to a project starts its work in the project itself:
+    /// nothing is copied and no path moves; its base is a snapshot in
+    /// Nebo's own shadow, never a commit in the project; a later turn
+    /// resumes it, and one stopped before it was verified too.
     #[test]
-    fn the_first_change_to_a_project_moves_the_work_into_a_copy_and_records_it() {
+    fn the_first_change_to_a_project_starts_its_work_in_place_and_records_it() {
         crate::test_home::with_home(|home| {
             rt().block_on(async {
                 let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
-                // The owner's project, outside Nebo's own folder.
                 let projects = tempfile::tempdir().unwrap();
                 let project = projects.path().join("site");
                 std::fs::create_dir_all(project.join("src")).unwrap();
@@ -1204,52 +878,39 @@ mod tests {
                 let work = TurnWork::default();
                 let who = who(&store);
 
-                // A read changes nothing: no copy.
-                let mut read = json!({"path": project.join("src/app.ts").to_string_lossy()});
-                let r = work.route(&mut read, &mut None, false, &who).await.unwrap();
-                assert!(!r.rewrote && r.started.is_none() && work.is_empty().await);
-
+                // A read changes nothing: no work.
+                let read = json!({"path": project.join("src/app.ts").to_string_lossy()});
+                assert!(work.work_on(&read, None, false, &who).await.unwrap().started.is_none() && work.is_empty().await);
                 // A letter beside the project is not code.
-                let mut letter = json!({"path": projects.path().join("letter.txt").to_string_lossy(), "content": "Dear"});
-                let r = work.route(&mut letter, &mut None, true, &who).await.unwrap();
-                assert!(r.started.is_none() && work.is_empty().await);
+                let letter = json!({"path": projects.path().join("letter.txt").to_string_lossy(), "content": "Dear"});
+                assert!(work.work_on(&letter, None, true, &who).await.unwrap().started.is_none() && work.is_empty().await);
 
-                let mut write = json!({"path": project.join("src/app.ts").to_string_lossy(), "content": "export const a = 2;\n"});
-                let r = work.route(&mut write, &mut None, true, &who).await.unwrap();
-                let note = r.started.expect("the work started");
-                assert!(note.contains("your own working copy") && note.contains("Never touch the owner's working copy"), "{note}");
+                let write = json!({"path": project.join("src/app.ts").to_string_lossy(), "content": "export const a = 2;\n"});
+                let note = work.work_on(&write, None, true, &who).await.unwrap().started.expect("the work started");
+                assert!(note.contains("you fix what they find where it is"), "{note}");
                 let works = work.snapshot().await;
-                assert_eq!(works.len(), 1);
-                let copy = works[0].work_dir.clone();
-                assert_eq!(write["path"], copy.join("src/app.ts").to_string_lossy().as_ref(), "the write goes to the copy");
-                assert!(copy.join("src/app.ts").exists());
+                assert_eq!((works.len(), works[0].work_dir.as_path(), works[0].kind), (1, project.as_path(), WorkKind::Folder));
                 let row = store.get_verification(&works[0].id).unwrap().unwrap();
-                assert_eq!((row.state.as_str(), row.isolation.as_str(), row.work_kind.as_str(), row.spec.as_str()), ("running", "copy", "isolated", "Make a = 2"));
-                assert_eq!(row.project_root, project.to_string_lossy());
-                assert_eq!(row.reviewer_prefix, format!("subagent:agent:dev:web:sa-verify-{}-", works[0].id));
-                assert!(row.isolation_state.is_some(), "the copy's whole state is kept");
+                assert_eq!((row.state.as_str(), row.isolation.as_str(), row.work_kind.as_str(), row.spec.as_str()), ("running", "none", "folder", "Make a = 2"));
+                assert_eq!((row.project_root.as_str(), row.work_dir.as_str()), (project.to_string_lossy().as_ref(), project.to_string_lossy().as_ref()));
+                assert!(!project.join(".nebo/worktrees").exists(), "no copy");
 
-                // Later calls on the project go to the copy too; no second copy.
-                let mut again = json!({"command": format!("cd {} && npm test", project.display())});
-                let r = work.route(&mut again, &mut None, true, &who).await.unwrap();
-                assert!(r.rewrote && r.started.is_none());
-                assert_eq!(again["command"], format!("cd {} && npm test", copy.display()));
+                let again = json!({"command": format!("cd {} && npm test", project.display())});
+                assert!(work.work_on(&again, None, true, &who).await.unwrap().started.is_none());
                 assert_eq!(work.snapshot().await.len(), 1);
-                assert_eq!(std::fs::read_to_string(project.join("src/app.ts")).unwrap(), "export const a = 1;\n", "the owner's copy is untouched");
 
                 // A later turn of the conversation resumes the same work.
                 let resumed = TurnWork::load(&who, None, false).await.snapshot().await;
-                assert_eq!(resumed.len(), 1);
-                assert_eq!((resumed[0].id.as_str(), resumed[0].work_dir.as_path()), (works[0].id.as_str(), copy.as_path()));
-                assert!(matches!(resumed[0].iso, Some(worktree::Isolation::Copy(_))));
-
-                // Stopped, with its change not landed (owner, 10-23: a
-                // stopped check of 0 rounds was never picked up again): the
-                // next turn resumes it, to be checked over the whole change.
-                store.set_verification_state(&works[0].id, &db::VerificationState { state: "stopped", ..Default::default() }, 2).unwrap();
-                let resumed = TurnWork::load(&who, None, false).await.snapshot().await;
-                assert_eq!(resumed.len(), 1, "a stopped check with unlanded work is resumed");
-                assert_eq!(resumed[0].id, works[0].id);
+                assert_eq!((resumed.len(), resumed[0].id.as_str()), (1, works[0].id.as_str()));
+                // Stopped before it was verified: resumed, to be checked over
+                // the whole change.
+                for state in ["stopped", "not_verified"] {
+                    store.set_verification_state(&works[0].id, &db::VerificationState { state, ..Default::default() }, 2).unwrap();
+                    let resumed = TurnWork::load(&who, None, false).await.snapshot().await;
+                    assert_eq!(resumed.len(), 1, "{state}: resumed");
+                }
+                store.set_verification_state(&works[0].id, &db::VerificationState { state: "verified", ..Default::default() }, 3).unwrap();
+                assert!(TurnWork::load(&who, None, false).await.is_empty().await, "verified work is done");
             })
         })
     }
@@ -1259,7 +920,7 @@ mod tests {
         crate::test_home::with_home(|home| {
             rt().block_on(async {
                 let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
-                let copy = home.join("worktrees/site/h-1");
+                let copy = home.join("site/.nebo/worktrees/h-1");
                 std::fs::create_dir_all(&copy).unwrap();
                 std::fs::write(copy.join("a.rs"), "fn a() {}\n").unwrap();
                 let mut w = who(&store);
@@ -1286,7 +947,7 @@ mod tests {
                 let now = 10 * KEEP_FINISHED_SECS as i64;
                 for (id, state, at) in [("v-old", "verified", 1), ("v-live", "running", 1), ("v-new", "not_verified", now - 60)] {
                     store
-                        .create_verification(&db::NewVerification { id, session_key: "agent:a:web", isolation: "none", work_kind: "isolated", ..Default::default() }, at)
+                        .create_verification(&db::NewVerification { id, session_key: "agent:a:web", isolation: "none", work_kind: "folder", ..Default::default() }, at)
                         .unwrap();
                     store
                         .set_verification_state(id, &db::VerificationState { state, ..Default::default() }, at)
@@ -1328,19 +989,19 @@ mod tests {
                 let who = who(&store);
 
                 let work = TurnWork::default();
-                let mut idle = json!({"command": format!("cd {} && echo hi", project.display())});
-                let routed = work.route(&mut idle, &mut None, true, &who).await.unwrap();
-                assert_eq!(work.after_call(&who, routed.watched).await, None, "nothing written: no deploy");
+                let idle = json!({"command": format!("cd {} && echo hi", project.display())});
+                let begun = work.work_on(&idle, None, true, &who).await.unwrap();
+                assert_eq!(work.after_call(&who, begun.watched).await, None, "nothing written: no deploy");
                 let works = work.snapshot().await;
                 assert_eq!(works.len(), 1, "the command's project is a work");
                 let row = store.get_verification(&works[0].id).unwrap().unwrap();
                 assert!(row.deployed_apps.is_empty() && !row.deploy_unchecked);
 
-                let mut deploy = json!({"command": format!("cd {} && pnpm deploy", project.display())});
-                let routed = work.route(&mut deploy, &mut None, true, &who).await.unwrap();
+                let deploy = json!({"command": format!("cd {} && pnpm deploy", project.display())});
+                let begun = work.work_on(&deploy, None, true, &who).await.unwrap();
                 std::fs::write(ui.join("index.html"), "<h1>Two, a longer page</h1>").unwrap();
                 std::fs::write(ui.join("app.js"), "console.log(1)").unwrap();
-                let note = work.after_call(&who, routed.watched).await.expect("the builder hears of the deploy");
+                let note = work.after_call(&who, begun.watched).await.expect("the builder hears of the deploy");
                 assert!(note.contains("deployed into the pages of Scoreboard") && note.contains(r#"app_reload(app: "dev", check: true)"#), "{note}");
                 let row = store.get_verification(&works[0].id).unwrap().unwrap();
                 assert_eq!((row.deployed_apps, row.deploy_unchecked), (vec!["dev".to_string()], true), "kept on the work it ran in");
@@ -1349,10 +1010,10 @@ mod tests {
                 // Run outside any work: the app's own pages' work, from the
                 // pages as the deploy left them, with the deploy to check.
                 let elsewhere = TurnWork::default();
-                let mut copy = json!({"command": "scoreboard-deploy"});
-                let routed = elsewhere.route(&mut copy, &mut None, true, &who).await.unwrap();
+                let copy = json!({"command": "scoreboard-deploy"});
+                let begun = elsewhere.work_on(&copy, None, true, &who).await.unwrap();
                 std::fs::write(ui.join("index.html"), "<h1>Three</h1>").unwrap();
-                elsewhere.after_call(&who, routed.watched).await.expect("the builder hears of the deploy");
+                elsewhere.after_call(&who, begun.watched).await.expect("the builder hears of the deploy");
                 let works = elsewhere.snapshot().await;
                 assert_eq!((works.len(), works[0].kind, works[0].work_dir.clone()), (1, WorkKind::AppPages, ui.clone()));
                 let row = store.get_verification(&works[0].id).unwrap().unwrap();

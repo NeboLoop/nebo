@@ -4535,6 +4535,7 @@
 			"step_limit": "Uruchomienie osiągnęło limit kroków przed końcem sprawdzania",
 			"turn_ended": "Uruchomienie zakończyło się przed końcem sprawdzania",
 			"restarted": "Nebo uruchomił się ponownie w trakcie sprawdzania",
+			"kept_in_copy": "Wcześniejsza praca jest zachowana w jej kopii w {path}",
 			"unreviewed": "Nie wdrożone: kopia zawiera zmiany, których nikt nie przejrzał ({files})",
 			"needs_review": "To, co zostałoby wprowadzone, różni się od przejrzanego w {files}; najpierw zostanie ponownie przejrzane",
 			"changed_after_review": "Kopia zmieniła się po przejrzeniu; najpierw zostanie ponownie przejrzana",
@@ -4555,7 +4556,6 @@
 			"checks": "Trwają własne testy projektu.",
 			"reviewers": "Recenzenci czytają zmianę.",
 			"fixing": "Trwa poprawianie tego, co znaleźli recenzenci. Następna runda sprawdzi poprawki.",
-			"landing": "Trwa dodawanie zmiany do projektu.",
 			"live": "Trwa sprawdzanie na żywo."
 		},
 		"sheet": {
@@ -4588,16 +4588,8 @@
 		"ask": {
 			"stalled": "Przegląd {project} wciąż znajduje problemy: otwartych problemów blokujących po {rounds} rundach: {open}, i nie ubywa ich. Co dalej?",
 			"reviewFailed": "Przegląd {project} nie mógł się zakończyć: recenzentów, którym się nie udało: {count}, prób: {tries}. Uruchomić ponownie?",
-			"noChecks": "Zmiana w {project} została przejrzana, ale projekt nie ma kompilacji ani testów, które dało się uruchomić, więc nie jest zweryfikowana. Wprowadzić mimo to?",
-			"ownerEdits": "Ta zmiana jest zweryfikowana, a masz własne zmiany w {files}, których ona też dotyka. Nic twojego nie zostało nadpisane. Co dalej?",
-			"ownerEditsContext": "Zmiana czeka w swojej kopii: {path}.",
-			"cantLand": "Zmiana w {project} przeszła przegląd, ale nie da się jej wprowadzić w przejrzanej postaci i w ostatnich próbach ({tries}) nie zbliżyła się do tego. Co dalej?",
 			"keepGoing": "Kontynuuj",
-			"landAnyway": "Wprowadź mimo to",
-			"stopHere": "Zatrzymaj się",
-			"keepInCopy": "Zostaw w kopii",
-			"landAfterMine": "Wprowadź po moim commicie",
-			"keepMine": "Zostaw moje, nie wprowadzaj"
+			"stopHere": "Zatrzymaj się"
 		}
 	},
 	"appPermissions": {

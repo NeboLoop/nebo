@@ -247,7 +247,7 @@ fn steps(input: &Value) -> Vec<Step> {
 }
 
 /// The fields of a harness question's `words` the card carries.
-const WORD_FIELDS: [&str; 5] = ["questionKey", "questionValues", "contextKey", "contextValues", "optionKeys"];
+const WORD_FIELDS: [&str; 3] = ["questionKey", "questionValues", "optionKeys"];
 
 /// The question as it goes up the reporting line: each question, what is
 /// decided on, the options and the recommended one, so the employee
@@ -636,7 +636,7 @@ mod tests {
                 "questionKey": "verify.ask.reviewFailed",
                 "questionValues": {"project": "/p", "count": 1, "tries": 3},
                 "optionKeys": ["verify.ask.keepGoing", "verify.ask.stopHere"],
-                "contextKey": null,
+                "contextKey": "verify.ask.gone",
                 "unrelated": "dropped"
             }
         });

@@ -64,6 +64,14 @@ pub struct CallEffects {
     /// (`permissions::removals`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removes_trees: Vec<String>,
+    /// The files and folders the call moves or renames away from where
+    /// they are (`mv`, `git mv`, `rename`, `rsync --remove-source-files`),
+    /// named as `removes_trees` names them: a pattern by the folder it
+    /// takes from (`dir/*`), and by its command when only running it knows
+    /// what moves. A protected folder among them asks, in every mode
+    /// (`permissions::removals`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<String>,
     /// The call creates, re-arms or fires scheduled work: a schedule, a
     /// workflow trigger, an employee's automations. Only a run someone is
     /// attending may do that (`limits::arms_schedule`): an unattended run
@@ -145,6 +153,7 @@ impl CallEffects {
                 if slashed && !anchored.ends_with('/') { format!("{anchored}/") } else { anchored }
             })
             .collect();
+        self.moves = self.moves.into_iter().map(anchor).collect();
         self.creates = self
             .creates
             .into_iter()
@@ -692,7 +701,8 @@ pub enum AskCase {
     RemovesEmployee,
     /// The call removes folders or trees of files outside the run's own
     /// work (`targets`, as `CallEffects::removes_trees` names them), or a
-    /// working copy or the project it copies, itself (`whole_work`: never
+    /// working copy or the project it copies, itself, or a protected folder
+    /// in one (`.git`, `.nebo`, an editor's settings) (`whole_work`: never
     /// covered by "Allow always"). `warning` is the command's one-line
     /// risk, for the card, when it has one.
     RemovesFolders {

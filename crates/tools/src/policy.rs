@@ -280,6 +280,10 @@ pub fn is_read_only(cmd: &str) -> bool {
 /// comes from its input, so it is named by its command), and `rsync
 /// --delete` (what is in its destination). A pattern (`*`, `dir/*.o`) is
 /// named by the folder it empties: `dir/*`.
+///
+/// What it moves or renames away is in `moves`: each operand of `mv`,
+/// `rename` and `git mv` (a destination named without `-t` too: what lands
+/// on it is moved there), and the sources of `rsync --remove-source-files`.
 pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEffects {
     use std::path::{Path, PathBuf};
 
@@ -384,7 +388,12 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                 }
             }
             "xargs" if args.iter().any(is_rm) => fx.removes_trees.push(unread(&sub)),
-            "rsync" if args.iter().flatten().any(|a| a.starts_with("--delete")) => {
+            "mv" | "rename" => {
+                for source in operands(&patterned, &["-t", "--target-directory", "-S", "--suffix"]) {
+                    fx.moves.push(tree(&here, &sub, &source, false));
+                }
+            }
+            "rsync" => {
                 let valued = [
                     "-e", "--rsh", "--exclude", "--include", "--filter", "-f", "--exclude-from", "--include-from",
                     "--files-from", "--log-file", "--partial-dir", "--temp-dir", "-T", "--backup-dir", "--compare-dest",
@@ -394,10 +403,17 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                 ];
                 // The destination is the last operand; one on another
                 // computer (`host:dir`) is not this one's.
-                let dest = operands(&patterned, &valued).pop().flatten();
-                let remote = dest.as_deref().is_some_and(|d| d.split('/').next().is_some_and(|first| first.contains(':')));
-                if !remote {
+                let remote = |w: &Option<String>| w.as_deref().is_some_and(|d| d.split('/').next().is_some_and(|first| first.contains(':')));
+                let mut ops = operands(&patterned, &valued);
+                let dest = ops.pop().flatten();
+                if args.iter().flatten().any(|a| a.starts_with("--delete")) && !remote(&dest) {
                     fx.removes_trees.push(tree(&here, &sub, &dest, true));
+                }
+                // `--remove-source-files` takes its sources' files away.
+                if args.iter().flatten().any(|a| a == "--remove-source-files") {
+                    for source in ops.iter().filter(|o| !remote(o)) {
+                        fx.moves.push(tree(&here, &sub, source, false));
+                    }
                 }
             }
             "mkdir" => {
@@ -430,6 +446,11 @@ pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEf
                         Some(named) => fx.overwrites.push(named),
                         None => fx.overwrites.push(unread(&sub)),
                     },
+                    Some("mv") => {
+                        for source in operands(rest, &[]) {
+                            fx.moves.push(tree(&repo, &sub, &source, false));
+                        }
+                    }
                     Some("clone") => {
                         let valued = ["-b", "--branch", "-o", "--origin", "--depth", "--reference", "--template", "-c", "--config", "--filter", "-j", "--jobs", "--separate-git-dir", "-u", "--upload-pack"];
                         let ops = operands(rest, &valued);

@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { wordedContext, wordedOption, wordedQuestion } from './askWords';
+import { wordedOption, wordedQuestion } from './askWords';
 
 const dir = join(__dirname, '../i18n/locales');
 const locale = (f: string) => JSON.parse(readFileSync(join(dir, f), 'utf8'));
@@ -19,7 +19,7 @@ const names = (m: string) =>
 describe('the code check asks in the owner language', () => {
   it('every desktop locale words every question and choice, with the same placeholders', () => {
     const keys = Object.keys(en.verify.ask);
-    expect(keys).toEqual(expect.arrayContaining(['stalled', 'reviewFailed', 'noChecks', 'ownerEdits', 'ownerEditsContext', 'cantLand', 'keepGoing', 'landAnyway', 'stopHere', 'keepInCopy', 'landAfterMine', 'keepMine']));
+    expect(keys.sort()).toEqual(['keepGoing', 'reviewFailed', 'stalled', 'stopHere']);
     for (const f of readdirSync(dir).filter((f) => f.endsWith('.json'))) {
       const ask = locale(f).verify?.ask ?? {};
       for (const k of keys) {
@@ -29,18 +29,15 @@ describe('the code check asks in the owner language', () => {
     }
   });
 
-  it('a keyed question, context and option are worded by their keys; the answer stays the label', () => {
+  it('a keyed question and option are worded by their keys; the answer stays the label', () => {
     const tr = (key: string, opts?: { values?: Record<string, string | number>; default?: string }) =>
       `${key}${opts?.values ? JSON.stringify(opts.values) : ''}`;
     const words = {
       questionKey: 'verify.ask.reviewFailed',
       questionValues: { project: '/p', count: 1, tries: 3 },
-      contextKey: 'verify.ask.ownerEditsContext',
-      contextValues: { path: '/c' },
       optionKeys: ['verify.ask.keepGoing', null]
     };
     expect(wordedQuestion(tr, 'English', words)).toBe('verify.ask.reviewFailed{"project":"/p","count":1,"tries":3}');
-    expect(wordedContext(tr, 'English', words)).toBe('verify.ask.ownerEditsContext{"path":"/c"}');
     expect(wordedOption(tr, ['Keep going', 'cents'], 'Keep going', words)).toBe('verify.ask.keepGoing');
     expect(wordedOption(tr, ['Keep going', 'cents'], 'cents', words)).toBe('cents');
     // An employee's own question shows as written.

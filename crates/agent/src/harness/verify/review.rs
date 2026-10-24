@@ -497,14 +497,16 @@ mod tests {
 
     /// 2026-10-21 `v-e9e6a7defa6d`: every reviewer was refused its own copy
     /// and patch ("one of Nebo's own files"), because they sat in Nebo's own
-    /// folder. They are with the working copies now: every lens reads both
-    /// with each tool it has, runs its commands in the copy, and builds in
-    /// the verification's one build folder; Nebo's own folder stays closed
-    /// to it.
+    /// folder. They are in the project's own Nebo folder now: every lens
+    /// reads both with each tool it has, runs its commands in the copy, and
+    /// builds in the verification's one build folder; Nebo's own folder
+    /// stays closed to it.
     #[test]
     fn every_reviewer_reads_its_copy_and_patch() {
         crate::test_home::with_home(|home| {
-            let scratch = crate::harness::verify::work::Work::copies("v-reads").unwrap();
+            let site = tempfile::tempdir().unwrap();
+            let scratch = crate::harness::verify::work::Work::copies(site.path(), "v-reads").unwrap();
+            assert_eq!(scratch, site.path().join(".nebo/verify/v-reads"), "in the project's Nebo folder");
             assert!(!scratch.starts_with(home), "never in Nebo's own folder");
             let round = round_dir(&scratch, 1);
             let project = project_dir(&round);
@@ -541,7 +543,6 @@ mod tests {
             // Nebo's secrets are as closed to a reviewer as to any employee.
             let cat = json!({ "command": format!("cat '{}'", home.join("settings.json").display()) });
             assert!(tools::safeguard::check_safeguard("run_command", &cat, &ctx).is_some());
-            std::fs::remove_dir_all(config::copies_dir().unwrap()).unwrap();
         })
     }
 }

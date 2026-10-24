@@ -4535,6 +4535,7 @@
 			"step_limit": "Jalankan mencapai batas langkahnya sebelum pemeriksaan selesai",
 			"turn_ended": "Jalankan berakhir sebelum pemeriksaan selesai",
 			"restarted": "Nebo dimulai ulang saat sedang diperiksa",
+			"kept_in_copy": "Pekerjaan sebelumnya tetap disimpan di salinannya di {path}",
 			"unreviewed": "Tidak dimasukkan: salinan berisi perubahan yang belum ditinjau siapa pun ({files})",
 			"needs_review": "Yang akan digabungkan berbeda dari yang ditinjau di {files}; perubahan ini ditinjau ulang dulu",
 			"changed_after_review": "Salinan berubah setelah ditinjau; perubahan ini ditinjau ulang dulu",
@@ -4555,7 +4556,6 @@
 			"checks": "Menjalankan pemeriksaan proyek sendiri.",
 			"reviewers": "Peninjau sedang membaca perubahan.",
 			"fixing": "Memperbaiki temuan peninjau. Putaran berikutnya memeriksa perbaikannya.",
-			"landing": "Memasukkan perubahan ke proyek.",
 			"live": "Memeriksanya secara langsung."
 		},
 		"sheet": {
@@ -4588,16 +4588,8 @@
 		"ask": {
 			"stalled": "Peninjauan {project} terus menemukan masalah: setelah {rounds} putaran masih ada {open} masalah penghambat yang terbuka, dan jumlahnya tidak berkurang. Apa yang harus dilakukan?",
 			"reviewFailed": "Peninjauan {project} tidak dapat selesai: {count} peninjau gagal {tries} kali. Jalankan lagi?",
-			"noChecks": "Perubahan pada {project} sudah ditinjau, tetapi proyek tidak memiliki build atau tes yang bisa dijalankan, jadi belum terverifikasi. Tetap gabungkan?",
-			"ownerEdits": "Perubahan ini sudah terverifikasi, dan Anda punya suntingan sendiri di {files} yang juga disentuhnya. Tidak ada milik Anda yang ditimpa. Apa yang harus dilakukan?",
-			"ownerEditsContext": "Perubahan menunggu di salinannya di {path}.",
-			"cantLand": "Perubahan pada {project} lolos peninjauan, tetapi tidak bisa digabungkan seperti saat ditinjau, dan tidak semakin dekat dalam {tries} percobaan terakhir. Apa yang harus dilakukan?",
 			"keepGoing": "Lanjutkan",
-			"landAnyway": "Tetap gabungkan",
-			"stopHere": "Berhenti di sini",
-			"keepInCopy": "Simpan di salinannya",
-			"landAfterMine": "Gabungkan setelah saya commit milik saya",
-			"keepMine": "Simpan milik saya, jangan gabungkan"
+			"stopHere": "Berhenti di sini"
 		}
 	},
 	"appPermissions": {

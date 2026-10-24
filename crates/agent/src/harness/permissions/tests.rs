@@ -1241,7 +1241,7 @@ async fn a_working_copy_is_its_own_inside_and_never_removed_whole() {
     let (root, work) = (project.to_string_lossy().into_owned(), copy.to_string_lossy().into_owned());
     store
         .create_verification(
-            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &work, isolation: "worktree", work_kind: "isolated", ..Default::default() },
+            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &work, isolation: "none", work_kind: "folder", ..Default::default() },
             1,
         )
         .unwrap();
@@ -1319,4 +1319,294 @@ async fn the_root_and_home_are_refused_without_a_card() {
             assert!(store.open_permission_asks(Some(&c.session_key)).unwrap().is_empty(), "{command}: no card");
         }
     }
+}
+
+/// Review dl1055 C: with the builder working in place, the project is the
+/// run's own work, so what is in it goes ahead (its ignored files are gone
+/// for good: a change's snapshot holds only what git keeps), but a
+/// protected folder in it (`.git`, `.nebo`, an editor's settings) always
+/// asks, with no "Allow always", in every mode; outside it asks.
+#[tokio::test]
+async fn a_protected_folder_in_the_project_always_asks() {
+    for mode in [Mode::Automatic, Mode::FullAccess] {
+        let (_d, store) = store();
+        put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+        put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+        let reg = registry(&store, vec![]).await;
+        reg.register_defaults().await;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("site");
+        std::fs::create_dir_all(project.join(".git/objects")).unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(project.join(".vscode")).unwrap();
+        std::fs::create_dir_all(project.join("uploads")).unwrap();
+        std::fs::write(project.join(".gitignore"), "uploads/\n").unwrap();
+        std::fs::write(project.join("uploads/client-contract.pdf"), "the owner's only copy").unwrap();
+        let outside = dir.path().join("Documents");
+        std::fs::create_dir_all(&outside).unwrap();
+        let c = with_mode(ctx(&store, "dev", Origin::User), mode);
+        let root = project.to_string_lossy().into_owned();
+        store
+            .create_verification(
+                &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+                1,
+            )
+            .unwrap();
+        let run = |command: String| {
+            let reg = &reg;
+            let c = c.clone();
+            async move { reg.execute(&c, "run_command", json!({ "command": command, "description": "Remove" })).await }
+        };
+        let r = run(format!("rm -rf '{}'", outside.display())).await;
+        assert!(r.parked_ask.is_some() && outside.exists(), "{mode:?}: outside asks: {}", r.content);
+        let asks = Check::new(store.clone()).asks();
+        for protected in [format!("cd '{}' && rm -rf uploads .git", project.display()), format!("rm -rf '{}'", project.join(".vscode").display()), format!("cd '{}' && rm -rf .git/objects", project.display())] {
+            let r = run(protected.clone()).await;
+            let id = r.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?} {protected}: {}", r.content));
+            assert!(project.join(".git/HEAD").exists() && project.join(".vscode").exists() && project.join("uploads/client-contract.pdf").exists(), "{mode:?} {protected}: nothing removed");
+            let row = store.get_permission_ask(&id).unwrap().unwrap();
+            assert!(matches!(serde_json::from_str::<AskCase>(&row.ask_case).unwrap(), AskCase::RemovesFolders { whole_work: true, .. }), "{protected}");
+            assert!(!asks.get(&id).unwrap().unwrap().allow_always_offered(&store), "{protected}: never always");
+        }
+        // The rest of the project is the work's own: no removal ask. Full
+        // Access runs it; Automatic still asks before deleting what the
+        // employee didn't make (case 3), as it always has.
+        let r = run(format!("cd '{}' && rm -rf uploads", project.display())).await;
+        if mode == Mode::FullAccess {
+            assert!(!r.is_error && r.parked_ask.is_none() && !project.join("uploads").exists(), "inside the project goes ahead: {}", r.content);
+        } else {
+            let id = r.parked_ask.clone().expect("case 3 asks");
+            let row = store.get_permission_ask(&id).unwrap().unwrap();
+            assert!(matches!(serde_json::from_str::<AskCase>(&row.ask_case).unwrap(), AskCase::Irreversible { .. }), "{}", row.ask_case);
+        }
+    }
+}
+
+/// Review dl1055b C: in place in Full Access, a protected folder is never
+/// removed unasked however it is reached: by another case (`.GIT`), deep
+/// in the project, inside the tree a removal takes (a nested repository's
+/// `.git` under `vendor`), or through a link to it. What else is in the
+/// project goes ahead, as the reference does in its accepting modes (the
+/// owner, 10-23: "Do what Claude does here"); what git ignores is not in
+/// the change's snapshot.
+#[tokio::test]
+async fn a_protected_folder_is_never_removed_unasked_however_it_is_reached() {
+    let cases: &[(&str, &str, bool)] = &[
+        ("dotgit", "rm -rf .git", true),
+        ("dotgit-case", "rm -rf .GIT", true),
+        ("deep-dotgit", "rm -rf vendor/lib/.git", true),
+        ("parent-of-nested-repo", "rm -rf vendor", true),
+        ("ignored-uploads", "rm -rf uploads", false),
+        ("nebo-worktrees", "rm -rf .nebo/worktrees", true),
+        ("link-to-dotgit", "rm -rf gitlink/", true),
+    ];
+    for (name, cmd, asks) in cases {
+        let (_d, store) = store();
+        put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+        put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+        let reg = registry(&store, vec![]).await;
+        reg.register_defaults().await;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("site");
+        std::fs::create_dir_all(project.join(".git/objects")).unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(project.join("vendor/lib/.git")).unwrap();
+        std::fs::write(project.join("vendor/lib/.git/HEAD"), "unpushed\n").unwrap();
+        std::fs::create_dir_all(project.join("uploads")).unwrap();
+        std::fs::write(project.join(".gitignore"), "uploads/\n").unwrap();
+        std::fs::write(project.join("uploads/client-contract.pdf"), "the owner's only copy").unwrap();
+        std::fs::create_dir_all(project.join(".nebo/worktrees/h-1")).unwrap();
+        std::fs::write(project.join(".nebo/worktrees/h-1/work.txt"), "helper").unwrap();
+        std::os::unix::fs::symlink(project.join(".git"), project.join("gitlink")).unwrap();
+        let c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+        let root = project.to_string_lossy().into_owned();
+        store
+            .create_verification(
+                &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+                1,
+            )
+            .unwrap();
+        let r = reg.execute(&c, "run_command", json!({ "command": format!("cd '{}' && {cmd}", project.display()), "description": "Remove" })).await;
+        let lost = [".git/HEAD", "vendor/lib/.git/HEAD", "uploads/client-contract.pdf", ".nebo/worktrees/h-1/work.txt"]
+            .iter()
+            .filter(|p| !project.join(p).exists())
+            .copied()
+            .collect::<Vec<_>>();
+        if *asks {
+            assert!(r.parked_ask.is_some() && lost.is_empty(), "{name}: asked={} lost={lost:?}: {}", r.parked_ask.is_some(), r.content);
+        } else {
+            assert!(r.parked_ask.is_none() && lost == ["uploads/client-contract.pdf"], "{name}: goes ahead: lost={lost:?}: {}", r.content);
+        }
+    }
+}
+
+/// The owner's ruling (10-23, "Do what Claude does here"): what git
+/// ignores in the project is its own to clean, so the search for a
+/// protected folder in the tree a removal takes never walks it. In Full
+/// Access `rm -rf node_modules` (60,000 entries, a package's own `.git`
+/// among them) goes ahead; `rm -rf vendor`, kept by git, with a nested
+/// repository in it, asks.
+#[tokio::test]
+async fn what_git_ignores_is_not_searched_and_what_it_keeps_is() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("site");
+    std::fs::create_dir_all(&project).unwrap();
+    for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+        crate::worktree::git(&project, &args).await.unwrap();
+    }
+    std::fs::write(project.join(".gitignore"), "node_modules/\n").unwrap();
+    for i in 0..600 {
+        let pkg = project.join(format!("node_modules/pkg-{i}"));
+        std::fs::create_dir_all(&pkg).unwrap();
+        for j in 0..99 {
+            std::fs::write(pkg.join(format!("f{j}.js")), "").unwrap();
+        }
+    }
+    std::fs::create_dir_all(project.join("node_modules/pkg-0/.git")).unwrap();
+    std::fs::create_dir_all(project.join("vendor/lib/.git")).unwrap();
+    std::fs::write(project.join("vendor/lib/.git/HEAD"), "unpushed\n").unwrap();
+    std::fs::write(project.join("vendor/lib/a.c"), "int a;\n").unwrap();
+    let c = with_mode(ctx(&store, "dev", Origin::User), Mode::FullAccess);
+    let root = project.to_string_lossy().into_owned();
+    store
+        .create_verification(
+            &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+            1,
+        )
+        .unwrap();
+    let run = |command: String| {
+        let reg = &reg;
+        let c = c.clone();
+        async move { reg.execute(&c, "run_command", json!({ "command": command, "description": "Remove" })).await }
+    };
+    let r = run(format!("cd '{}' && rm -rf vendor", project.display())).await;
+    assert!(r.parked_ask.is_some() && project.join("vendor/lib/.git/HEAD").exists(), "a nested repository git keeps asks: {}", r.content);
+    let r = run(format!("cd '{}' && rm -rf node_modules", project.display())).await;
+    assert!(!r.is_error && r.parked_ask.is_none() && !project.join("node_modules").exists(), "what git ignores goes ahead: {}", r.content);
+}
+
+/// Review dl1055c: in place, no removal, move or destructive git command in
+/// the owner's project loses his work unasked, in Full Access or Automatic.
+/// The one exception is what git ignores, which goes ahead in Full Access,
+/// as the owner ruled (10-23: "Do what Claude does here"). Before this,
+/// `mkdir junk && mv .git junk/ && rm -rf junk` took the history unasked:
+/// `junk` wasn't there when the call was checked, and a move was never
+/// gated at all.
+#[tokio::test]
+async fn nothing_in_the_project_is_lost_unasked_however_it_is_removed() {
+    let cases: &[&str] = &[
+        "rm -rf .git",
+        "rm -rf .GIT",
+        "rm -rf .Nebo",
+        "rm -rf vendor/lib/.git",
+        "rm -rf vendor",
+        "rm -rf ivendor",
+        "rm -rf ivendor/.git",
+        "rm -rf uploads",
+        "rm -rf .nebo/worktrees",
+        "rm -rf gitlink/",
+        "rm -rf outlink/",
+        "rm -rf outlink/*",
+        "rm -rf ilink/",
+        "rm -rf ilink",
+        "rm -rf ../site",
+        "rm -rf *",
+        "mkdir junk && mv .git junk/ && rm -rf junk",
+        "mkdir junk && mv .Nebo junk/ && rm -rf junk",
+        "mv .git ../history",
+        "mkdir junk && mv .g* junk/ && rm -rf junk",
+        "git mv .vscode settings",
+        "rm -rf not-there-yet",
+        "ln -s .git junk && rm -rf junk/",
+        "git reset --hard",
+        "git checkout -- .",
+        "git clean -ffdx",
+    ];
+    for mode in [Mode::FullAccess, Mode::Automatic] {
+        for cmd in cases {
+            let (_d, store) = store();
+            put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+            put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Allow));
+            let reg = registry(&store, vec![]).await;
+            reg.register_defaults().await;
+            let dir = tempfile::tempdir().unwrap();
+            let project = dir.path().join("site");
+            std::fs::create_dir_all(&project).unwrap();
+            let g = |args: &[&str]| { let ok = std::process::Command::new("git").arg("-C").arg(&project).args(args).output().unwrap().status.success(); assert!(ok, "{args:?}"); };
+            g(&["init", "-q", "-b", "main"]);
+            std::fs::write(project.join(".gitignore"), "uploads/\nivendor/\nilink\n").unwrap();
+            std::fs::write(project.join("a.txt"), "committed\n").unwrap();
+            g(&["add", "-A"]);
+            g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]);
+            std::fs::write(project.join("a.txt"), "the owner's uncommitted edit\n").unwrap();
+            std::fs::write(project.join("notes.md"), "the owner's untracked notes\n").unwrap();
+            for nested in ["vendor/lib", "ivendor"] {
+                std::fs::create_dir_all(project.join(nested).join(".git")).unwrap();
+                std::fs::write(project.join(nested).join(".git/HEAD"), "unpushed\n").unwrap();
+            }
+            std::fs::create_dir_all(project.join("uploads")).unwrap();
+            std::fs::write(project.join("uploads/client-contract.pdf"), "the owner's only copy").unwrap();
+            std::fs::create_dir_all(project.join(".vscode")).unwrap();
+            std::fs::create_dir_all(project.join(".nebo/worktrees/h-1")).unwrap();
+            std::fs::write(project.join(".nebo/worktrees/h-1/.git"), "gitdir: x\n").unwrap();
+            std::fs::write(project.join(".nebo/worktrees/h-1/work.txt"), "helper").unwrap();
+            let outside = dir.path().join("Documents");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("taxes.pdf"), "outside").unwrap();
+            std::os::unix::fs::symlink(project.join(".git"), project.join("gitlink")).unwrap();
+            std::os::unix::fs::symlink(&outside, project.join("outlink")).unwrap();
+            std::os::unix::fs::symlink(&outside, project.join("ilink")).unwrap();
+            let c = with_mode(ctx(&store, "dev", Origin::User), mode);
+            let root = project.to_string_lossy().into_owned();
+            store
+                .create_verification(
+                    &db::NewVerification { id: "v-1", agent_id: "dev", session_key: &c.session_key, project_root: &root, work_dir: &root, isolation: "none", work_kind: "folder", ..Default::default() },
+                    1,
+                )
+                .unwrap();
+            let r = reg.execute(&c, "run_command", json!({ "command": format!("cd '{}' && {cmd}", project.display()), "description": "Remove" })).await;
+            let mut lost: Vec<&str> = [".git/HEAD", "vendor/lib/.git/HEAD", "ivendor/.git/HEAD", "uploads/client-contract.pdf", ".nebo/worktrees/h-1/work.txt", "notes.md", ".vscode"]
+                .iter()
+                .filter(|p| !project.join(p).exists())
+                .copied()
+                .collect();
+            if !outside.join("taxes.pdf").exists() {
+                lost.push("OUTSIDE taxes.pdf");
+            }
+            if std::fs::read_to_string(project.join("a.txt")).map(|t| !t.contains("uncommitted")).unwrap_or(true) {
+                lost.push("a.txt edit");
+            }
+            let ignored = matches!(*cmd, "rm -rf ivendor" | "rm -rf uploads");
+            if mode == Mode::FullAccess && ignored {
+                assert!(r.parked_ask.is_none() && !r.is_error, "{cmd}: what git ignores goes ahead: {}", r.content);
+            } else {
+                assert!(lost.is_empty(), "{mode:?} {cmd}: lost {lost:?} unasked: {}", r.content);
+            }
+            if cmd.contains("mv ") || cmd.contains("ln -s") || *cmd == "rm -rf not-there-yet" {
+                let id = r.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?} {cmd}: asks: {}", r.content));
+                let protected = cmd.contains("mv ");
+                let always = Check::new(store.clone()).asks().get(&id).unwrap().unwrap().allow_always_offered(&store);
+                assert!(!protected || !always, "{mode:?} {cmd}: moving a protected folder is never allowed always");
+            }
+        }
+    }
+}
+
+/// Moving a protected folder is named in the call's moves however it is
+/// written, and so is what only running it can tell.
+#[test]
+fn every_way_of_moving_a_folder_is_named() {
+    let moves = |cmd: &str| tools::policy::shell_effects(cmd, Some("/p")).moves;
+    assert_eq!(moves("mv .git junk/"), vec!["file:/p/.git", "file:/p/junk/"]);
+    assert_eq!(moves("mv -t junk .git .vscode"), vec!["file:/p/.git", "file:/p/.vscode"]);
+    assert_eq!(moves("git mv .claude x"), vec!["file:/p/.claude", "file:/p/x"]);
+    assert_eq!(moves("rsync -a --remove-source-files .nebo/ host:/b"), vec!["file:/p/.nebo/"]);
+    assert_eq!(moves("mv .g* junk"), vec!["file:/p/./*", "file:/p/junk"]);
+    assert!(moves("mv \"$X\" junk")[0].starts_with("command:"), "only running it knows");
+    assert!(moves("rsync -a src/ dst/").is_empty(), "a copy moves nothing");
 }

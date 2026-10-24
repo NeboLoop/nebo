@@ -4535,6 +4535,7 @@
 			"step_limit": "The run reached its step limit before the checking finished",
 			"turn_ended": "The run ended before the checking finished",
 			"restarted": "Nebo restarted while it was being checked",
+			"kept_in_copy": "Its earlier work is kept in its copy at {path}",
 			"unreviewed": "Not landed: the copy holds changes nobody reviewed ({files})",
 			"needs_review": "What would land differs from what was reviewed in {files}; it is reviewed again first",
 			"changed_after_review": "The copy changed after it was reviewed; it is reviewed again first",
@@ -4555,7 +4556,6 @@
 			"checks": "Running the project's own checks.",
 			"reviewers": "Reviewers are reading the change.",
 			"fixing": "Fixing what the reviewers found. The next round checks the fixes.",
-			"landing": "Putting the change into the project.",
 			"live": "Checking it live."
 		},
 		"sheet": {
@@ -4588,16 +4588,8 @@
 		"ask": {
 			"stalled": "The review of {project} keeps finding problems: {open, plural, one {# blocking issue is} other {# blocking issues are}} still open after {rounds} rounds, without getting fewer. What should happen?",
 			"reviewFailed": "The review of {project} could not finish: {count, plural, one {# reviewer} other {# reviewers}} failed {tries} times. Run {count, plural, one {it} other {them}} again?",
-			"noChecks": "The change to {project} was reviewed, but the project has no build or tests that could run, so it isn't verified. Land it anyway?",
-			"ownerEdits": "This change is verified, and you have edits of your own in {files} that it also touches. Nothing of yours was overwritten. What should happen?",
-			"ownerEditsContext": "The change waits in its copy at {path}.",
-			"cantLand": "The change to {project} passed review, but it can't land as it was reviewed, and it hasn't got closer in the last {tries} tries. What should happen?",
 			"keepGoing": "Keep going",
-			"landAnyway": "Land it anyway",
-			"stopHere": "Stop here",
-			"keepInCopy": "Keep it in its copy",
-			"landAfterMine": "Land it after I commit mine",
-			"keepMine": "Keep mine, don't land it"
+			"stopHere": "Stop here"
 		}
 	},
 	"appPermissions": {

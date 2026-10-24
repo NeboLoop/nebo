@@ -49,10 +49,12 @@ fn phase(v: &db::Verification, rounds: &[db::VerificationRound]) -> &'static str
                 "reviewers"
             }
         }
-        "review" if Why::read(&last.outcome).is_some_and(|w| w.code == "review_clean") => "landing",
+        // A clean round ends the check where the work is: nothing comes
+        // after it to show.
+        "review" if Why::read(&last.outcome).is_some_and(|w| w.code == "review_clean") => "done",
         "review" => "fixing",
         "live" => "live",
-        _ => "landing",
+        _ => "working",
     }
 }
 

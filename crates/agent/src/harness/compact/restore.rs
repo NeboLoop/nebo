@@ -96,10 +96,14 @@ pub struct RestoreState<'a> {
     /// same way), not when the task reminder next comes due.
     pub tasks: &'a [WorkTaskLine],
     pub plan_mode: bool,
+    /// The open findings of a code check not yet verified, in full
+    /// (`verify::engine::Verify::open_findings`): the builder's next step
+    /// works from them.
+    pub open_findings: Option<&'a str>,
 }
 
 /// The restore list, in order: files newest first, skills, files made, the
-/// goal, running work, the task list, plan mode. `before` is the conversation the checkpoint summarized,
+/// goal, running work, the task list, plan mode, open findings. `before` is the conversation the checkpoint summarized,
 /// as stored.
 pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEvent> {
     let mut events = Vec::new();
@@ -154,6 +158,10 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEven
 
     if state.plan_mode {
         events.push(TurnEvent::PlanMode { entered: true });
+    }
+
+    if let Some(findings) = state.open_findings {
+        events.push(TurnEvent::Verify(findings.to_string()));
     }
 
     events

@@ -3,8 +3,8 @@
 //! Read from the project's manifests, never guessed by a model: the same
 //! project always runs the same checks. Every project is compiled whole
 //! (every package and target, so a dependent the change breaks fails the
-//! round) and then tested where the change is. Each check runs in the copy
-//! the work happens in, with the project's one build folder
+//! round) and then tested where the change is. Each check runs where the
+//! work happens, with the project's one build folder
 //! ([`Check::with_build_dir`], [`build_cache`]): every verification of a
 //! project shares it, so a round never starts cold and the disk holds one
 //! build output per project, not one per round.
@@ -86,18 +86,11 @@ pub fn detect(root: &Path, changed: &[String]) -> Vec<Check> {
     checks
 }
 
-/// The build folder every verification of the project at `root` shares:
-/// `<copies>/build/<hash of the project's path>` ([`builds_root`]).
+/// The build folder every verification of the project at `root` shares,
+/// in the project's own Nebo folder (`worktree::nebo_dir`):
+/// `<root>/.nebo/build`.
 pub fn build_cache(root: &Path) -> Result<PathBuf, String> {
-    use sha2::Digest;
-    let hash = hex::encode(&sha2::Sha256::digest(root.to_string_lossy().as_bytes())[..8]);
-    builds_root().map(|b| b.join(hash)).ok_or_else(|| "no folder for the build: the working-copy folder could not be made".to_string())
-}
-
-/// Where the projects' build folders are: with the working copies
-/// (`config::copies_dir`), where every command that builds may write.
-pub fn builds_root() -> Option<PathBuf> {
-    config::copies_dir().ok().map(|c| c.join("build"))
+    crate::worktree::nebo_dir(root).map(|d| d.join("build"))
 }
 
 /// What one check did in a round.
@@ -527,14 +520,17 @@ mod tests {
     #[test]
     fn every_verification_of_a_project_shares_one_build_folder() {
         crate::test_home::with_home(|home| {
-            let a = build_cache(Path::new("/work/site")).unwrap();
-            assert_eq!(a, build_cache(Path::new("/work/site")).unwrap());
-            assert_ne!(a, build_cache(Path::new("/work/other")).unwrap());
-            // With the working copies, where a command may write; never in
-            // Nebo's own folder, which is closed to every command.
-            assert!(a.starts_with(config::copies_dir().unwrap().join("build")), "{}", a.display());
+            let dir = tempfile::tempdir().unwrap();
+            let (site, other) = (dir.path().join("site"), dir.path().join("other"));
+            std::fs::create_dir_all(&site).unwrap();
+            std::fs::create_dir_all(&other).unwrap();
+            let a = build_cache(&site).unwrap();
+            assert_eq!(a, build_cache(&site).unwrap());
+            assert_ne!(a, build_cache(&other).unwrap());
+            // In the project's own Nebo folder, where a command may write;
+            // never in Nebo's own folder.
+            assert_eq!(a, site.join(".nebo/build"));
             assert!(!a.starts_with(home));
-            let _ = std::fs::remove_dir_all(config::copies_dir().unwrap());
         })
     }
 
