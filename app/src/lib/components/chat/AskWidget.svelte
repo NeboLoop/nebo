@@ -13,6 +13,11 @@
 		/** 'options' is canonical; legacy single-choice shapes still render. */
 		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin' | 'hire_employee';
 		label?: string;
+		/** A question card's step: the few words on its step chip, and its
+		 *  question (`ask_owner`'s `questions`). A card from before the
+		 *  wizard has neither: its question is the ask's prompt. */
+		header?: string;
+		question?: string;
 		/** What the owner is deciding on (markdown): the brief, the draft, the
 		 *  plan the question is about, shown on the card above the question
 		 *  (`ask_owner`'s `context`). */
@@ -40,6 +45,9 @@
 		 *  same POST /codes path; `code`/`name` above describe the first for older
 		 *  clients. */
 		hires?: { code: string; name: string; plugin?: string; description?: string }[];
+		/** A linked agent's own permission question: the owner's answer each
+		 *  option is. It takes only those, never his own words. */
+		answers?: (string | null)[];
 		/** A question Nebo itself asks words itself in the owner's language
 		 *  (`AskWords`): questionKey, questionValues, contextKey,
 		 *  contextValues, optionKeys. */
@@ -58,17 +66,6 @@
 		return w.type === 'connect_account' && w.plugin && w.agentId ? { plugin: w.plugin, agentId: w.agentId } : null;
 	}
 
-	interface NormalizedOption {
-		label: string;
-		description?: string;
-		recommended?: boolean;
-	}
-
-	function normalizeOptions(options: AskOption[] | undefined): NormalizedOption[] {
-		return (options ?? []).map((o) =>
-			typeof o === 'string' ? { label: o } : { label: o.label, description: o.description, recommended: o.recommended }
-		);
-	}
 </script>
 
 <script lang="ts">
@@ -83,9 +80,12 @@
 		cancelled?: boolean;
 		disabled?: boolean;
 		onSubmit: (requestId: string, value: string) => void;
+		/** Shown in place of the composer: Escape closes the card, unanswered,
+		 *  instead of skipping the question. */
+		ondismiss?: () => void;
 	}
 
-	let { requestId, prompt, widgets, response, cancelled = false, disabled = false, onSubmit }: Props = $props();
+	let { requestId, prompt, widgets, response, cancelled = false, disabled = false, onSubmit, ondismiss }: Props = $props();
 
 	import Plug from 'lucide-svelte/icons/plug';
 	import Check from 'lucide-svelte/icons/check';
@@ -209,6 +209,7 @@
 	// raw ** markers. Same marked pipeline as the chat transcript.
 	import { parseMarkdown, plainText } from '$lib/markdown';
 	import { wordedContext, wordedOption, wordedQuestion } from '$lib/chat/askWords';
+	import { chooseOther, emptyAnswer, pick, replyAnswers, replyValue, stepValue, wizardSteps, type StepAnswer, type WizardStep } from '$lib/chat/askWizard';
 	const widget = $derived(widgets?.[0]);
 	// The question and its context in the owner's language when Nebo sent
 	// their keys, else as written.
@@ -217,21 +218,50 @@
 	const promptHtml = $derived(parseMarkdown(shownPrompt));
 	const contextHtml = $derived(shownContext ? parseMarkdown(shownContext) : '');
 
-	const options = $derived(normalizeOptions(widget?.options));
+	// A question card's steps: one per question, each answered in turn and
+	// all sent together ($lib/chat/askWizard).
+	const steps = $derived(wizardSteps(prompt, widgets));
+	let at = $state(0);
+	let stepAnswers = $state<StepAnswer[]>([]);
+	const step = $derived(steps[Math.min(at, steps.length - 1)]);
+	const current = $derived(stepAnswers[at] ?? emptyAnswer());
+	const options = $derived(step?.options ?? []);
+	const optionTextOf = (s: WizardStep | undefined, label: string) => wordedOption($t, (s?.options ?? []).map((o) => o.label), label, s?.widget);
 	/** An option's label as the owner reads it; the answer is the label. */
-	const optionText = (label: string) => wordedOption($t, options.map((o) => o.label), label, widget);
-	const isMulti = $derived(widget?.multiSelect === true || widget?.type === 'checkbox');
+	const optionText = (label: string) => optionTextOf(step, label);
+	const stepQuestionHtml = $derived(step ? parseMarkdown(wordedQuestion($t, step.question, step.widget)) : '');
+	const isLast = $derived(at >= steps.length - 1);
+	const stepAnswered = $derived(step ? stepValue(step, current) !== '' : false);
 
-	let selected = $state(new Set<string>());
+	function setAnswer(a: StepAnswer) {
+		const next = [...stepAnswers];
+		next[at] = a;
+		stepAnswers = next;
+	}
+
+	function go(to: number) {
+		at = Math.max(0, Math.min(steps.length - 1, to));
+	}
+
+	function sendAll() {
+		if (steps.every((s, i) => stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== '')) submit(replyValue(steps, stepAnswers));
+	}
 
 	const answered = $derived(response != null);
 	/** The question on one line, for the receipt: its first line, markdown marks dropped. */
-	const question = $derived(plainText(shownPrompt ?? '', { first: true }));
-	/** What the owner chose, as the receipt marks it: the options picked, and any answer typed in his own words. */
-	const chosen = $derived(answered && response !== SKIP_VALUE && !response?.startsWith(FAILED_PREFIX) ? (response ?? '').split(', ') : []);
-	const typedAnswers = $derived(options.length > 0 ? chosen.filter((c) => !options.some((o) => o.label === c)) : []);
+	const question = $derived(steps.length > 1 ? steps.map((s) => s.header).join(', ') : plainText(shownPrompt ?? '', { first: true }));
 	const wasSkipped = $derived(response === SKIP_VALUE);
 	const failedReason = $derived(response?.startsWith(FAILED_PREFIX) ? response.slice(FAILED_PREFIX.length) : null);
+	/** Each step's answer as it was sent. */
+	const sent = $derived(answered && !wasSkipped && failedReason == null ? replyAnswers(steps, response ?? '') : []);
+	/** What the owner chose on step `i`, as the receipt marks it: the options
+	 *  picked, and any answer typed in his own words. */
+	const chosenOf = (i: number) => (sent[i] ?? '') === '' ? [] : sent[i].split(', ');
+	const typedOf = (i: number) => steps[i]?.options.length ? chosenOf(i).filter((c) => !steps[i].options.some((o) => o.label === c)) : chosenOf(i);
+	/** The receipt's answer: each step's, as he reads it. */
+	const receiptAnswer = $derived(
+		failedReason ?? sent.map((v, i) => (v ? chosenOf(i).map((c) => optionTextOf(steps[i], c)).join(', ') : '')).filter(Boolean).join(' · ')
+	);
 
 	function submit(value: string) {
 		if (!answered && !disabled && !cancelled) {
@@ -244,16 +274,10 @@
 		submit(FAILED_PREFIX + reason.replace(/\s+/g, ' ').trim());
 	}
 
-	function toggle(label: string) {
-		const next = new Set(selected);
-		if (next.has(label)) next.delete(label);
-		else next.add(label);
-		selected = next;
-	}
-
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape' && !answered && !disabled && !cancelled) {
-			submit(SKIP_VALUE);
+			if (ondismiss) ondismiss();
+			else submit(SKIP_VALUE);
 		}
 	}
 </script>
@@ -264,29 +288,33 @@
 	<AskReceipt
 		lead={answered && !wasSkipped ? $t('chat.askedReceipt') : cancelled && !answered ? $t('common.cancelled') : $t('common.skipped')}
 		subject={question}
-		answer={answered && !wasSkipped ? (failedReason ?? optionText(response ?? '')) : ''}
+		answer={answered && !wasSkipped ? receiptAnswer : ''}
 		failed={failedReason != null}
 	>
 		{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
-		<div class="prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
-		{#if options.length > 0 || typedAnswers.length > 0}
-			<ul class="ask-receipt-options">
-				{#each options as option}
-					<li class="ask-receipt-option" class:ask-receipt-chosen={chosen.includes(option.label)}>
-						{#if chosen.includes(option.label)}<Check class="ask-receipt-mark" />{:else}<span class="ask-receipt-mark-none"></span>{/if}
-						{optionText(option.label)}
-					</li>
-				{/each}
-				{#each typedAnswers as typed}
-					<li class="ask-receipt-option ask-receipt-chosen"><Check class="ask-receipt-mark" />{typed}</li>
-				{/each}
-			</ul>
-		{/if}
+		{#each steps as s, i}
+			<div class="prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html parseMarkdown(wordedQuestion($t, s.question, s.widget))}</div>
+			{#if s.options.length > 0 || typedOf(i).length > 0}
+				<ul class="ask-receipt-options">
+					{#each s.options as option}
+						<li class="ask-receipt-option" class:ask-receipt-chosen={chosenOf(i).includes(option.label)}>
+							{#if chosenOf(i).includes(option.label)}<Check class="ask-receipt-mark" />{:else}<span class="ask-receipt-mark-none"></span>{/if}
+							{optionTextOf(s, option.label)}
+						</li>
+					{/each}
+					{#each typedOf(i) as typed}
+						<li class="ask-receipt-option ask-receipt-chosen"><Check class="ask-receipt-mark" />{typed}</li>
+					{/each}
+				</ul>
+			{/if}
+		{/each}
 	</AskReceipt>
 {:else}
 <div class="ask-card">
 	{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
-	<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
+	{#if steps.length <= 1}
+		<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
+	{/if}
 
 	{#if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}
 		{@const hiring = widget.type === 'hire_employee'}
@@ -359,74 +387,109 @@
 		<div class="mt-2 flex">
 			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 		</div>
-	{:else}
+	{:else if step}
+		{#if steps.length > 1}
+			<!-- The wizard's steps, by their headers: where he is, and a way back
+			     to any he answered. -->
+			<div class="ask-steps" role="tablist">
+				{#each steps as s, i}
+					<button
+						type="button"
+						role="tab"
+						class="ask-step"
+						class:ask-step-current={i === at}
+						class:ask-step-done={i !== at && stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== ''}
+						aria-selected={i === at}
+						onclick={() => go(i)}
+					>{s.header}</button>
+				{/each}
+			</div>
+			<div class="ask-question prose prose-sm max-w-none">{@html stepQuestionHtml}</div>
+		{/if}
 		{#if widget?.label}
 			<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>
 		{/if}
 
-		{#if isMulti}
-			<div class="flex flex-col gap-1">
-				{#each options as option}
-					<label class="label cursor-pointer justify-start gap-2 py-1">
-						<input
-							type="checkbox"
-							class="checkbox checkbox-sm checkbox-primary"
-							checked={selected.has(option.label)}
-							onchange={() => toggle(option.label)}
-						/>
-						<span class="flex flex-col">
-							<span class="text-sm">
-								{optionText(option.label)}
-								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
-							</span>
-							{#if option.description}<span class="text-xs text-base-content/70">{option.description}</span>{/if}
-						</span>
-					</label>
-				{/each}
-			</div>
-		{:else if widget?.style === 'select'}
-			<select class="select select-bordered select-sm ask-select" onchange={(e) => e.currentTarget.value && submit(e.currentTarget.value)}>
-				<option value="" selected disabled>{$t('chat.chooseOne')}</option>
+		{#if step.select}
+			<select
+				class="select select-bordered select-sm ask-select"
+				value={current.otherOn ? '' : (current.picked[0] ?? '')}
+				onchange={(e) => e.currentTarget.value && setAnswer(pick(step, current, e.currentTarget.value))}
+			>
+				<option value="" disabled>{$t('chat.chooseOne')}</option>
 				{#each options as option}
 					<option value={option.label}>{optionText(option.label)}{option.recommended ? ` · ${$t('chat.recommended')}` : ''}</option>
 				{/each}
 			</select>
 		{:else}
-			<div class="flex flex-col gap-1.5">
+			<!-- One list: a label in bold, what it means under it, a line
+			     between each, and the chosen ones marked. -->
+			<div class="ask-options" role={step.multi ? 'group' : 'radiogroup'}>
 				{#each options as option}
+					{@const on = current.picked.includes(option.label)}
 					<button
 						type="button"
-						class="btn btn-sm btn-outline justify-start h-auto py-1.5 normal-case"
-						onclick={() => submit(option.label)}
+						class="ask-option"
+						class:ask-option-on={on}
+						role={step.multi ? 'checkbox' : 'radio'}
+						aria-checked={on}
+						onclick={() => setAnswer(pick(step, current, option.label))}
 					>
-						<span class="flex flex-col items-start text-start">
-							<span class="font-medium">
+						<span class="ask-option-text">
+							<span class="ask-option-label">
 								{optionText(option.label)}
 								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
 							</span>
-							{#if option.description}<span class="text-xs text-base-content/70 font-normal">{option.description}</span>{/if}
+							{#if option.description}<span class="ask-option-description">{option.description}</span>{/if}
 						</span>
+						<span class="ask-option-mark" class:ask-option-mark-multi={step.multi}>{#if on}<Check class="w-3.5 h-3.5" />{/if}</span>
 					</button>
 				{/each}
-			</div>
-		{/if}
-
-		<!-- An answer in his own words is typed in the composer, the one place
-		     he writes: the conversation reads it against this card. -->
-		<div class="mt-2 flex flex-col gap-2">
-			<div class="flex items-center gap-3">
-				{#if isMulti}
+				{#if !step.widget.answers && options.length > 0}
+					<!-- His own words, typed here. -->
 					<button
 						type="button"
-						class="btn btn-sm btn-primary"
-						disabled={selected.size === 0}
-						onclick={() => submit([...selected].join(', '))}
+						class="ask-option"
+						class:ask-option-on={current.otherOn}
+						role={step.multi ? 'checkbox' : 'radio'}
+						aria-checked={current.otherOn}
+						onclick={() => setAnswer(chooseOther(step, current))}
 					>
-						{$t('chat.submit')}{selected.size > 0 ? ` (${selected.size})` : ''}
+						<span class="ask-option-text"><span class="ask-option-label">{$t('chat.askOther')}</span></span>
+						<span class="ask-option-mark" class:ask-option-mark-multi={step.multi}>{#if current.otherOn}<Check class="w-3.5 h-3.5" />{/if}</span>
 					</button>
 				{/if}
-				<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			</div>
+		{/if}
+		{#if current.otherOn || options.length === 0}
+			<!-- svelte-ignore a11y_autofocus -->
+			<input
+				type="text"
+				class="input input-bordered input-sm ask-other-input"
+				placeholder={$t('chat.askOtherPlaceholder')}
+				value={current.other}
+				autofocus
+				oninput={(e) => setAnswer({ ...current, otherOn: true, other: e.currentTarget.value })}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' && stepAnswered) {
+						e.preventDefault();
+						if (isLast) sendAll();
+						else go(at + 1);
+					}
+				}}
+			/>
+		{/if}
+
+		<div class="ask-actions">
+			<button type="button" class="ask-skip" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+			{#if steps.length > 1 && at > 0}
+				<button type="button" class="btn btn-sm btn-ghost" onclick={() => go(at - 1)}>{$t('common.back')}</button>
+			{/if}
+			{#if isLast}
+				<button type="button" class="btn btn-sm btn-primary" disabled={!steps.every((s, i) => stepValue(s, stepAnswers[i] ?? emptyAnswer()) !== '')} onclick={sendAll}>{$t('common.submit')}</button>
+			{:else}
+				<button type="button" class="btn btn-sm btn-primary" disabled={!stepAnswered} onclick={() => go(at + 1)}>{$t('common.next')}</button>
+			{/if}
 		</div>
 	{/if}
 </div>

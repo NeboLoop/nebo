@@ -116,12 +116,48 @@ describe('ask cards', () => {
 		expect(open).toContain('ask-select');
 		expect(open).toMatch(/<option[^>]*value=""[^>]*>Choose one…<\/option>/);
 		expect(open).toMatch(/<option[^>]*value="Hooli"/);
-		expect(open).not.toContain('btn-outline');
+		expect(open).not.toContain('class="ask-option"');
 		const done = render(AskWidget, { props: { requestId: 'r1', prompt: 'Which brand?', widgets: select, response: 'Hooli', onSubmit: () => {} } }).body;
 		expect(summary(done)).toBe('Asked · Which brand? → Hooli');
 		// Without `style`, the same options are buttons, as before.
-		expect(ask()).toContain('btn-outline');
+		expect(ask()).toContain('class="ask-option"');
 		expect(ask()).not.toContain('ask-select');
+	});
+
+	it('an option is a bold label with its one-line description under it, a line between each, then Other and Submit', () => {
+		const html = ask();
+		expect(html).toMatch(/<span class="ask-option-label">Hiring[\s\S]*?<span class="ask-option-description">Two roles open<\/span>/);
+		expect(html).toMatch(/<span class="ask-option-label">Marketing/);
+		expect(html).toContain('class="ask-options"');
+		expect(html).toMatch(/<span class="ask-option-label">Other<\/span>/);
+		expect(html).toMatch(/<button[^>]*class="btn btn-sm btn-primary"[^>]*disabled[^>]*>Submit<\/button>/);
+		// The styles are in app.css: a separator between rows, the label bold,
+		// the description smaller and gray, a selected state.
+		const css = readFileSync('src/app.css', 'utf8');
+		const rule = (sel: string) => css.match(new RegExp(`\\n${sel.replace(/[.]/g, '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
+		expect(rule('.ask-options')).toContain('divide-y');
+		expect(rule('.ask-option-label')).toContain('font-semibold');
+		expect(rule('.ask-option-description')).toMatch(/text-xs[\s\S]*text-base-content\/70/);
+		expect(rule('.ask-option-on')).toContain('--color-primary');
+	});
+
+	it('several questions are one card of steps by their headers, the first open, Next to go on', () => {
+		const steps = [
+			{ type: 'options' as const, header: 'Length', question: 'How long?', options: [{ label: '30 seconds', description: 'Tight' }, '60 seconds'] },
+			{ type: 'options' as const, header: 'Music', question: 'Which music?', options: ['Upbeat', 'Calm'], multiSelect: true },
+			{ type: 'options' as const, header: 'Title', question: 'What title?' }
+		];
+		const html = render(AskWidget, { props: { requestId: 'w1', prompt: 'How long?', widgets: steps, onSubmit: () => {} } }).body;
+		expect(text(html)).toContain('LengthMusicTitle');
+		expect(html).toMatch(/class="ask-step ask-step-current"[^>]*>Length/);
+		expect(text(html)).toContain('How long?');
+		expect(text(html)).not.toContain('Which music?');
+		expect(html).toMatch(/>Next<\/button>/);
+		expect(html).not.toMatch(/>Back<\/button>/);
+		// Answered: one record, each answer under its header.
+		const done = render(AskWidget, { props: { requestId: 'w1', prompt: 'How long?', widgets: steps, response: JSON.stringify(['60 seconds', 'Upbeat, Calm', 'Spring launch']), onSubmit: () => {} } }).body;
+		expect(summary(done)).toBe('Asked · Length, Music, Title → 60 seconds · Upbeat, Calm · Spring launch');
+		expect(done).not.toContain('ask-card');
 	});
 
 	it('skipped and cancelled questions read as such', () => {

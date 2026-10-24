@@ -107,6 +107,10 @@ enum Answers {
     /// option's own words, or the owner's answer a linked agent's card
     /// names for it) or the owner's own words.
     Question,
+    /// A parked card of several questions the owner steps through: his
+    /// words answer it only as his own words for the whole set; each
+    /// question is picked on the card.
+    Wizard,
     /// A permission ask: the answer each option is.
     Permission(Vec<Answer>),
 }
@@ -200,7 +204,7 @@ fn from_parked(state: &AppState, session_key: &str, ask: &PendingAsk) -> Waiting
             relayed: ask.relayed,
             widgets: ask.widgets.clone(),
         },
-        answers: Answers::Question,
+        answers: if shape.steps > 1 { Answers::Wizard } else { Answers::Question },
         about_work: work_asked_about(state, session_key, &ask.prompt),
     }
 }
@@ -219,6 +223,8 @@ fn work_asked_about(state: &AppState, session_key: &str, prompt: &str) -> Option
 
 /// What a parked question's card offers.
 struct ParkedShape {
+    /// How many questions the card steps through.
+    steps: usize,
     question: String,
     options: Vec<String>,
     values: Vec<String>,
@@ -235,6 +241,7 @@ fn parked_shape(ask: &PendingAsk) -> ParkedShape {
         .or_else(|| field("plugin"))
         .unwrap_or("that app");
     let in_app = |question: String| ParkedShape {
+        steps: 1,
         question,
         options: Vec::new(),
         values: Vec::new(),
@@ -254,6 +261,24 @@ fn parked_shape(ask: &PendingAsk) -> ParkedShape {
         }
         "hire_employee" => return in_app(ask.prompt.trim().to_string()),
         _ => {}
+    }
+    // Several questions on one card (`ask_owner`'s `questions`): each is
+    // answered on its step; the words they are asked in are all of them.
+    let steps: Vec<&str> = ask
+        .widgets
+        .as_ref()
+        .and_then(|w| w.as_array())
+        .map(|a| a.iter().filter_map(|w| w.get("question").and_then(|q| q.as_str())).collect())
+        .unwrap_or_default();
+    if steps.len() > 1 {
+        return ParkedShape {
+            steps: steps.len(),
+            question: steps.iter().enumerate().map(|(i, q)| format!("{}. {}", i + 1, q.trim())).collect::<Vec<_>>().join("\n"),
+            options: Vec::new(),
+            values: Vec::new(),
+            free_text: true,
+            answerable: true,
+        };
     }
     let options: Vec<String> = widget
         .and_then(|w| w.get("options"))
@@ -285,6 +310,7 @@ fn parked_shape(ask: &PendingAsk) -> ParkedShape {
         })
         .collect();
     ParkedShape {
+        steps: 1,
         question: ask.prompt.trim().to_string(),
         options,
         values,
@@ -492,7 +518,7 @@ fn reply_question(w: &Waiting) -> Question {
     for (i, label) in w.card.options.iter().enumerate() {
         let meaning = match &w.answers {
             Answers::Permission(answers) => format!("{label}: {}", permission_meaning(answers[i])),
-            Answers::Question => label.clone(),
+            Answers::Question | Answers::Wizard => label.clone(),
         };
         criteria.insert(format!("option_{}", i + 1), meaning);
     }
@@ -506,6 +532,8 @@ fn reply_question(w: &Waiting) -> Question {
                 "The owner's own answer that is none of the listed answers: what he wants done about this question \
                  or about the change it asks about (`work`), including an instruction about that change"
                     .into()
+            } else if matches!(w.answers, Answers::Wizard) {
+                "An answer to these questions, all or some of them, in the owner's own words".into()
             } else if w.card.options.is_empty() {
                 "An answer to the question".into()
             } else {
@@ -714,7 +742,7 @@ pub(crate) async fn answer_in_words(
         Reading::OwnWords => words.trim().to_string(),
     };
     match (&w.answers, reading) {
-        (Answers::Question, _) => {
+        (Answers::Question | Answers::Wizard, _) => {
             let value = match reading {
                 Reading::Option(i) => w.card.values[i].clone(),
                 _ => given.clone(),
@@ -1311,6 +1339,34 @@ pub(crate) mod tests {
         assert_eq!(read_reply(None, &w, "  ", "").await, Reading::NotAnAnswer, "nothing said");
         let install = from_parked_shape_test_card(serde_json::json!([{ "type": "install_plugin", "name": "Shopify" }]));
         assert!(!open_question(&install));
+    }
+
+    /// A card of several questions is answered on its steps. In the
+    /// waiting list it is all its questions, with no options to tap, and the
+    /// owner's next words are not taken as its answer without a decision:
+    /// they may be the new message he typed after closing it.
+    #[tokio::test]
+    async fn a_card_of_several_questions_is_not_answered_by_any_next_words() {
+        let widgets = serde_json::json!([
+            { "type": "options", "header": "Length", "question": "How long?", "options": [{"label": "30 seconds", "description": "Tight"}] },
+            { "type": "options", "header": "Music", "question": "Which music?", "options": ["Upbeat"] },
+        ]);
+        let shape = parked_shape(&PendingAsk { request_id: "q3".into(), prompt: "How long?".into(), widgets: Some(widgets.clone()), created_at: 100, relayed: false });
+        assert_eq!((shape.steps, shape.question.as_str()), (2, "1. How long?\n2. Which music?"));
+        assert!(shape.options.is_empty() && shape.free_text && shape.answerable);
+        let mut w = question("q3", "How long?", &[]);
+        w.card.question = shape.question;
+        w.answers = Answers::Wizard;
+        assert!(!open_question(&w));
+        assert_eq!(read_reply(None, &w, "Build the landing page next", "").await, Reading::NotAnAnswer);
+        let criteria = match reply_question(&w) {
+            Question::Choice { criteria, .. } => criteria,
+            other => panic!("{other:?}"),
+        };
+        assert!(criteria[OWN_WORDS].contains("these questions"));
+        // One question with described options keeps them as its labels.
+        let one = parked_shape(&PendingAsk { request_id: "q4".into(), prompt: "How long?".into(), widgets: Some(serde_json::json!([widgets[0]])), created_at: 100, relayed: false });
+        assert_eq!((one.steps, one.options), (1, vec!["30 seconds".to_string()]));
     }
 
     fn from_parked_shape_test_card(widgets: serde_json::Value) -> Waiting {

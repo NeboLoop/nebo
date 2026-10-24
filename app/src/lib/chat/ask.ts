@@ -13,7 +13,14 @@ const IN_APP = new Set<AskWidgetDef['type']>(['connect_account', 'install_plugin
  *  the owner answers it in the composer, like any reply. */
 export function isOpenQuestion(widgets: AskWidgetDef[] | undefined): boolean {
 	const w = widgets?.[0];
-	return !!w && !IN_APP.has(w.type) && !(w.options?.length);
+	return !!w && widgets?.length === 1 && !IN_APP.has(w.type) && !(w.options?.length);
+}
+
+/** A question card: something to pick, or several questions to step
+ *  through. While it waits it takes the composer's place; a card done in
+ *  the app (an install, a sign-in, a hire) stays in the chat. */
+export function takesOverComposer(widgets: AskWidgetDef[] | undefined): boolean {
+	return !!widgets?.length && takesWords(widgets) && !isOpenQuestion(widgets);
 }
 
 /** Whether the owner's typed message can answer it: every question but a
